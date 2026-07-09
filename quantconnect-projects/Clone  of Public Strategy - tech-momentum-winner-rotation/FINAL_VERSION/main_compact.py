@@ -1,9 +1,11 @@
 from AlgorithmImports import *
+import os
+import json
 
 class AdaptiveMomentumStrategy(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2025, 6, 1)
+        self.SetStartDate(2018, 1, 1)
+        self.SetEndDate(2022, 1, 1)
         self.SetCash(100000)
         
         # 动量参数
@@ -16,6 +18,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.enable_valuation_filter = True
         self.valuation_weight = 0.3
         self.momentum_weight = 0.7
+        self.valuation_weight_min = 0.2
+        self.valuation_weight_max = 0.5
         self.valuation_multiplier_min = 0.5
         self.valuation_multiplier_max = 1.5
         self.LoadValuationData()
@@ -46,12 +50,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'ORCL':'Tech','ADBE':'Tech','CSCO':'Tech','AVGO':'Tech','QCOM':'Tech','TXN':'Tech','AMAT':'Tech','MU':'Tech','NFLX':'Tech','INTU':'Tech',
             'ANET':'Tech','FSLR':'Tech','FTNT':'Tech','SNPS':'Tech','KLAC':'Tech','MRVL':'Tech','NXPI':'Tech','SWKS':'Tech','MCHP':'Tech','CDNS':'Tech',
             'DDOG':'Tech','PLTR':'Tech','NOW':'Tech','NET':'Tech','JPM':'Finance','BAC':'Finance','GS':'Finance','MS':'Finance','WFC':'Finance','BLK':'Finance',
-            'C':'Finance','AXP':'Finance','SCHW':'Finance','PNC':'Finance','SPGI':'Finance','MCO':'Finance','ICE':'Finance','CME':'Finance','JNJ':'Healthcare',
-            'UNH':'Healthcare','LLY':'Healthcare','PFE':'Healthcare','MRK':'Healthcare','ABBV':'Healthcare','ABT':'Healthcare','TMO':'Healthcare','DHR':'Healthcare',
-            'BMY':'Healthcare','AMGN':'Healthcare','GILD':'Healthcare','REGN':'Healthcare','VRTX':'Healthcare','MRNA':'Healthcare','HD':'Consumer','COST':'Consumer',
-            'NKE':'Consumer','MCD':'Consumer','SBUX':'Consumer','LOW':'Consumer','TJX':'Consumer','PG':'Consumer','KO':'Consumer','PEP':'Consumer','WMT':'Consumer',
-            'MDLZ':'Consumer','XOM':'Energy','CVX':'Energy','COP':'Energy','SLB':'Energy','OXY':'Energy','CAT':'Industrial','HON':'Industrial','UPS':'Industrial',
-            'BA':'Industrial','GE':'Industrial','RTX':'Industrial','LMT':'Industrial','VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom'
+            'C':'Finance','AXP':'Finance','SCHW':'Finance','PNC':'Finance','SPGI':'Finance','MCO':'Finance','ICE':'Finance','CME':'Finance',
+            'TFC':'Finance','USB':'Finance','COF':'Finance','BK':'Finance','STT':'Finance','NDAQ':'Finance',
+            'JNJ':'Healthcare','UNH':'Healthcare','LLY':'Healthcare','PFE':'Healthcare','MRK':'Healthcare','ABBV':'Healthcare','ABT':'Healthcare','TMO':'Healthcare',
+            'DHR':'Healthcare','BMY':'Healthcare','AMGN':'Healthcare','GILD':'Healthcare','REGN':'Healthcare','VRTX':'Healthcare','MRNA':'Healthcare','BIIB':'Healthcare',
+            'HD':'Consumer','COST':'Consumer','NKE':'Consumer','MCD':'Consumer','SBUX':'Consumer','LOW':'Consumer','TJX':'Consumer',
+            'PG':'Consumer','KO':'Consumer','PEP':'Consumer','WMT':'Consumer','MDLZ':'Consumer','CL':'Consumer','KMB':'Consumer','GIS':'Consumer','CPB':'Consumer',
+            'XOM':'Energy','CVX':'Energy','COP':'Energy','SLB':'Energy','OXY':'Energy','EOG':'Energy','MPC':'Energy','VLO':'Energy','PSX':'Energy','KMI':'Energy',
+            'CAT':'Industrial','HON':'Industrial','UPS':'Industrial','BA':'Industrial','GE':'Industrial','RTX':'Industrial','LMT':'Industrial',
+            'NOC':'Industrial','GD':'Industrial','ITW':'Industrial','MMM':'Industrial','EMR':'Industrial',
+            'VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom','CHTR':'Telecom','CCI':'Telecom','AMT':'Telecom'
         }
         
         # 调仓周期
@@ -163,10 +171,13 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             
             if vixy_price > self.vix_pause_threshold or is_extreme:
                 new_freq = min(self.current_rebalance_freq + 1, self.max_rebalance_freq)
-                self.consecutive_pause_weeks += 1
+                if new_freq != self.current_rebalance_freq:
+                    self.consecutive_pause_weeks += 1
+                self.current_rebalance_freq = new_freq
             elif vixy_price < self.vix_boost_threshold and not is_extreme:
                 new_freq = max(self.current_rebalance_freq - 1, self.min_rebalance_freq)
-                self.current_rebalance_freq = new_freq
+                if new_freq != self.current_rebalance_freq:
+                    self.current_rebalance_freq = new_freq
                 self.consecutive_pause_weeks = 0
             else:
                 self.current_rebalance_freq = self.base_rebalance_freq
@@ -224,11 +235,11 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 
                 if self.enable_valuation_filter:
                     if spy_3m_return > 0.15 and current_vol < self.low_vol_threshold:
-                        self.valuation_weight = 0.2
-                        self.momentum_weight = 0.8
+                        self.valuation_weight = self.valuation_weight_min
+                        self.momentum_weight = 1.0 - self.valuation_weight_min
                     elif spy_3m_return < -0.15 or current_vol > self.high_vol_threshold:
-                        self.valuation_weight = 0.5
-                        self.momentum_weight = 0.5
+                        self.valuation_weight = self.valuation_weight_max
+                        self.momentum_weight = 1.0 - self.valuation_weight_max
                     else:
                         self.valuation_weight = 0.3
                         self.momentum_weight = 0.7
@@ -308,7 +319,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     def RebalanceHK(self):
         if not self.enable_hk or self.IsWarmingUp:
             return
-        # 纯美股模式下不执行
         pass
     
     def RebalanceMarket(self, market_symbols, market_name):
