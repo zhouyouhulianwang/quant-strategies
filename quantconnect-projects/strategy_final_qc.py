@@ -4,7 +4,7 @@ import json
 class AdaptiveMomentumStrategy(QCAlgorithm):
     def Initialize(self):
         self.set_start_date(2020, 1, 1)
-        self.set_end_date(2025, 6, 30)
+        self.set_end_date(2026, 6, 30)
         self.set_cash(100000)
         # 使用现金账户，避免 Margin Call 和杠杆风险
         self.set_brokerage_model(BrokerageName.INTERACTIVE_BROKERS_BROKERAGE, AccountType.MARGIN)
