@@ -19,7 +19,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vix_th = 30.0
         self.vix_scale = 0.4
         
-        self.max_pos = 0.05  # 5% max per stock to avoid margin calls
+        self.max_pos = 0.03  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
         self.min_score = 0.0
         self.g_pos_scale = 1.0
@@ -281,6 +281,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         t_weight = sum(targets.values())
         if t_weight > 0:
             targets = {k: v/t_weight for k, v in targets.items()}
+            # 限制总仓位到 80%，保留 20% 现金缓冲避免 Margin Call
+            for sym in targets:
+                targets[sym] *= 0.8
         
         for symbol in list(self.cost_b.keys()):
             if symbol not in targets and self.GetTickerName(symbol) in m_sym and self.portfolio[symbol].invested:
