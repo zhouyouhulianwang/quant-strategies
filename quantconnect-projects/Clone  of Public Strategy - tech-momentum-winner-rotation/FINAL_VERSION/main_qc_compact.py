@@ -1,7 +1,7 @@
-from AlgorithmImports import *
+from AI import *
 import os
 import json
-class AdaptiveMomentumStrategy(QCAlgorithm):
+class AdaptiveMomentumStrategy(QCA):
     def Initialize(self):
         self.SetStartDate(2020, 1, 1)
         self.SetEndDate(2025, 6, 1)
@@ -25,7 +25,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vol_high = 0.025
         self.vol_low = 0.01
         
-        self.vix_symbol = self.AddEquity("VIXY", Resolution.Daily).Symbol
+        self.vix_symbol = self.AddEquity("VIXY", R.D).Symbol
         self.vix_th = 30.0
         self.vix_scale = 0.4
         
@@ -92,22 +92,22 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         for ticker in self.us_t:
             try:
-                self.symbols[ticker] = self.AddEquity(ticker, Resolution.Daily).Symbol
+                self.symbols[ticker] = self.AddEquity(ticker, R.D).Symbol
                 self.tickers.append(ticker)
             except:
                 pass
         
         for ticker in self.safe_t:
-            self.safe_s[ticker] = self.AddEquity(ticker, Resolution.Daily).Symbol
+            self.safe_s[ticker] = self.AddEquity(ticker, R.D).Symbol
         
         self.cost_b = {}
         
-        self.Schedule.On(self.DateRules.Every(DayOfWeek.Monday), self.TimeRules.AfterMarketOpen("SPY",5), self.WeeklyUpdate)
-        self.Schedule.On(self.DateRules.Every(DayOfWeek.Tuesday), self.TimeRules.AfterMarketOpen("0700",30), self.WeeklyHKUpdate)
-        self.Schedule.On(self.DateRules.EveryDay("SPY"), self.TimeRules.AfterMarketOpen("SPY",60), self.CheckStopLoss)
+        self.Schedule.On(self.DR.Every(D.Monday), self.TR.AfterMarketOpen("SPY",5), self.WeeklyUpdate)
+        self.Schedule.On(self.DR.Every(D.Tuesday), self.TR.AfterMarketOpen("0700",30), self.WeeklyHKUpdate)
+        self.Schedule.On(self.DR.EveryDay("SPY"), self.TR.AfterMarketOpen("SPY",60), self.CheckStopLoss)
         
         warmup = max(self.lbs['6m'], self.sec_lookback) + 20
-        self.SetWarmUp(timedelta(days=warmup))
+        self.SetWarmUp(td(days=warmup))
     
     def LoadValuationData(self):
         try:
@@ -151,7 +151,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             vixy_price = self.Portfolio[self.vix_symbol].Price if self.Portfolio[self.vix_symbol].Price > 0 else 25
             spy_valuation = 0.5
             try:
-                spy_history = self.History(self.symbols.get("SPY"), 63, Resolution.Daily)
+                spy_history = self.History(self.symbols.get("SPY"), 63, R.D)
                 if not spy_history.empty and len(spy_history) >= 63:
                     spy_3m_return = (spy_history['close'].iloc[-1] / spy_history['close'].iloc[-63]) - 1
                     spy_valuation = max(0, min(1, 0.5 + spy_3m_return * 2))
@@ -190,7 +190,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         if self.IsWarmingUp:
             return
         try:
-            spy_history = self.History(self.symbols.get("SPY"), self.vol_lookback + 5, Resolution.Daily)
+            spy_history = self.History(self.symbols.get("SPY"), self.vol_lookback + 5, R.D)
             if not spy_history.empty and len(spy_history) >= self.vol_lookback:
                 spy_returns = spy_history['close'].pct_change().dropna()
                 current_vol = spy_returns.iloc[-self.vol_lookback:].std()
@@ -240,7 +240,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     def CalculateMomentumScore(self, symbol, name):
         try:
             history_days = self.lbs['6m'] + 20
-            history = self.History(symbol, history_days, Resolution.Daily)
+            history = self.History(symbol, history_days, R.D)
             if history.empty or len(history) < self.lbs['6m']:
                 return None
             closes = history['close']
@@ -263,7 +263,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         for ticker, sector in self.sec_m.items():
             if ticker in self.symbols:
                 try:
-                    history = self.History(self.symbols[ticker], self.sec_lookback + 5, Resolution.Daily)
+                    history = self.History(self.symbols[ticker], self.sec_lookback + 5, R.D)
                     if not history.empty and len(history) >= self.sec_lookback:
                         ret = (history['close'].iloc[-1] - history['close'].iloc[-self.sec_lookback]) / history['close'].iloc[-self.sec_lookback]
                         if sector not in sec_ret:
