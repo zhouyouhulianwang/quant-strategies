@@ -31,7 +31,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         }
         
         self.max_pos = 0.08  # 5% max per stock to avoid margin calls
-        self.n_stocks = 10
+        self.n_stocks = 6
         self.min_score = 0.0
         
         self.sec_rot = True
