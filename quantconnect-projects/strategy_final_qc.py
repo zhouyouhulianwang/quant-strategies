@@ -20,6 +20,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vix_symbol = self.add_equity("VIXY", Resolution.DAILY).symbol
         self.vix_th = 30.0
         
+        # 风格池：作为行业轮动的"特殊行业"
+        # 使用 us_t 中已有的股票，避免数据缺失
+        self.style_pools = {
+            'Style_LargeCapTech':   ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA","NFLX","CRM","ADBE"],
+            'Style_SmallCapGrowth': ["AMD","INTC","MU","FTNT","DDOG","PLTR","NOW","NET","FSLR","ANET"],
+            'Style_Value':          ["CVX","XOM","JPM","BAC","WFC","GS","JNJ","PFE","UNH","KO","PEP"],
+            'Style_HighMomentum':   ["NVDA","AMD","FTNT","DDOG","NET","AAPL","MSFT","GOOGL","AMZN","META"],
+            'Style_Defensive':      ["JNJ","UNH","WMT","PG","KO","PEP","XOM","CVX","JPM","T"]
+        }
+        
         self.max_pos = 0.08  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
         self.min_score = 0.0
@@ -72,7 +82,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             "REGN","VRTX","MRNA","HD","COST","NKE","MCD","SBUX","LOW","TJX",
             "PG","KO","PEP","WMT","MDLZ","XOM","CVX","COP","SLB","OXY",
             "CAT","HON","UPS","BA","GE","RTX","LMT","VZ","T","CMCSA",
-            "SPY","QQQ","IWM","TLT","GLD","VIXY"
+            "SPY","QQQ","IWM","VTV","VUG","TLT","GLD","VIXY"
         ]
         
         self.safe_t = ["TLT","GLD"]
@@ -94,6 +104,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         self.schedule.on(self.date_rules.every(DayOfWeek.MONDAY), self.time_rules.after_market_open("SPY",5), self.WeeklyUpdate)
         self.schedule.on(self.date_rules.every_day("SPY"), self.time_rules.after_market_open("SPY",60), self.CheckStopLoss)
+        
+        # 风格指数：用这些指数代表对应风格的行业动量（必须在 symbols 创建后）
+        self.style_indices = {
+            'Style_LargeCapTech':   self.symbols.get("SPY"),   # 大盘用 SPY
+            'Style_SmallCapGrowth': self.symbols.get("IWM"),   # 小盘用 IWM
+            'Style_Value':          self.symbols.get("VTV"),   # 价值用 VTV
+            'Style_HighMomentum':   self.symbols.get("QQQ"),   # 高动量用 QQQ
+            'Style_Defensive':      self.symbols.get("SPY")    # 防御用 SPY
+        }
         
         warmup = max(self.lbs['6m'], self.sec_lookback) + 20
         self.set_warm_up(timedelta(days=warmup))
@@ -198,6 +217,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     
     def GetSectorMomentum(self):
         sec_ret = {}
+        
+        # 1. 计算标准行业动量
         for ticker, sector in self.sec_m.items():
             if ticker in self.symbols:
                 try:
@@ -207,6 +228,17 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                         if sector not in sec_ret:
                             sec_ret[sector] = []
                         sec_ret[sector].append(ret)
+                except:
+                    pass
+        
+        # 2. 计算风格行业动量（使用指数代表）
+        for style_name, index_symbol in self.style_indices.items():
+            if index_symbol and index_symbol in self.symbols.values():
+                try:
+                    history = self.history(index_symbol, self.sec_lookback + 5, Resolution.DAILY)
+                    if not history.empty and len(history) >= self.sec_lookback:
+                        ret = (history['close'].iloc[-1] - history['close'].iloc[-self.sec_lookback]) / history['close'].iloc[-self.sec_lookback]
+                        sec_ret[style_name] = [ret]  # 单值作为风格行业动量
                 except:
                     pass
         
@@ -235,11 +267,19 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         if self.sec_rot:
             top_sectors = self.GetSectorMomentum()
+            
+            # 收集选中的风格行业中的股票
+            selected_style_stocks = set()
+            for sector in top_sectors:
+                if sector in self.style_pools:
+                    selected_style_stocks.update(self.style_pools[sector])
+            
             us_symbols = {}
             for k, v in self.symbols.items():
                 if k in self.us_t:
                     sector = self.sec_m.get(k, 'Other')
-                    if sector in top_sectors or k in ['SPY','QQQ','TLT','GLD']:
+                    # 属于选中的标准行业 或 属于选中的风格行业 或 是安全资产
+                    if sector in top_sectors or k in selected_style_stocks or k in ['SPY','QQQ','TLT','GLD']:
                         us_symbols[k] = v
         else:
             us_symbols = {k:v for k,v in self.symbols.items() if k in self.us_t}
