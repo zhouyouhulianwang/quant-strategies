@@ -52,7 +52,14 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'XOM':'Energy','CVX':'Energy','COP':'Energy','SLB':'Energy','OXY':'Energy','EOG':'Energy','MPC':'Energy','VLO':'Energy','PSX':'Energy','KMI':'Energy',
             'CAT':'Industrial','HON':'Industrial','UPS':'Industrial','BA':'Industrial','GE':'Industrial','RTX':'Industrial','LMT':'Industrial',
             'NOC':'Industrial','GD':'Industrial','ITW':'Industrial','MMM':'Industrial','EMR':'Industrial',
-            'VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom','CHTR':'Telecom','CCI':'Telecom','AMT':'Telecom'
+            'VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom','CHTR':'Telecom','CCI':'Telecom','AMT':'Telecom',
+            # 补充映射 - 这些股票原来被映射到'Other'，现在正确归类
+            'ORCL':'Tech','CSCO':'Tech','AVGO':'Tech','QCOM':'Tech','TXN':'Tech',
+            'AMAT':'Tech','INTU':'Tech','ANET':'Tech','SNPS':'Tech','KLAC':'Tech',
+            'MRVL':'Tech','NXPI':'Tech','SWKS':'Tech','MCHP':'Tech',
+            'CAT':'Industrial','HON':'Industrial','UPS':'Industrial','BA':'Industrial',
+            'GE':'Industrial','RTX':'Industrial','LMT':'Industrial','NOC':'Industrial',
+            'GD':'Industrial','ITW':'Industrial','MMM':'Industrial','EMR':'Industrial'
         }
         
         self.base_freq = 2
