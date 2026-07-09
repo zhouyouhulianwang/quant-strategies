@@ -11,6 +11,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.base_w = {'1d':0.1,'1w':0.5,'2w':1.0,'1m':1.0,'3m':1.0,'6m':1.0}
         self.cur_w = self.base_w.copy()
         
+        self.val_d = {}
+        self.val_filter = False
+        self.val_w = 0.3
+        self.mom_w = 0.7
+        self.val_w_min = 0.2
+        self.val_w_max = 0.5
+        self.val_mul_min = 0.5
+        self.val_mul_max = 1.5
+        self.LoadValuationData()
+        
         self.vol_lookback = 20
         self.vol_high = 0.025
         self.vol_low = 0.01
@@ -99,6 +109,36 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         warmup = max(self.lbs['6m'], self.sec_lookback) + 20
         self.SetWarmUp(timedelta(days=warmup))
     
+    def LoadValuationData(self):
+        try:
+            valuation_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "val_d.json")
+            if os.path.exists(valuation_file):
+                with open(valuation_file,'r') as f:
+                    data = json.load(f)
+                for item in data:
+                    ticker = item.get('ticker')
+                    if ticker:
+                        self.val_d[ticker] = {
+                            'score': item.get('valuation_score',0.5),
+                            'pe': item.get('pe_trailing'),
+                            'pe_forward': item.get('pe_forward'),
+                            'peg': item.get('peg_ratio'),
+                            'ps': item.get('price_to_sales')
+                        }
+        except:
+            pass
+    
+    def GetValuationScore(self, ticker):
+        if not self.val_filter or not self.val_d:
+            return 0.5
+        return self.val_d.get(ticker, {}).get('score', 0.5)
+    
+    def GetValuationMultiplier(self, ticker):
+        if not self.val_filter or not self.val_d:
+            return 1.0
+        score = self.GetValuationScore(ticker)
+        return self.val_mul_min + score * (self.val_mul_max - self.val_mul_min)
+    
     def WeeklyUpdate(self):
         self.week_counter += 1
         self.AdjustRebalanceFrequency()
@@ -184,6 +224,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.cur_w = self.base_w.copy()
                     self.g_pos_scale = 1.0
                 
+                if self.val_filter:
+                    if spy_3m_return > 0.15 and current_vol < self.vol_low:
+                        self.val_w = self.val_w_min
+                        self.mom_w = 1.0 - self.val_w_min
+                    elif spy_3m_return < -0.15 or current_vol > self.vol_high:
+                        self.val_w = self.val_w_max
+                        self.mom_w = 1.0 - self.val_w_max
+                    else:
+                        self.val_w = 0.3
+                        self.mom_w = 0.7
         except:
             pass
     
@@ -286,6 +336,10 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         for name, data in top_s:
             weight = (data['score'] / t_score) if t_score > 0 else 0
             weight = min(weight, self.max_pos)
+            
+            if self.val_filter and self.val_d:
+                multiplier = self.GetValuationMultiplier(name)
+                weight *= multiplier
             
             weight *= self.g_pos_scale
             targets[data['symbol']] = weight
