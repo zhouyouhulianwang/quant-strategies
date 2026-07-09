@@ -108,6 +108,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             self.safe_s[ticker] = self.add_equity(ticker, Resolution.DAILY).symbol
         
         self.cost_b = {}
+        self.market_heat_limit = 0.30  # SPY 3个月涨幅超过30%视为过热
+        self.heat_reduce = 0.60        # 过热时总仓位降低到60%
         
         self.schedule.on(self.date_rules.every(DayOfWeek.MONDAY), self.time_rules.after_market_open("SPY",5), self.WeeklyUpdate)
         self.schedule.on(self.date_rules.every_day("SPY"), self.time_rules.after_market_open("SPY",60), self.CheckStopLoss)
@@ -324,6 +326,18 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 限制单票不超过 max_pos
         for sym in targets:
             targets[sym] = min(targets[sym], self.max_pos)
+        
+        # 检查市场是否过热（SPY 3个月涨幅 > 30%）
+        heat_scale = 1.0
+        try:
+            spy_history = self.history(self.symbols.get("SPY"), 63, Resolution.DAILY)
+            if not spy_history.empty and len(spy_history) >= 63:
+                spy_3m_return = (spy_history['close'].iloc[-1] / spy_history['close'].iloc[-63]) - 1
+                if spy_3m_return > self.market_heat_limit:
+                    heat_scale = self.heat_reduce
+                    self.log(f"  市场过热: SPY 3个月涨{spy_3m_return*100:.1f}% > {self.market_heat_limit*100}%, 总仓位限制到{self.heat_reduce*100:.0f}%")
+        except:
+            pass
         
         # 计算当前总仓位
         t_weight = sum(targets.values())
