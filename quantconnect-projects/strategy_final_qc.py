@@ -6,7 +6,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.set_start_date(2020, 1, 1)
         self.set_end_date(2026, 6, 30)
         self.set_cash(100000)
-        # 使用现金账户，避免 Margin Call 和杠杆风险
+        # 使用 Margin 账户，支持更大仓位灵活性
         self.set_brokerage_model(BrokerageName.INTERACTIVE_BROKERS_BROKERAGE, AccountType.MARGIN)
         
         self.lbs = {'1d':1,'1w':5,'2w':10,'1m':21,'3m':63,'6m':126}
@@ -101,8 +101,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             try:
                 self.symbols[ticker] = self.add_equity(ticker, Resolution.DAILY).symbol
                 self.tickers.append(ticker)
-            except:
-                pass
+            except Exception as e:
+                self.log(f"ERROR: {e}")
         
         for ticker in self.safe_t:
             self.safe_s[ticker] = self.add_equity(ticker, Resolution.DAILY).symbol
@@ -140,8 +140,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 if not spy_history.empty and len(spy_history) >= 63:
                     spy_3m_return = (spy_history['close'].iloc[-1] / spy_history['close'].iloc[-63]) - 1
                     spy_valuation = max(0, min(1, 0.5 + spy_3m_return * 2))
-            except:
-                pass
+            except Exception as e:
+                self.log(f"ERROR: {e}")
             
             is_extreme = spy_valuation > self.val_extreme or spy_valuation < (1 - self.val_extreme)
             
@@ -162,7 +162,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if self.pause_weeks >= self.max_pause:
                 self.cur_freq = self.base_freq
                 self.pause_weeks = 0
-        except:
+        except Exception as e:
+            self.log(f"ERROR in AdjustRebalanceFrequency: {e}")
             self.cur_freq = self.base_freq
     
     def UpdateAdaptiveWeights(self):
@@ -198,8 +199,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 else:
                     self.cur_w = self.base_w.copy()
                 
-        except:
-            pass
+        except Exception as e:
+            self.log(f"ERROR: {e}")
     
     def CalculateMomentumScore(self, symbol, name):
         try:
@@ -219,7 +220,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             
             score = sum(returns[p] * self.cur_w[p] for p in returns)
             return {'symbol':symbol,'score':score,'returns':returns,'current_price':current_price}
-        except:
+        except Exception as e:
+            self.log(f"ERROR in CalculateMomentumScore for {name}: {e}")
             return None
     
     def GetSectorMomentum(self):
@@ -235,8 +237,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                         if sector not in sec_ret:
                             sec_ret[sector] = []
                         sec_ret[sector].append(ret)
-                except:
-                    pass
+                except Exception as e:
+                    self.log(f"ERROR: {e}")
         
         # 2. 计算风格行业动量（使用指数代表）
         for style_name, index_symbol in self.style_indices.items():
@@ -246,8 +248,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     if not history.empty and len(history) >= self.sec_lookback:
                         ret = (history['close'].iloc[-1] - history['close'].iloc[-self.sec_lookback]) / history['close'].iloc[-self.sec_lookback]
                         sec_ret[style_name] = [ret]  # 单值作为风格行业动量
-                except:
-                    pass
+                except Exception as e:
+                    self.log(f"ERROR: {e}")
         
         sec_mom = {}
         for sector, ret_list in sec_ret.items():
