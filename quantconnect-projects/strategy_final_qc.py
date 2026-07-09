@@ -277,7 +277,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             targets = {k: v/t_weight for k, v in targets.items()}
             # 限制总仓位到 80%，保留 20% 现金缓冲避免 Margin Call
             for sym in targets:
-                targets[sym] *= 0.8
+                targets[sym] *= 0.8，保留更多保证金空间
         
         for symbol in list(self.cost_b.keys()):
             if symbol not in targets and self.GetTickerName(symbol) in m_sym and self.portfolio[symbol].invested:
