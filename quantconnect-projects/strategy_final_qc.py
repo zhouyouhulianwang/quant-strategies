@@ -19,12 +19,10 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         self.vix_symbol = self.add_equity("VIXY", Resolution.DAILY).symbol
         self.vix_th = 30.0
-        self.vix_scale = 0.4
         
         self.max_pos = 0.08  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
         self.min_score = 0.0
-        self.g_pos_scale = 1.0
         
         self.sec_rot = True
         self.n_sectors = 3
@@ -165,19 +163,14 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 if current_vol > self.vol_high or vixy_price > self.vix_th:
                     if v_lvl == 'low':
                         self.cur_w = {'1d':0.0,'1w':0.2,'2w':0.5,'1m':1.0,'3m':1.5,'6m':2.0}
-                        self.g_pos_scale = 1.0
                     elif v_lvl == 'high':
                         self.cur_w = {'1d':0.0,'1w':0.2,'2w':0.5,'1m':1.0,'3m':1.5,'6m':2.0}
-                        self.g_pos_scale = 0.3
                     else:
                         self.cur_w = {'1d':0.0,'1w':0.2,'2w':0.5,'1m':1.0,'3m':1.5,'6m':2.0}
-                        self.g_pos_scale = self.vix_scale
                 elif current_vol < self.vol_low:
                     self.cur_w = {'1d':0.2,'1w':0.8,'2w':1.2,'1m':1.0,'3m':0.8,'6m':0.5}
-                    self.g_pos_scale = 1.0
                 else:
                     self.cur_w = self.base_w.copy()
-                    self.g_pos_scale = 1.0
                 
         except:
             pass
@@ -277,7 +270,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             weight = (data['score'] / t_score) if t_score > 0 else 0
             weight = min(weight, self.max_pos)
             
-            weight *= self.g_pos_scale
             targets[data['symbol']] = weight
         
         t_weight = sum(targets.values())
