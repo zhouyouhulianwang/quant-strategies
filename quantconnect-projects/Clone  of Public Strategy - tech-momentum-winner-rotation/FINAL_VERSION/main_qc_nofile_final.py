@@ -237,6 +237,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             '9988.HK': {'score': 0.9057},
             '9999.HK': {'score': 0.6150},
         }
+    
     def GetValuationScore(self, ticker):
         if not self.val_filter or not self.val_d:
             return 0.5
