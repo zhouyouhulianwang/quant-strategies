@@ -7,7 +7,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.set_end_date(2025, 6, 1)
         self.set_cash(100000)
         # 使用现金账户，避免 Margin Call 和杠杆风险
-        self.set_brokerage_model(BrokerageName.INTERACTIVE_BROKERS, AccountType.CASH)
+        self.set_brokerage_model(BrokerageName.INTERACTIVE_BROKERS_BROKERAGE, AccountType.MARGIN)
         
         self.lbs = {'1d':1,'1w':5,'2w':10,'1m':21,'3m':63,'6m':126}
         self.base_w = {'1d':0.1,'1w':0.5,'2w':1.0,'1m':1.0,'3m':1.0,'6m':1.0}
