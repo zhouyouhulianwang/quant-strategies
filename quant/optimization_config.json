@@ -1,0 +1,9 @@
+{
+  "algorithm-type-name": "MomentumStrategy",
+  "algorithm-language": "Python",
+  "parameters": {
+    "lookback": "15,20,25,30",
+    "adx_threshold": "15,20,25,30",
+    "stop_loss_pct": "0.05,0.08,0.10,0.12"
+  }
+}

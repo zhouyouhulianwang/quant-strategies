@@ -1,0 +1,9 @@
+{
+    "organization-id": "local",
+    "cli-language": "python",
+    "data-folder": "/home/pc/.openclaw/workspace/quant/data",
+    "show-missing-data-logs": true,
+    "file-database-last-update": "07/09/2026 02:16:07",
+    "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+    "id": "Local"
+}

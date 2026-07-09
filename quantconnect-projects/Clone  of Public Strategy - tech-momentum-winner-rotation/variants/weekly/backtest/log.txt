@@ -1,0 +1,560 @@
+2026-07-08T11:35:30.7577042Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.5.0.0 Mode: DEBUG (64bit) Host: pc
+2026-07-08T11:35:30.7604791Z TRACE:: Engine.Main(): Started 11:35 AM
+2026-07-08T11:35:30.7747337Z TRACE:: JobQueue.NextJob(): Selected /LeanCLI/main.py
+2026-07-08T11:35:30.8100763Z TRACE:: AlgorithmManager.CreateTokenBucket(): Initializing LeakyBucket: Capacity: 120 RefillAmount: 18 TimeInterval: 1440
+2026-07-08T11:35:30.8143959Z TRACE:: Engine.Run(): Resource limits '0' CPUs. 2147483647 MB RAM.
+2026-07-08T11:35:30.8146452Z TRACE:: TextSubscriptionDataSourceReader.SetCacheSize(): Setting cache size to 71582788 items
+2026-07-08T11:35:31.1298455Z TRACE:: PythonInitializer.Initialize(): start...
+2026-07-08T11:35:31.2770555Z TRACE:: PythonInitializer.Initialize(): ended
+2026-07-08T11:35:31.2778807Z TRACE:: AlgorithmPythonWrapper(): Python version 3.11.14 (main, Oct 21 2025, 18:40:40) [GCC 11.2.0]: Importing python module main
+2026-07-08T11:35:32.5810379Z TRACE:: AlgorithmPythonWrapper(): main successfully imported.
+2026-07-08T11:35:32.5824903Z TRACE:: AlgorithmPythonWrapper(): Creating IAlgorithm instance.
+2026-07-08T11:35:32.6986396Z TRACE:: LocalObjectStore.Initialize(): Storage Root: /Storage. StorageFileCount 9999999. StorageLimit 10240MB. StoragePermissions Read=True Write=True Delete=True
+2026-07-08T11:35:32.7077144Z TRACE:: HistoryProviderManager.Initialize(): history providers [SubscriptionDataReaderHistoryProvider]
+2026-07-08T11:35:32.7099109Z TRACE:: BaseSetupHandler.Setup(LocalPlatform): UID: 515374, PID: -568038822, Version: 2.5.0.0, Source: WebIDE
+2026-07-08T11:35:32.7891351Z TRACE:: Event Name "Monday: SPY: 5 min after MarketOpen", scheduled to run.
+2026-07-08T11:35:32.7904728Z TRACE:: Event Name "Tuesday: 0700: 30 min after MarketOpen", scheduled to run.
+2026-07-08T11:35:32.7908167Z TRACE:: Event Name "SPY: EveryDay: SPY: 60 min after MarketOpen", scheduled to run.
+2026-07-08T11:35:32.8066388Z TRACE:: WeightedWorkScheduler(): will use 32 workers and MaxWorkWeight is 400
+2026-07-08T11:35:32.8111929Z TRACE:: BaseSetupHandler.SetupCurrencyConversions():
+Account Type: Margin
+
+Symbol      Quantity    Conversion = Value in USD
+USD: $      100000.00 @       1.00 = $100000
+-------------------------------------------------
+CashBook Total Value:                $100000
+
+2026-07-08T11:35:32.8124783Z TRACE:: Total margin information: TotalMarginUsed: 0.00, MarginRemaining: 100000.00
+2026-07-08T11:35:32.8126571Z TRACE:: SetUp Backtesting: User: 515374 ProjectId: -568038822 AlgoId: 1510881705
+2026-07-08T11:35:32.8137935Z TRACE:: Dates: Start: 01/01/2022 End: 06/01/2025 Cash: ¤100,000.00 MaximumRuntime: 100.00:00:00 MaxOrders: 2147483647
+2026-07-08T11:35:32.8162479Z TRACE:: BacktestingResultHandler(): Sample Period Set: 449.28
+2026-07-08T11:35:32.8165184Z TRACE:: JOB HANDLERS:
+         DataFeed:             QuantConnect.Lean.Engine.DataFeeds.FileSystemDataFeed
+         Setup:                QuantConnect.Lean.Engine.Setup.ConsoleSetupHandler
+         RealTime:             QuantConnect.Lean.Engine.RealTime.BacktestingRealTimeHandler
+         Results:              QuantConnect.Lean.Engine.Results.BacktestingResultHandler
+         Transactions:         QuantConnect.Lean.Engine.TransactionHandlers.BacktestingTransactionHandler
+         Object Store:         QuantConnect.Lean.Engine.Storage.LocalObjectStore
+         History Provider:     QuantConnect.Lean.Engine.HistoricalData.HistoryProviderManager
+         Brokerage:            QuantConnect.Brokerages.Backtesting.BacktestingBrokerage
+         Data Provider:        QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider
+
+2026-07-08T11:35:32.8305124Z TRACE:: Event Name "Daily Sampling", scheduled to run.
+2026-07-08T11:35:32.8318092Z TRACE:: AlgorithmManager.Run(): Begin DataStream - Start: 1/1/2022 12:00:00 AM Stop: 6/1/2025 11:59:59 PM Time: 8/8/2021 12:00:00 AM Warmup: True
+2026-07-08T11:35:32.8320684Z TRACE:: Debug: 2021-08-08 00:00:00 Launching analysis for 1510881705 with LEAN Engine v2.5.0.0
+2026-07-08T11:35:32.8599164Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/swks.zip
+2026-07-08T11:35:32.8599323Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/klac.zip
+2026-07-08T11:35:32.8599308Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cdns.zip
+2026-07-08T11:35:32.8599182Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ddog.zip
+2026-07-08T11:35:32.8599262Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vixy.zip
+2026-07-08T11:35:32.8599868Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/fslr.zip
+2026-07-08T11:35:32.8599902Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrvl.zip
+2026-07-08T11:35:32.8599914Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ftnt.zip
+2026-07-08T11:35:32.8599956Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/qcom.zip
+2026-07-08T11:35:32.8600023Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mchp.zip
+2026-07-08T11:35:32.8600089Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mu.zip
+2026-07-08T11:35:32.8600139Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/nxpi.zip
+2026-07-08T11:35:32.8600166Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/snps.zip
+2026-07-08T11:35:32.8600228Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/anet.zip
+2026-07-08T11:35:32.8599928Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amat.zip
+2026-07-08T11:35:32.8672218Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrvl.zip
+2026-07-08T11:35:32.8672300Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/nxpi.zip
+2026-07-08T11:35:32.8672593Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cdns.zip
+2026-07-08T11:35:32.8672891Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/anet.zip
+2026-07-08T11:35:32.8672964Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ddog.zip
+2026-07-08T11:35:32.8673039Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vixy.zip
+2026-07-08T11:35:32.8673175Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/fslr.zip
+2026-07-08T11:35:32.8673117Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/qcom.zip
+2026-07-08T11:35:32.8673261Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mchp.zip
+2026-07-08T11:35:32.8673301Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ftnt.zip
+2026-07-08T11:35:32.8673414Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mu.zip
+2026-07-08T11:35:32.8673470Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/klac.zip
+2026-07-08T11:35:32.8673257Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/swks.zip
+2026-07-08T11:35:32.8673427Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/snps.zip
+2026-07-08T11:35:32.9293126Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pltr.zip
+2026-07-08T11:35:32.9296068Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/now.zip
+2026-07-08T11:35:32.9296253Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/net.zip
+2026-07-08T11:35:32.9305334Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/axp.zip
+2026-07-08T11:35:32.9305560Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/schw.zip
+2026-07-08T11:35:32.9305716Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pnc.zip
+2026-07-08T11:35:32.9306216Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mco.zip
+2026-07-08T11:35:32.9306367Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/spgi.zip
+2026-07-08T11:35:32.9307772Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ice.zip
+2026-07-08T11:35:32.9328324Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cme.zip
+2026-07-08T11:35:32.9348867Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pltr.zip
+2026-07-08T11:35:32.9352449Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/net.zip
+2026-07-08T11:35:32.9352780Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/now.zip
+2026-07-08T11:35:32.9361257Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/axp.zip
+2026-07-08T11:35:32.9365048Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/spgi.zip
+2026-07-08T11:35:32.9365265Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pnc.zip
+2026-07-08T11:35:32.9365312Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/schw.zip
+2026-07-08T11:35:32.9369139Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ice.zip
+2026-07-08T11:35:32.9391354Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mco.zip
+2026-07-08T11:35:32.9391837Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cme.zip
+2026-07-08T11:35:32.9521374Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amgn.zip
+2026-07-08T11:35:32.9521419Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/dhr.zip
+2026-07-08T11:35:32.9527442Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/gild.zip
+2026-07-08T11:35:32.9528845Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/regn.zip
+2026-07-08T11:35:32.9554343Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/bmy.zip
+2026-07-08T11:35:32.9556458Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vrtx.zip
+2026-07-08T11:35:32.9558736Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrna.zip
+2026-07-08T11:35:32.9581057Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/gild.zip
+2026-07-08T11:35:32.9581388Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/dhr.zip
+2026-07-08T11:35:32.9585017Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/regn.zip
+2026-07-08T11:35:32.9590325Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amgn.zip
+2026-07-08T11:35:32.9610671Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrna.zip
+2026-07-08T11:35:32.9615163Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/bmy.zip
+2026-07-08T11:35:32.9644813Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vrtx.zip
+2026-07-08T11:35:32.9791667Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/low.zip
+2026-07-08T11:35:32.9834810Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/tjx.zip
+2026-07-08T11:35:32.9851598Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/low.zip
+2026-07-08T11:35:32.9895722Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/tjx.zip
+2026-07-08T11:35:32.9899783Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mdlz.zip
+2026-07-08T11:35:32.9941229Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/slb.zip
+2026-07-08T11:35:32.9963318Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mdlz.zip
+2026-07-08T11:35:32.9966106Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/oxy.zip
+2026-07-08T11:35:33.0005249Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/slb.zip
+2026-07-08T11:35:33.0037674Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/oxy.zip
+2026-07-08T11:35:33.0077131Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/lmt.zip
+2026-07-08T11:35:33.0088573Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vz.zip
+2026-07-08T11:35:33.0092459Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/t.zip
+2026-07-08T11:35:33.0101634Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cmcsa.zip
+2026-07-08T11:35:33.0138231Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/lmt.zip
+2026-07-08T11:35:33.0145823Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vz.zip
+2026-07-08T11:35:33.0152863Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/t.zip
+2026-07-08T11:35:33.0160662Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cmcsa.zip
+2026-07-08T11:35:33.0611416Z TRACE:: UniverseSelection.AddPendingInternalDataFeeds(): Adding internal benchmark data feed SPY,#0,SPY,Hour,TradeBar,Trade,Adjusted,OpenInterest,Internal
+2026-07-08T11:35:33.1314750Z TRACE:: AlgorithmManager.Stream(): Subscriptions count before warm up: 96
+2026-07-08T11:35:33.1851533Z TRACE:: Debug: 2022-01-01 00:00:00 ✅ 估值数据加载完成: 125 只股票
+2026-07-08T11:35:33.1851805Z TRACE:: Debug: 2022-01-01 00:00:00 Warning: no existing symbol found for ticker 0700, it will be created with Equity type.
+2026-07-08T11:35:33.1851873Z TRACE:: Debug: 2021-08-08 00:00:00 Algorithm starting warm up...
+2026-07-08T11:35:33.2352658Z TRACE:: Debug: 2021-08-09 09:35:00 📊 市场正常（VIX=25.0），回归基础周期1周
+2026-07-08T11:35:33.2352802Z TRACE:: Debug: 2021-08-09 09:35:00 ⏸ 跳过调仓（第1周，周期1周）
+2026-07-08T11:35:33.2352868Z TRACE:: Debug: 2021-08-16 09:35:00 ⏸ 跳过调仓（第2周，周期1周）
+2026-07-08T11:35:33.2352925Z TRACE:: Debug: 2021-08-23 09:35:00 ⏸ 跳过调仓（第3周，周期1周）
+2026-07-08T11:35:33.2352981Z TRACE:: Debug: 2021-08-30 09:35:00 ⏸ 跳过调仓（第4周，周期1周）
+2026-07-08T11:35:33.2353040Z TRACE:: Debug: 2021-09-13 09:35:00 ⏸ 跳过调仓（第5周，周期1周）
+2026-07-08T11:35:33.2353120Z TRACE:: Debug: 2021-09-20 09:35:00 ⏸ 跳过调仓（第6周，周期1周）
+2026-07-08T11:35:33.2353247Z TRACE:: Debug: 2021-09-27 09:35:00 ⏸ 跳过调仓（第7周，周期1周）
+2026-07-08T11:35:33.2854090Z TRACE:: Debug: 2021-10-04 09:35:00 ⏸ 跳过调仓（第8周，周期1周）
+2026-07-08T11:35:33.2854258Z TRACE:: Debug: 2021-10-11 09:35:00 ⏸ 跳过调仓（第9周，周期1周）
+2026-07-08T11:35:33.2854328Z TRACE:: Debug: 2021-10-18 09:35:00 ⏸ 跳过调仓（第10周，周期1周）
+2026-07-08T11:35:33.2854388Z TRACE:: Debug: 2021-10-25 09:35:00 ⏸ 跳过调仓（第11周，周期1周）
+2026-07-08T11:35:33.2854447Z TRACE:: Debug: 2021-11-01 09:35:00 ⏸ 跳过调仓（第12周，周期1周）
+2026-07-08T11:35:33.2854504Z TRACE:: Debug: 2021-11-08 09:35:00 ⏸ 跳过调仓（第13周，周期1周）
+2026-07-08T11:35:33.2854566Z TRACE:: Debug: 2021-11-15 09:35:00 ⏸ 跳过调仓（第14周，周期1周）
+2026-07-08T11:35:33.2854623Z TRACE:: Debug: 2021-11-22 09:35:00 ⏸ 跳过调仓（第15周，周期1周）
+2026-07-08T11:35:33.2854678Z TRACE:: Debug: 2021-11-29 09:35:00 ⏸ 跳过调仓（第16周，周期1周）
+2026-07-08T11:35:33.2854735Z TRACE:: Debug: 2021-12-06 09:35:00 ⏸ 跳过调仓（第17周，周期1周）
+2026-07-08T11:35:33.2854789Z TRACE:: Debug: 2021-12-13 09:35:00 ⏸ 跳过调仓（第18周，周期1周）
+2026-07-08T11:35:33.3120886Z TRACE:: AlgorithmManager.Stream(): Subscriptions count after warm up: 96
+2026-07-08T11:35:33.3355707Z TRACE:: Debug: 2021-12-20 09:35:00 ⏸ 跳过调仓（第19周，周期1周）
+2026-07-08T11:35:33.3355899Z TRACE:: Debug: 2021-12-27 09:35:00 ⏸ 跳过调仓（第20周，周期1周）
+2026-07-08T11:35:33.3355981Z TRACE:: Debug: 2022-01-01 00:00:00 Algorithm finished warming up.
+2026-07-08T11:35:33.3356090Z TRACE:: Debug: 2022-01-03 09:35:00 ⏸ 跳过调仓（第21周，周期1周）
+2026-07-08T11:35:33.3356157Z TRACE:: Debug: 2022-01-10 09:35:00 ⏸ 跳过调仓（第22周，周期1周）
+2026-07-08T11:35:33.3356230Z TRACE:: Debug: 2022-01-24 09:35:00 ⏸ 跳过调仓（第23周，周期1周）
+2026-07-08T11:35:33.3356294Z TRACE:: Debug: 2022-01-31 09:35:00 ⏸ 跳过调仓（第24周，周期1周）
+2026-07-08T11:35:33.3857172Z TRACE:: Debug: 2022-02-07 09:35:00 ⏸ 跳过调仓（第25周，周期1周）
+2026-07-08T11:35:33.3857316Z TRACE:: Debug: 2022-02-14 09:35:00 ⏸ 跳过调仓（第26周，周期1周）
+2026-07-08T11:35:33.3857382Z TRACE:: Debug: 2022-02-28 09:35:00 ⏸ 跳过调仓（第27周，周期1周）
+2026-07-08T11:35:33.3857440Z TRACE:: Debug: 2022-03-07 09:35:00 ⏸ 跳过调仓（第28周，周期1周）
+2026-07-08T11:35:33.3857500Z TRACE:: Debug: 2022-03-14 09:35:00 ⏸ 跳过调仓（第29周，周期1周）
+2026-07-08T11:35:33.3857555Z TRACE:: Debug: 2022-03-21 09:35:00 ⏸ 跳过调仓（第30周，周期1周）
+2026-07-08T11:35:33.3857609Z TRACE:: Debug: 2022-03-28 09:35:00 ⏸ 跳过调仓（第31周，周期1周）
+2026-07-08T11:35:33.3857686Z TRACE:: Debug: 2022-04-04 09:35:00 ⏸ 跳过调仓（第32周，周期1周）
+2026-07-08T11:35:33.3857742Z TRACE:: Debug: 2022-04-11 09:35:00 ⏸ 跳过调仓（第33周，周期1周）
+2026-07-08T11:35:33.3857799Z TRACE:: Debug: 2022-04-18 09:35:00 ⏸ 跳过调仓（第34周，周期1周）
+2026-07-08T11:35:33.3857891Z TRACE:: Debug: 2022-04-25 09:35:00 ⏸ 跳过调仓（第35周，周期1周）
+2026-07-08T11:35:33.4358659Z TRACE:: Debug: 2022-05-02 09:35:00 ⏸ 跳过调仓（第36周，周期1周）
+2026-07-08T11:35:33.4358811Z TRACE:: Debug: 2022-05-09 09:35:00 ⏸ 跳过调仓（第37周，周期1周）
+2026-07-08T11:35:33.4358877Z TRACE:: Debug: 2022-05-16 09:35:00 ⏸ 跳过调仓（第38周，周期1周）
+2026-07-08T11:35:33.4358941Z TRACE:: Debug: 2022-05-23 09:35:00 ⏸ 跳过调仓（第39周，周期1周）
+2026-07-08T11:35:33.4359042Z TRACE:: Debug: 2022-06-06 09:35:00 ⏸ 跳过调仓（第40周，周期1周）
+2026-07-08T11:35:33.4359119Z TRACE:: Debug: 2022-06-13 09:35:00 ⏸ 跳过调仓（第41周，周期1周）
+2026-07-08T11:35:33.4359177Z TRACE:: Debug: 2022-06-27 09:35:00 ⏸ 跳过调仓（第42周，周期1周）
+2026-07-08T11:35:33.4359294Z TRACE:: Debug: 2022-07-11 09:35:00 ⏸ 跳过调仓（第43周，周期1周）
+2026-07-08T11:35:33.4359351Z TRACE:: Debug: 2022-07-18 09:35:00 ⏸ 跳过调仓（第44周，周期1周）
+2026-07-08T11:35:33.4359411Z TRACE:: Debug: 2022-07-25 09:35:00 ⏸ 跳过调仓（第45周，周期1周）
+2026-07-08T11:35:33.4359466Z TRACE:: Debug: 2022-08-01 09:35:00 ⏸ 跳过调仓（第46周，周期1周）
+2026-07-08T11:35:33.4359524Z TRACE:: Debug: 2022-08-08 09:35:00 ⏸ 跳过调仓（第47周，周期1周）
+2026-07-08T11:35:33.4860376Z TRACE:: Debug: 2022-08-15 09:35:00 ⏸ 跳过调仓（第48周，周期1周）
+2026-07-08T11:35:33.4860490Z TRACE:: Debug: 2022-08-22 09:35:00 ⏸ 跳过调仓（第49周，周期1周）
+2026-07-08T11:35:33.4860547Z TRACE:: Debug: 2022-08-29 09:35:00 ⏸ 跳过调仓（第50周，周期1周）
+2026-07-08T11:35:33.4860591Z TRACE:: Debug: 2022-09-12 09:35:00 ⏸ 跳过调仓（第51周，周期1周）
+2026-07-08T11:35:33.4860641Z TRACE:: Debug: 2022-09-19 09:35:00 ⏸ 跳过调仓（第52周，周期1周）
+2026-07-08T11:35:33.4860684Z TRACE:: Debug: 2022-09-26 09:35:00 ⏸ 跳过调仓（第53周，周期1周）
+2026-07-08T11:35:33.4860727Z TRACE:: Debug: 2022-10-03 09:35:00 ⏸ 跳过调仓（第54周，周期1周）
+2026-07-08T11:35:33.4860770Z TRACE:: Debug: 2022-10-10 09:35:00 ⏸ 跳过调仓（第55周，周期1周）
+2026-07-08T11:35:33.4860820Z TRACE:: Debug: 2022-10-17 09:35:00 ⏸ 跳过调仓（第56周，周期1周）
+2026-07-08T11:35:33.4860858Z TRACE:: Debug: 2022-10-24 09:35:00 ⏸ 跳过调仓（第57周，周期1周）
+2026-07-08T11:35:33.4860909Z TRACE:: Debug: 2022-10-31 09:35:00 ⏸ 跳过调仓（第58周，周期1周）
+2026-07-08T11:35:33.4860948Z TRACE:: Debug: 2022-11-07 09:35:00 ⏸ 跳过调仓（第59周，周期1周）
+2026-07-08T11:35:33.5361657Z TRACE:: Debug: 2022-11-14 09:35:00 ⏸ 跳过调仓（第60周，周期1周）
+2026-07-08T11:35:33.5361812Z TRACE:: Debug: 2022-11-21 09:35:00 ⏸ 跳过调仓（第61周，周期1周）
+2026-07-08T11:35:33.5361853Z TRACE:: Debug: 2022-11-28 09:35:00 ⏸ 跳过调仓（第62周，周期1周）
+2026-07-08T11:35:33.5361890Z TRACE:: Debug: 2022-12-05 09:35:00 ⏸ 跳过调仓（第63周，周期1周）
+2026-07-08T11:35:33.5361925Z TRACE:: Debug: 2022-12-12 09:35:00 ⏸ 跳过调仓（第64周，周期1周）
+2026-07-08T11:35:33.5361962Z TRACE:: Debug: 2022-12-19 09:35:00 ⏸ 跳过调仓（第65周，周期1周）
+2026-07-08T11:35:33.5361996Z TRACE:: Debug: 2023-01-09 09:35:00 ⏸ 跳过调仓（第66周，周期1周）
+2026-07-08T11:35:33.5362030Z TRACE:: Debug: 2023-01-23 09:35:00 ⏸ 跳过调仓（第67周，周期1周）
+2026-07-08T11:35:33.5362064Z TRACE:: Debug: 2023-01-30 09:35:00 ⏸ 跳过调仓（第68周，周期1周）
+2026-07-08T11:35:33.5362099Z TRACE:: Debug: 2023-02-06 09:35:00 ⏸ 跳过调仓（第69周，周期1周）
+2026-07-08T11:35:33.5362132Z TRACE:: Debug: 2023-02-13 09:35:00 ⏸ 跳过调仓（第70周，周期1周）
+2026-07-08T11:35:33.5362165Z TRACE:: Debug: 2023-02-27 09:35:00 ⏸ 跳过调仓（第71周，周期1周）
+2026-07-08T11:35:33.5862834Z TRACE:: Debug: 2023-03-06 09:35:00 ⏸ 跳过调仓（第72周，周期1周）
+2026-07-08T11:35:33.5862926Z TRACE:: Debug: 2023-03-13 09:35:00 ⏸ 跳过调仓（第73周，周期1周）
+2026-07-08T11:35:33.5863106Z TRACE:: Debug: 2023-03-20 09:35:00 ⏸ 跳过调仓（第74周，周期1周）
+2026-07-08T11:35:33.5863142Z TRACE:: Debug: 2023-03-27 09:35:00 ⏸ 跳过调仓（第75周，周期1周）
+2026-07-08T11:35:33.5863177Z TRACE:: Debug: 2023-04-03 09:35:00 ⏸ 跳过调仓（第76周，周期1周）
+2026-07-08T11:35:33.5863236Z TRACE:: Debug: 2023-04-10 09:35:00 ⏸ 跳过调仓（第77周，周期1周）
+2026-07-08T11:35:33.5863272Z TRACE:: Debug: 2023-04-17 09:35:00 ⏸ 跳过调仓（第78周，周期1周）
+2026-07-08T11:35:33.5863305Z TRACE:: Debug: 2023-04-24 09:35:00 ⏸ 跳过调仓（第79周，周期1周）
+2026-07-08T11:35:33.5863338Z TRACE:: Debug: 2023-05-01 09:35:00 ⏸ 跳过调仓（第80周，周期1周）
+2026-07-08T11:35:33.5863410Z TRACE:: Debug: 2023-05-08 09:35:00 ⏸ 跳过调仓（第81周，周期1周）
+2026-07-08T11:35:33.5863444Z TRACE:: Debug: 2023-05-15 09:35:00 ⏸ 跳过调仓（第82周，周期1周）
+2026-07-08T11:35:33.5863477Z TRACE:: Debug: 2023-05-22 09:35:00 ⏸ 跳过调仓（第83周，周期1周）
+2026-07-08T11:35:33.5863510Z TRACE:: Debug: 2023-06-05 09:35:00 ⏸ 跳过调仓（第84周，周期1周）
+2026-07-08T11:35:33.5863542Z TRACE:: Debug: 2023-06-12 09:35:00 ⏸ 跳过调仓（第85周，周期1周）
+2026-07-08T11:35:33.6364211Z TRACE:: Debug: 2023-06-26 09:35:00 ⏸ 跳过调仓（第86周，周期1周）
+2026-07-08T11:35:33.6364296Z TRACE:: Debug: 2023-07-03 09:35:00 ⏸ 跳过调仓（第87周，周期1周）
+2026-07-08T11:35:33.6364374Z TRACE:: Debug: 2023-07-10 09:35:00 ⏸ 跳过调仓（第88周，周期1周）
+2026-07-08T11:35:33.6364408Z TRACE:: Debug: 2023-07-17 09:35:00 ⏸ 跳过调仓（第89周，周期1周）
+2026-07-08T11:35:33.6364443Z TRACE:: Debug: 2023-07-24 09:35:00 ⏸ 跳过调仓（第90周，周期1周）
+2026-07-08T11:35:33.6364475Z TRACE:: Debug: 2023-07-31 09:35:00 ⏸ 跳过调仓（第91周，周期1周）
+2026-07-08T11:35:33.6364508Z TRACE:: Debug: 2023-08-07 09:35:00 ⏸ 跳过调仓（第92周，周期1周）
+2026-07-08T11:35:33.6364542Z TRACE:: Debug: 2023-08-14 09:35:00 ⏸ 跳过调仓（第93周，周期1周）
+2026-07-08T11:35:33.6364575Z TRACE:: Debug: 2023-08-21 09:35:00 ⏸ 跳过调仓（第94周，周期1周）
+2026-07-08T11:35:33.6364609Z TRACE:: Debug: 2023-08-28 09:35:00 ⏸ 跳过调仓（第95周，周期1周）
+2026-07-08T11:35:33.6364642Z TRACE:: Debug: 2023-09-11 09:35:00 ⏸ 跳过调仓（第96周，周期1周）
+2026-07-08T11:35:33.6364674Z TRACE:: Debug: 2023-09-18 09:35:00 ⏸ 跳过调仓（第97周，周期1周）
+2026-07-08T11:35:33.6364707Z TRACE:: Debug: 2023-09-25 09:35:00 ⏸ 跳过调仓（第98周，周期1周）
+2026-07-08T11:35:33.6364739Z TRACE:: Debug: 2023-10-02 09:35:00 ⏸ 跳过调仓（第99周，周期1周）
+2026-07-08T11:35:33.6364771Z TRACE:: Debug: 2023-10-09 09:35:00 ⏸ 跳过调仓（第100周，周期1周）
+2026-07-08T11:35:33.6865461Z TRACE:: Debug: 2023-10-16 09:35:00 ⏸ 跳过调仓（第101周，周期1周）
+2026-07-08T11:35:33.6865552Z TRACE:: Debug: 2023-10-23 09:35:00 ⏸ 跳过调仓（第102周，周期1周）
+2026-07-08T11:35:33.6865593Z TRACE:: Debug: 2023-10-30 09:35:00 ⏸ 跳过调仓（第103周，周期1周）
+2026-07-08T11:35:33.6865628Z TRACE:: Debug: 2023-11-06 09:35:00 ⏸ 跳过调仓（第104周，周期1周）
+2026-07-08T11:35:33.6865662Z TRACE:: Debug: 2023-11-13 09:35:00 ⏸ 跳过调仓（第105周，周期1周）
+2026-07-08T11:35:33.6865696Z TRACE:: Debug: 2023-11-20 09:35:00 ⏸ 跳过调仓（第106周，周期1周）
+2026-07-08T11:35:33.6865731Z TRACE:: Debug: 2023-11-27 09:35:00 ⏸ 跳过调仓（第107周，周期1周）
+2026-07-08T11:35:33.6865768Z TRACE:: Debug: 2023-12-04 09:35:00 ⏸ 跳过调仓（第108周，周期1周）
+2026-07-08T11:35:33.6865807Z TRACE:: Debug: 2023-12-11 09:35:00 ⏸ 跳过调仓（第109周，周期1周）
+2026-07-08T11:35:33.6865845Z TRACE:: Debug: 2023-12-18 09:35:00 ⏸ 跳过调仓（第110周，周期1周）
+2026-07-08T11:35:33.6865883Z TRACE:: Debug: 2024-01-08 09:35:00 ⏸ 跳过调仓（第111周，周期1周）
+2026-07-08T11:35:33.6865919Z TRACE:: Debug: 2024-01-22 09:35:00 ⏸ 跳过调仓（第112周，周期1周）
+2026-07-08T11:35:33.7101717Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/qcom.zip
+2026-07-08T11:35:33.7146074Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amat.zip
+2026-07-08T11:35:33.7153653Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mu.zip
+2026-07-08T11:35:33.7205218Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/anet.zip
+2026-07-08T11:35:33.7214534Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/fslr.zip
+2026-07-08T11:35:33.7222279Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ftnt.zip
+2026-07-08T11:35:33.7229794Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/snps.zip
+2026-07-08T11:35:33.7237565Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/klac.zip
+2026-07-08T11:35:33.7245062Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrvl.zip
+2026-07-08T11:35:33.7252819Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/nxpi.zip
+2026-07-08T11:35:33.7260690Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/swks.zip
+2026-07-08T11:35:33.7268314Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mchp.zip
+2026-07-08T11:35:33.7276328Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cdns.zip
+2026-07-08T11:35:33.7283836Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ddog.zip
+2026-07-08T11:35:33.7291515Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/net.zip
+2026-07-08T11:35:33.7324048Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pltr.zip
+2026-07-08T11:35:33.7352058Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/now.zip
+2026-07-08T11:35:33.7497989Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/axp.zip
+2026-07-08T11:35:33.7505570Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/schw.zip
+2026-07-08T11:35:33.7513021Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pnc.zip
+2026-07-08T11:35:33.7521696Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/spgi.zip
+2026-07-08T11:35:33.7528514Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mco.zip
+2026-07-08T11:35:33.7535952Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ice.zip
+2026-07-08T11:35:33.7544192Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cme.zip
+2026-07-08T11:35:33.7705749Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/dhr.zip
+2026-07-08T11:35:33.7712845Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/bmy.zip
+2026-07-08T11:35:33.7720222Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amgn.zip
+2026-07-08T11:35:33.7727709Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/gild.zip
+2026-07-08T11:35:33.7735154Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vrtx.zip
+2026-07-08T11:35:33.7744307Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/regn.zip
+2026-07-08T11:35:33.7751055Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrna.zip
+2026-07-08T11:35:33.7857199Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/low.zip
+2026-07-08T11:35:33.7866342Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/tjx.zip
+2026-07-08T11:35:33.7952896Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mdlz.zip
+2026-07-08T11:35:33.8025365Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/slb.zip
+2026-07-08T11:35:33.8032526Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/oxy.zip
+2026-07-08T11:35:33.8166527Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/lmt.zip
+2026-07-08T11:35:33.8175496Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/vz.zip
+2026-07-08T11:35:33.8183034Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/t.zip
+2026-07-08T11:35:33.8192226Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cmcsa.zip
+2026-07-08T11:35:33.8616761Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/qcom.zip
+2026-07-08T11:35:33.8656008Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/amat.zip
+2026-07-08T11:35:33.8666911Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mu.zip
+2026-07-08T11:35:33.8736894Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/anet.zip
+2026-07-08T11:35:33.8752502Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/fslr.zip
+2026-07-08T11:35:33.8766130Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ftnt.zip
+2026-07-08T11:35:33.8777675Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/snps.zip
+2026-07-08T11:35:33.8790319Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/klac.zip
+2026-07-08T11:35:33.8806003Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mrvl.zip
+2026-07-08T11:35:33.8820611Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/nxpi.zip
+2026-07-08T11:35:33.8830981Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/swks.zip
+2026-07-08T11:35:33.8842525Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mchp.zip
+2026-07-08T11:35:33.8871770Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cdns.zip
+2026-07-08T11:35:33.8886367Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ddog.zip
+2026-07-08T11:35:33.8911298Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pltr.zip
+2026-07-08T11:35:33.8924384Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/now.zip
+2026-07-08T11:35:33.8937670Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/net.zip
+2026-07-08T11:35:33.9153764Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/axp.zip
+2026-07-08T11:35:33.9164490Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/schw.zip
+2026-07-08T11:35:33.9174703Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/pnc.zip
+2026-07-08T11:35:33.9185250Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/spgi.zip
+2026-07-08T11:35:33.9198001Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/mco.zip
+2026-07-08T11:35:33.9209367Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/ice.zip
+2026-07-08T11:35:33.9219355Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/cme.zip
+2026-07-08T11:35:33.9405139Z ERROR:: SubscriptionDataSourceReader.InvalidSource(): File not found: /Lean/Data/equity/usa/daily/lmt.zip
+2026-07-08T11:35:34.0370859Z TRACE:: Debug: 2024-01-29 09:35:00 ⏸ 市场极端（VIX=25.0），调仓周期延长至2周
+2026-07-08T11:35:34.0370988Z TRACE:: Debug: 2024-01-29 09:35:00 🔄 执行调仓（第113周，周期2周）
+2026-07-08T11:35:34.0371046Z TRACE:: Debug: 2024-01-29 09:35:00 
+📊 波动率分析 - 2024-01-29
+2026-07-08T11:35:34.0371098Z TRACE:: Debug: 2024-01-29 09:35:00   SPY 20日波动率: 0.0059 (0.59%)
+2026-07-08T11:35:34.0371145Z TRACE:: Debug: 2024-01-29 09:35:00   VIXY 价格: 0.00
+2026-07-08T11:35:34.0371193Z TRACE:: Debug: 2024-01-29 09:35:00   SPY 3月动量: 0.00% (估值: medium)
+2026-07-08T11:35:34.0371241Z TRACE:: Debug: 2024-01-29 09:35:00   ✅ 低波动模式: 增加短期权重
+2026-07-08T11:35:34.0371289Z TRACE:: Debug: 2024-01-29 09:35:00   📊 正常市场: 估值权重30%，动量权重70%
+2026-07-08T11:35:34.0371337Z TRACE:: Debug: 2024-01-29 09:35:00 
+============================================================
+2026-07-08T11:35:34.0371384Z TRACE:: Debug: 2024-01-29 09:35:00 🇺🇸 美股调仓 - 2024-01-29 - medium调整
+2026-07-08T11:35:34.0371430Z TRACE:: Debug: 2024-01-29 09:35:00 ============================================================
+2026-07-08T11:35:34.0371478Z TRACE:: Debug: 2024-01-29 09:35:00 
+🏭 行业动量排名:
+2026-07-08T11:35:34.0371558Z TRACE:: Debug: 2024-01-29 09:35:00   [✓] Tech        :  30.18%
+2026-07-08T11:35:34.0371649Z TRACE:: Debug: 2024-01-29 09:35:00   [✓] Finance     :  28.63%
+2026-07-08T11:35:34.0371698Z TRACE:: Debug: 2024-01-29 09:35:00   [✓] Industrial  :  17.74%
+2026-07-08T11:35:34.0371743Z TRACE:: Debug: 2024-01-29 09:35:00   [ ] Consumer    :  10.53%
+2026-07-08T11:35:34.0371788Z TRACE:: Debug: 2024-01-29 09:35:00   [ ] Healthcare  :  10.09%
+2026-07-08T11:35:34.0371841Z TRACE:: Debug: 2024-01-29 09:35:00 
+🏆 US Top 15:
+2026-07-08T11:35:34.0371906Z TRACE:: Debug: 2024-01-29 09:35:00   AMD   : Score= 1.5063
+2026-07-08T11:35:34.0371967Z TRACE:: Debug: 2024-01-29 09:35:00   NFLX  : Score= 0.9909
+2026-07-08T11:35:34.0372029Z TRACE:: Debug: 2024-01-29 09:35:00   NVDA  : Score= 0.9558
+2026-07-08T11:35:34.0372153Z TRACE:: Debug: 2024-01-29 09:35:00   AVGO  : Score= 0.7125
+2026-07-08T11:35:34.0372229Z TRACE:: Debug: 2024-01-29 09:35:00   META  : Score= 0.5893
+2026-07-08T11:35:34.0372290Z TRACE:: Debug: 2024-01-29 09:35:00   CRM   : Score= 0.5455
+2026-07-08T11:35:34.0372345Z TRACE:: Debug: 2024-01-29 09:35:00   INTU  : Score= 0.4929
+2026-07-08T11:35:34.0372392Z TRACE:: Debug: 2024-01-29 09:35:00   GOOGL : Score= 0.4681
+2026-07-08T11:35:34.0372437Z TRACE:: Debug: 2024-01-29 09:35:00   C     : Score= 0.4651
+2026-07-08T11:35:34.0372481Z TRACE:: Debug: 2024-01-29 09:35:00   AMZN  : Score= 0.4614
+2026-07-08T11:35:34.0372527Z TRACE:: Debug: 2024-01-29 09:35:00   MSFT  : Score= 0.4294
+2026-07-08T11:35:34.0372572Z TRACE:: Debug: 2024-01-29 09:35:00   WFC   : Score= 0.4023
+2026-07-08T11:35:34.0372617Z TRACE:: Debug: 2024-01-29 09:35:00   CAT   : Score= 0.3551
+2026-07-08T11:35:34.0372663Z TRACE:: Debug: 2024-01-29 09:35:00   RTX   : Score= 0.3271
+2026-07-08T11:35:34.0372743Z TRACE:: Debug: 2024-01-29 09:35:00   ORCL  : Score= 0.3247
+2026-07-08T11:35:34.0372825Z TRACE:: Debug: 2024-01-29 09:35:00   📊 AMD 估值调整: 0.99x
+2026-07-08T11:35:34.0372909Z TRACE:: Debug: 2024-01-29 09:35:00   📊 NFLX 估值调整: 1.32x
+2026-07-08T11:35:34.0372994Z TRACE:: Debug: 2024-01-29 09:35:00   📊 NVDA 估值调整: 1.09x
+2026-07-08T11:35:34.0373098Z TRACE:: Debug: 2024-01-29 09:35:00   📊 AVGO 估值调整: 1.11x
+2026-07-08T11:35:34.0373219Z TRACE:: Debug: 2024-01-29 09:35:00   📊 META 估值调整: 1.29x
+2026-07-08T11:35:34.0373343Z TRACE:: Debug: 2024-01-29 09:35:00   📊 CRM 估值调整: 1.45x
+2026-07-08T11:35:34.0373421Z TRACE:: Debug: 2024-01-29 09:35:00   📊 INTU 估值调整: 1.44x
+2026-07-08T11:35:34.0373504Z TRACE:: Debug: 2024-01-29 09:35:00   📊 GOOGL 估值调整: 0.92x
+2026-07-08T11:35:34.0373599Z TRACE:: Debug: 2024-01-29 09:35:00   📊 C 估值调整: 1.08x
+2026-07-08T11:35:34.0373675Z TRACE:: Debug: 2024-01-29 09:35:00   📊 AMZN 估值调整: 1.01x
+2026-07-08T11:35:34.0373846Z TRACE:: Debug: 2024-01-29 09:35:00   📊 MSFT 估值调整: 1.28x
+2026-07-08T11:35:34.0373950Z TRACE:: Debug: 2024-01-29 09:35:00   📊 WFC 估值调整: 1.02x
+2026-07-08T11:35:34.0374061Z TRACE:: Debug: 2024-01-29 09:35:00   📊 CAT 估值调整: 0.94x
+2026-07-08T11:35:34.0374167Z TRACE:: Debug: 2024-01-29 09:35:00   📊 RTX 估值调整: 0.90x
+2026-07-08T11:35:34.0374291Z TRACE:: Debug: 2024-01-29 09:35:00   📊 ORCL 估值调整: 1.47x
+2026-07-08T11:35:34.0374385Z TRACE:: Debug: 2024-01-29 09:35:00 
+📊 US medium调整目标仓位:
+2026-07-08T11:35:34.0374479Z TRACE:: Debug: 2024-01-29 09:35:00   AMD: 13.17%
+2026-07-08T11:35:34.0374586Z TRACE:: Debug: 2024-01-29 09:35:00   NFLX: 12.82%
+2026-07-08T11:35:34.0374684Z TRACE:: Debug: 2024-01-29 09:35:00   NVDA: 10.17%
+2026-07-08T11:35:34.0374773Z TRACE:: Debug: 2024-01-29 09:35:00   AVGO: 7.77%
+2026-07-08T11:35:34.0374845Z TRACE:: Debug: 2024-01-29 09:35:00   META: 7.46%
+2026-07-08T11:35:34.0374922Z TRACE:: Debug: 2024-01-29 09:35:00   CRM: 7.73%
+2026-07-08T11:35:34.0374996Z TRACE:: Debug: 2024-01-29 09:35:00   INTU: 6.95%
+2026-07-08T11:35:34.0375094Z TRACE:: Debug: 2024-01-29 09:35:00   GOOGL: 4.23%
+2026-07-08T11:35:34.0375182Z TRACE:: Debug: 2024-01-29 09:35:00   C: 4.92%
+2026-07-08T11:35:34.0375293Z TRACE:: Debug: 2024-01-29 09:35:00   AMZN: 4.55%
+2026-07-08T11:35:34.0375382Z TRACE:: Debug: 2024-01-29 09:35:00   MSFT: 5.38%
+2026-07-08T11:35:34.0375477Z TRACE:: Debug: 2024-01-29 09:35:00   WFC: 4.03%
+2026-07-08T11:35:34.0375555Z TRACE:: Debug: 2024-01-29 09:35:00   CAT: 3.26%
+2026-07-08T11:35:34.0375645Z TRACE:: Debug: 2024-01-29 09:35:00   RTX: 2.89%
+2026-07-08T11:35:34.0375711Z TRACE:: Debug: 2024-01-29 09:35:00   ORCL: 4.67%
+2026-07-08T11:35:34.0375794Z TRACE:: Debug: 2024-01-29 09:35:00 
+🔄 执行medium调整（阈值10%）:
+2026-07-08T11:35:34.0375879Z TRACE:: Debug: 2024-01-29 09:35:00 Warning: market orders on daily resolution data sent during market hours are automatically converted into MarketOnClose orders (or MarketOnOpen near the close) to avoid filling at the stale previous close. Note: in live trading this conversion is not applied, as the order fills at the current market price.
+2026-07-08T11:35:34.0375970Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ AMD 建仓: 0.00% → 13.17%
+2026-07-08T11:35:34.0376065Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ NFLX 建仓: 0.00% → 12.82%
+2026-07-08T11:35:34.0376168Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ NVDA 建仓: 0.00% → 10.17%
+2026-07-08T11:35:34.0376242Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ AVGO 建仓: 0.00% → 7.77%
+2026-07-08T11:35:34.0376309Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ META 建仓: 0.00% → 7.46%
+2026-07-08T11:35:34.0376372Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ CRM 建仓: 0.00% → 7.73%
+2026-07-08T11:35:34.0376439Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ INTU 建仓: 0.00% → 6.95%
+2026-07-08T11:35:34.0376493Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ GOOGL 建仓: 0.00% → 4.23%
+2026-07-08T11:35:34.0376548Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ C 建仓: 0.00% → 4.92%
+2026-07-08T11:35:34.0376606Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ AMZN 建仓: 0.00% → 4.55%
+2026-07-08T11:35:34.0376663Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ MSFT 建仓: 0.00% → 5.38%
+2026-07-08T11:35:34.0376715Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ WFC 建仓: 0.00% → 4.03%
+2026-07-08T11:35:34.0376782Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ CAT 建仓: 0.00% → 3.26%
+2026-07-08T11:35:34.0376836Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ RTX 建仓: 0.00% → 2.89%
+2026-07-08T11:35:34.0376896Z TRACE:: Debug: 2024-01-29 09:35:00   ✓ ORCL 建仓: 0.00% → 4.67%
+2026-07-08T11:35:34.0376975Z TRACE:: Debug: 2024-02-05 09:35:00 ⏸ 市场极端（VIX=25.0），调仓周期延长至3周
+2026-07-08T11:35:34.0377042Z TRACE:: Debug: 2024-02-05 09:35:00 ⏸ 跳过调仓（第114周，周期3周）
+2026-07-08T11:35:34.0377104Z TRACE:: Debug: 2024-02-12 09:35:00 ⏸ 市场极端（VIX=25.0），调仓周期延长至4周
+2026-07-08T11:35:34.0377174Z TRACE:: Debug: 2024-02-12 09:35:00 ⏸ 跳过调仓（第115周，周期4周）
+2026-07-08T11:35:34.0377258Z TRACE:: Debug: 2024-02-26 09:35:00 📊 市场正常（VIX=25.0），回归基础周期1周
+2026-07-08T11:35:34.0377313Z TRACE:: Debug: 2024-02-26 09:35:00 ⏸ 跳过调仓（第116周，周期1周）
+2026-07-08T11:35:34.0377379Z TRACE:: Debug: 2024-03-04 09:35:00 ⏸ 跳过调仓（第117周，周期1周）
+2026-07-08T11:35:34.0377438Z TRACE:: Debug: 2024-03-11 09:35:00 ⏸ 跳过调仓（第118周，周期1周）
+2026-07-08T11:35:34.0377497Z TRACE:: Debug: 2024-03-18 09:35:00 ⏸ 跳过调仓（第119周，周期1周）
+2026-07-08T11:35:34.0377553Z TRACE:: Debug: 2024-03-25 09:35:00 ⏸ 跳过调仓（第120周，周期1周）
+2026-07-08T11:35:34.0377619Z TRACE:: Debug: 2024-04-01 09:35:00 ⏸ 跳过调仓（第121周，周期1周）
+2026-07-08T11:35:34.0377699Z TRACE:: Debug: 2024-04-08 09:35:00 ⏸ 跳过调仓（第122周，周期1周）
+2026-07-08T11:35:34.0878598Z TRACE:: Debug: 2024-04-15 09:35:00 ⏸ 跳过调仓（第123周，周期1周）
+2026-07-08T11:35:34.0878729Z TRACE:: Debug: 2024-04-22 09:35:00 ⏸ 跳过调仓（第124周，周期1周）
+2026-07-08T11:35:34.0878822Z TRACE:: Debug: 2024-04-29 09:35:00 ⏸ 跳过调仓（第125周，周期1周）
+2026-07-08T11:35:34.0878899Z TRACE:: Debug: 2024-05-06 09:35:00 ⏸ 跳过调仓（第126周，周期1周）
+2026-07-08T11:35:34.0879072Z TRACE:: Debug: 2024-05-13 09:35:00 ⏸ 跳过调仓（第127周，周期1周）
+2026-07-08T11:35:34.0879165Z TRACE:: Debug: 2024-05-20 09:35:00 ⏸ 跳过调仓（第128周，周期1周）
+2026-07-08T11:35:34.0879239Z TRACE:: Debug: 2024-06-03 09:35:00 ⏸ 跳过调仓（第129周，周期1周）
+2026-07-08T11:35:34.0879305Z TRACE:: Debug: 2024-06-10 09:35:00 ⏸ 跳过调仓（第130周，周期1周）
+2026-07-08T11:35:34.0879356Z TRACE:: Debug: 2024-06-17 09:35:00 ⏸ 跳过调仓（第131周，周期1周）
+2026-07-08T11:35:34.0879406Z TRACE:: Debug: 2024-06-24 09:35:00 ⏸ 跳过调仓（第132周，周期1周）
+2026-07-08T11:35:34.0879463Z TRACE:: Debug: 2024-07-01 09:35:00 ⏸ 跳过调仓（第133周，周期1周）
+2026-07-08T11:35:34.0879511Z TRACE:: Debug: 2024-07-08 09:35:00 ⏸ 跳过调仓（第134周，周期1周）
+2026-07-08T11:35:34.0879563Z TRACE:: Debug: 2024-07-15 09:35:00 ⏸ 跳过调仓（第135周，周期1周）
+2026-07-08T11:35:34.0879610Z TRACE:: Debug: 2024-07-22 09:35:00 ⏸ 跳过调仓（第136周，周期1周）
+2026-07-08T11:35:34.1380576Z TRACE:: Debug: 2024-07-29 09:35:00 ⏸ 跳过调仓（第137周，周期1周）
+2026-07-08T11:35:34.1380746Z TRACE:: Debug: 2024-08-05 09:35:00 ⏸ 跳过调仓（第138周，周期1周）
+2026-07-08T11:35:34.1380808Z TRACE:: Debug: 2024-08-12 09:35:00 ⏸ 跳过调仓（第139周，周期1周）
+2026-07-08T11:35:34.1380878Z TRACE:: Debug: 2024-08-19 09:35:00 ⏸ 跳过调仓（第140周，周期1周）
+2026-07-08T11:35:34.1380929Z TRACE:: Debug: 2024-08-26 09:35:00 ⏸ 跳过调仓（第141周，周期1周）
+2026-07-08T11:35:34.1381020Z TRACE:: Debug: 2024-09-09 09:35:00 ⏸ 跳过调仓（第142周，周期1周）
+2026-07-08T11:35:34.1381127Z TRACE:: Debug: 2024-09-16 09:35:00 ⏸ 跳过调仓（第143周，周期1周）
+2026-07-08T11:35:34.1381176Z TRACE:: Debug: 2024-09-23 09:35:00 ⏸ 跳过调仓（第144周，周期1周）
+2026-07-08T11:35:34.1381239Z TRACE:: Debug: 2024-09-30 09:35:00 ⏸ 跳过调仓（第145周，周期1周）
+2026-07-08T11:35:34.1381288Z TRACE:: Debug: 2024-10-07 09:35:00 ⏸ 跳过调仓（第146周，周期1周）
+2026-07-08T11:35:34.1381349Z TRACE:: Debug: 2024-10-14 09:35:00 ⏸ 跳过调仓（第147周，周期1周）
+2026-07-08T11:35:34.1381396Z TRACE:: Debug: 2024-10-21 09:35:00 ⏸ 跳过调仓（第148周，周期1周）
+2026-07-08T11:35:34.1381447Z TRACE:: Debug: 2024-10-28 09:35:00 ⏸ 跳过调仓（第149周，周期1周）
+2026-07-08T11:35:34.1381498Z TRACE:: Debug: 2024-11-04 09:35:00 ⏸ 跳过调仓（第150周，周期1周）
+2026-07-08T11:35:34.1882304Z TRACE:: Debug: 2024-11-11 09:35:00 ⏸ 跳过调仓（第151周，周期1周）
+2026-07-08T11:35:34.1882451Z TRACE:: Debug: 2024-11-18 09:35:00 ⏸ 跳过调仓（第152周，周期1周）
+2026-07-08T11:35:34.1882515Z TRACE:: Debug: 2024-11-25 09:35:00 ⏸ 跳过调仓（第153周，周期1周）
+2026-07-08T11:35:34.1882548Z TRACE:: Debug: 2024-12-02 09:35:00 ⏸ 跳过调仓（第154周，周期1周）
+2026-07-08T11:35:34.1882580Z TRACE:: Debug: 2024-12-09 09:35:00 ⏸ 跳过调仓（第155周，周期1周）
+2026-07-08T11:35:34.1882612Z TRACE:: Debug: 2024-12-16 09:35:00 ⏸ 跳过调仓（第156周，周期1周）
+2026-07-08T11:35:34.1882644Z TRACE:: Debug: 2024-12-23 09:35:00 ⏸ 跳过调仓（第157周，周期1周）
+2026-07-08T11:35:34.1882677Z TRACE:: Debug: 2024-12-30 09:35:00 ⏸ 跳过调仓（第158周，周期1周）
+2026-07-08T11:35:34.1882707Z TRACE:: Debug: 2025-01-06 09:35:00 ⏸ 跳过调仓（第159周，周期1周）
+2026-07-08T11:35:34.1882759Z TRACE:: Debug: 2025-01-13 09:35:00 ⏸ 跳过调仓（第160周，周期1周）
+2026-07-08T11:35:34.1882790Z TRACE:: Debug: 2025-01-27 09:35:00 ⏸ 跳过调仓（第161周，周期1周）
+2026-07-08T11:35:34.1882822Z TRACE:: Debug: 2025-02-03 09:35:00 ⏸ 跳过调仓（第162周，周期1周）
+2026-07-08T11:35:34.1882853Z TRACE:: Debug: 2025-02-10 09:35:00 ⏸ 跳过调仓（第163周，周期1周）
+2026-07-08T11:35:34.1882883Z TRACE:: Debug: 2025-02-24 09:35:00 ⏸ 跳过调仓（第164周，周期1周）
+2026-07-08T11:35:34.2316476Z TRACE:: Synchronizer.GetEnumerator(): Exited thread.
+2026-07-08T11:35:34.2320053Z TRACE:: AlgorithmManager.Run(): Firing On End Of Algorithm...
+2026-07-08T11:35:34.2344799Z TRACE:: Engine.Run(): Exiting Algorithm Manager
+2026-07-08T11:35:34.2362587Z TRACE:: StopSafely(): Waiting for 'Isolator Thread' thread to stop...
+2026-07-08T11:35:34.2365121Z TRACE:: FileSystemDataFeed.Exit(): Start. Setting cancellation token...
+2026-07-08T11:35:34.2374266Z TRACE:: FileSystemDataFeed.Exit(): Exit Finished.
+2026-07-08T11:35:34.2375430Z TRACE:: BacktestingResultHandler.Exit(): starting...
+2026-07-08T11:35:34.2376394Z TRACE:: BacktestingResultHandler.Exit(): Saving logs...
+2026-07-08T11:35:34.2382620Z TRACE:: Debug: 2025-03-03 09:35:00 ⏸ 跳过调仓（第165周，周期1周）
+2026-07-08T11:35:34.2382664Z TRACE:: StopSafely(): Waiting for 'Result Thread' thread to stop...
+2026-07-08T11:35:34.2382788Z TRACE:: Debug: 2025-03-10 09:35:00 ⏸ 跳过调仓（第166周，周期1周）
+2026-07-08T11:35:34.2382856Z TRACE:: Debug: 2025-03-17 09:35:00 ⏸ 跳过调仓（第167周，周期1周）
+2026-07-08T11:35:34.2382902Z TRACE:: Debug: 2025-03-24 09:35:00 ⏸ 跳过调仓（第168周，周期1周）
+2026-07-08T11:35:34.2382946Z TRACE:: Debug: 2025-03-31 09:35:00 ⏸ 跳过调仓（第169周，周期1周）
+2026-07-08T11:35:34.2382990Z TRACE:: Debug: 2025-04-07 09:35:00 ⏸ 跳过调仓（第170周，周期1周）
+2026-07-08T11:35:34.2383032Z TRACE:: Debug: 2025-04-14 09:35:00 ⏸ 跳过调仓（第171周，周期1周）
+2026-07-08T11:35:34.2383075Z TRACE:: Debug: 2025-04-21 09:35:00 ⏸ 跳过调仓（第172周，周期1周）
+2026-07-08T11:35:34.2383117Z TRACE:: Debug: 2025-04-28 09:35:00 ⏸ 跳过调仓（第173周，周期1周）
+2026-07-08T11:35:34.2383160Z TRACE:: Debug: 2025-05-05 09:35:00 ⏸ 跳过调仓（第174周，周期1周）
+2026-07-08T11:35:34.2383203Z TRACE:: Debug: 2025-05-12 09:35:00 ⏸ 跳过调仓（第175周，周期1周）
+2026-07-08T11:35:34.2383245Z TRACE:: Debug: 2025-05-19 09:35:00 ⏸ 跳过调仓（第176周，周期1周）
+2026-07-08T11:35:34.2383292Z TRACE:: Debug: 2025-05-30 16:00:00 
+============================================================
+2026-07-08T11:35:34.2383336Z TRACE:: Debug: 2025-05-30 16:00:00 策略总结
+2026-07-08T11:35:34.2383387Z TRACE:: Debug: 2025-05-30 16:00:00 ============================================================
+2026-07-08T11:35:34.2383430Z TRACE:: Debug: 2025-05-30 16:00:00 回测区间: 2022-01-01 ~ 2025-06-01
+2026-07-08T11:35:34.2383471Z TRACE:: Debug: 2025-05-30 16:00:00 初始资金: $100,000
+2026-07-08T11:35:34.2383514Z TRACE:: Debug: 2025-05-30 16:00:00 最终资金: $145,149.05
+2026-07-08T11:35:34.2383626Z TRACE:: Debug: 2025-05-30 16:00:00 总收益率: 45.15%
+2026-07-08T11:35:34.2383668Z TRACE:: Debug: 2025-05-30 16:00:00 
+最终持仓:
+2026-07-08T11:35:34.2383709Z TRACE:: Debug: 2025-05-30 16:00:00   MSFT: 4.09%
+2026-07-08T11:35:34.2383751Z TRACE:: Debug: 2025-05-30 16:00:00   NVDA: 15.45%
+2026-07-08T11:35:34.2383791Z TRACE:: Debug: 2025-05-30 16:00:00   GOOGL: 3.18%
+2026-07-08T11:35:34.2383831Z TRACE:: Debug: 2025-05-30 16:00:00   META: 8.44%
+2026-07-08T11:35:34.2383871Z TRACE:: Debug: 2025-05-30 16:00:00   AMZN: 3.95%
+2026-07-08T11:35:34.2383911Z TRACE:: Debug: 2025-05-30 16:00:00   AMD: 5.65%
+2026-07-08T11:35:34.2383952Z TRACE:: Debug: 2025-05-30 16:00:00   CRM: 5.07%
+2026-07-08T11:35:34.2383998Z TRACE:: Debug: 2025-05-30 16:00:00   ORCL: 4.63%
+2026-07-08T11:35:34.2384038Z TRACE:: Debug: 2025-05-30 16:00:00   AVGO: 10.58%
+2026-07-08T11:35:34.2384079Z TRACE:: Debug: 2025-05-30 16:00:00   NFLX: 18.63%
+2026-07-08T11:35:34.2384118Z TRACE:: Debug: 2025-05-30 16:00:00   INTU: 5.15%
+2026-07-08T11:35:34.2384158Z TRACE:: Debug: 2025-05-30 16:00:00   WFC: 4.23%
+2026-07-08T11:35:34.2384198Z TRACE:: Debug: 2025-05-30 16:00:00   C: 4.97%
+2026-07-08T11:35:34.2384239Z TRACE:: Debug: 2025-05-30 16:00:00   CAT: 2.61%
+2026-07-08T11:35:34.2384278Z TRACE:: Debug: 2025-05-30 16:00:00   RTX: 3.05%
+2026-07-08T11:35:34.2384318Z TRACE:: Debug: 2025-05-30 16:00:00 ============================================================
+
+2026-07-08T11:35:34.2384361Z TRACE:: Debug: 2025-05-30 16:00:00 Algorithm Id:(1510881705) completed in 1.42 seconds at 51k data points per second. Processing total of 72,113 data points.
+2026-07-08T11:35:34.2384404Z TRACE:: Debug: 2025-05-30 16:00:00 Your log was successfully created and can be retrieved from: /Results/1510881705-log.txt
+2026-07-08T11:35:34.2384448Z TRACE:: BacktestingResultHandler.Run(): Ending Thread...
+2026-07-08T11:35:34.2706069Z ERROR:: InterestRateProvider.FromCsvFile(): no interest rates were loaded, please make sure the file is present '/Lean/Data/alternative/interest-rate/usa/interest-rate.csv'
+2026-07-08T11:35:34.6082288Z TRACE:: 
+STATISTICS:: Total Orders 15
+STATISTICS:: Average Win 0%
+STATISTICS:: Average Loss 0%
+STATISTICS:: Compounding Annual Return 11.536%
+STATISTICS:: Drawdown 21.600%
+STATISTICS:: Expectancy 0
+STATISTICS:: Start Equity 100000
+STATISTICS:: End Equity 145149.05
+STATISTICS:: Net Profit 45.149%
+STATISTICS:: Sharpe Ratio 0.565
+STATISTICS:: Sortino Ratio 0.422
+STATISTICS:: Probabilistic Sharpe Ratio 14.995%
+STATISTICS:: Loss Rate 0%
+STATISTICS:: Win Rate 0%
+STATISTICS:: Profit-Loss Ratio 0
+STATISTICS:: Alpha 0
+STATISTICS:: Beta 0
+STATISTICS:: Annual Standard Deviation 0.139
+STATISTICS:: Annual Variance 0.019
+STATISTICS:: Information Ratio 0.637
+STATISTICS:: Tracking Error 0.139
+STATISTICS:: Treynor Ratio 0
+STATISTICS:: Total Fees $15.12
+STATISTICS:: Estimated Strategy Capacity $540000000.00
+STATISTICS:: Lowest Capacity Asset INTU 2T
+STATISTICS:: Portfolio Turnover 0.08%
+STATISTICS:: Drawdown Recovery 85
+STATISTICS:: OrderListHash 099a53050a0577952345cf0065fcfe81
+2026-07-08T11:35:34.6082412Z TRACE:: BacktestingResultHandler.SendAnalysisResult(): Processed final packet
+2026-07-08T11:35:34.6084124Z TRACE:: Engine.Run(): Disconnecting from brokerage...
+2026-07-08T11:35:34.6084394Z TRACE:: Engine.Run(): Disposing of setup handler...
+2026-07-08T11:35:34.6084517Z TRACE:: Engine.Main(): Analysis Completed and Results Posted.
+2026-07-08T11:35:34.6085621Z TRACE:: DataMonitor.Exit(): start...
+2026-07-08T11:35:34.6085726Z TRACE:: StopSafely(): Waiting for '' thread to stop...
+2026-07-08T11:35:34.6093144Z TRACE:: DataMonitor.GenerateReport():
+DATA USAGE:: Total data requests 204
+DATA USAGE:: Succeeded data requests 56
+DATA USAGE:: Failed data requests 148
+DATA USAGE:: Failed data requests percentage 73%
+DATA USAGE:: Total universe data requests 0
+DATA USAGE:: Succeeded universe data requests 0
+DATA USAGE:: Failed universe data requests 0
+DATA USAGE:: Failed universe data requests percentage 0%
+2026-07-08T11:35:34.6111115Z TRACE:: DataMonitor.Exit(): end
+2026-07-08T11:35:34.6127126Z TRACE:: Engine.Main(): Packet removed from queue: 1510881705
+2026-07-08T11:35:34.6127568Z TRACE:: LeanEngineSystemHandlers.Dispose(): start...
+2026-07-08T11:35:34.6131187Z TRACE:: LeanEngineSystemHandlers.Dispose(): Disposed of system handlers.
+2026-07-08T11:35:34.6132026Z TRACE:: LeanEngineAlgorithmHandlers.Dispose(): start...
+2026-07-08T11:35:34.6132849Z TRACE:: LocalObjectStore.Dispose(): start...
+2026-07-08T11:35:34.6134240Z TRACE:: LocalObjectStore.Dispose(): end
+2026-07-08T11:35:34.6135490Z TRACE:: LeanEngineAlgorithmHandlers.Dispose(): Disposed of algorithm handlers.
+2026-07-08T11:35:34.6136084Z TRACE:: StopSafely(): Waiting for 'CpuPerformance' thread to stop...
+2026-07-08T11:35:34.6137763Z TRACE:: PythonInitializer.Shutdown(): start
+2026-07-08T11:35:34.6137855Z TRACE:: PythonInitializer.Shutdown(): calling engine shutdown...
+2026-07-08T11:35:36.1964420Z TRACE:: PythonInitializer.Shutdown(): ended
+2026-07-08T11:35:36.1964992Z TRACE:: Program.Main(): Exiting Lean...

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Backtests (too large)
+backtests/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
