@@ -18,7 +18,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vol_low = 0.01
         
         self.vix_symbol = self.add_equity("VIXY", Resolution.DAILY).symbol
-        self.vix_th = 30.0
+        self.vix_th = 20.0  # 更敏感的VIX阈值，提前减仓
         
         self.max_pos = 0.08  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
@@ -277,7 +277,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             targets = {k: v/t_weight for k, v in targets.items()}
             # 限制总仓位到 80%，保留 20% 现金缓冲避免 Margin Call
             for sym in targets:
-                targets[sym] *= 0.8，保留更多保证金空间
+                targets[sym] *= 0.8
         
         for symbol in list(self.cost_b.keys()):
             if symbol not in targets and self.GetTickerName(symbol) in m_sym and self.portfolio[symbol].invested:
