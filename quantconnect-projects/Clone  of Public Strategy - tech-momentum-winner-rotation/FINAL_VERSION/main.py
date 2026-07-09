@@ -1,5 +1,8 @@
 #region imports
 from AlgorithmImports import *
+import os
+import json
+from datetime import datetime
 #endregion
 
 class AdaptiveMomentumStrategy(QCAlgorithm):
@@ -16,10 +19,21 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     """
     
     def Initialize(self):
+        # === 日志设置 ===
+        self.log_file = None
+        self.log_path = os.path.join(os.getcwd(), "logs", "strategy_log.txt")
+        self._init_file_log()
+        
         # === 基本设置 ===
         self.SetStartDate(2022, 1, 1)
         self.SetEndDate(2025, 6, 1)
         self.SetCash(100000)
+        
+        self._log("=" * 80)
+        self._log("策略初始化开始 - AdaptiveMomentumStrategy")
+        self._log(f"回测期间: 2022-01-01 至 2025-06-01")
+        self._log(f"初始资金: $100,000")
+        self._log("=" * 80)
         
         # === 动量参数（基础权重，会被动态调整）===
         self.lookback_1d = 1
@@ -225,6 +239,63 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         vol_chart.AddSeries(Series("DailyVol", SeriesType.Line, "%"))
         vol_chart.AddSeries(Series("VIXY", SeriesType.Line, "$"))
         self.AddChart(vol_chart)
+    
+    # === 日志方法 ===
+    def _init_file_log(self):
+        """初始化文件日志"""
+        try:
+            log_dir = os.path.dirname(self.log_path)
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            self.log_file = open(self.log_path, 'a', encoding='utf-8')
+        except:
+            self.log_file = None
+    
+    def _log(self, message):
+        """统一日志记录（Lean + 文件）"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_msg = f"[{timestamp}] {message}"
+        
+        # Lean 日志
+        self.Log(message)
+        
+        # 文件日志
+        if self.log_file:
+            try:
+                self.log_file.write(log_msg + '\n')
+                self.log_file.flush()
+            except:
+                pass
+    
+    def _log_trade(self, action, symbol, quantity, price, reason=""):
+        """记录交易日志"""
+        msg = f"[TRADE] {action} {symbol} | Qty: {quantity} | Price: ${price:.2f}"
+        if reason:
+            msg += f" | Reason: {reason}"
+        self._log(msg)
+    
+    def _log_portfolio(self):
+        """记录投资组合状态"""
+        total = self.Portfolio.TotalPortfolioValue
+        cash = self.Portfolio.Cash
+        positions = len([x for x in self.Portfolio.Values if x.Invested])
+        self._log(f"[PORTFOLIO] Total: ${total:,.2f} | Cash: ${cash:,.2f} | Positions: {positions}")
+    
+    def OnEndOfAlgorithm(self):
+        """算法结束时的总结"""
+        self._log("=" * 80)
+        self._log("策略运行结束 - 最终总结")
+        self._log("=" * 80)
+        self._log_portfolio()
+        
+        # 计算收益
+        total_return = (self.Portfolio.TotalPortfolioValue - 100000) / 100000 * 100
+        self._log(f"[SUMMARY] Total Return: {total_return:.2f}%")
+        self._log(f"[SUMMARY] Final Equity: ${self.Portfolio.TotalPortfolioValue:,.2f}")
+        
+        # 关闭日志文件
+        if self.log_file:
+            self.log_file.close()
     
     def WeeklyUpdate(self):
         """每周一检查，固定周期调仓 + 根据VIX/估值暂停或临时增加"""
