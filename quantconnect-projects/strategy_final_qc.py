@@ -30,7 +30,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'Style_Defensive':      ["JNJ","UNH","WMT","PG","KO","PEP","XOM","CVX","JPM","T"]
         }
         
-        self.max_pos = 0.10  # 单票最大10%  # 5% max per stock to avoid margin calls
+        self.max_pos = 0.15  # 单票最大15%（最优）
         self.n_stocks = 10  # 10×8%=80%，与总仓位限制匹配
         self.min_score = 0.0
         
