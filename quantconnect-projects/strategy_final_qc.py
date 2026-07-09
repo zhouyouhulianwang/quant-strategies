@@ -30,8 +30,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'Style_Defensive':      ["JNJ","UNH","WMT","PG","KO","PEP","XOM","CVX","JPM","T"]
         }
         
-        self.max_pos = 0.08  # 5% max per stock to avoid margin calls
-        self.n_stocks = 6
+        self.max_pos = 0.10  # 单票最大10%  # 5% max per stock to avoid margin calls
+        self.n_stocks = 10  # 10×8%=80%，与总仓位限制匹配
         self.min_score = 0.0
         
         self.sec_rot = True
@@ -314,18 +314,23 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         t_score = sum(data['score'] for _, data in top_s)
         targets = {}
         
+        # 1. 计算原始权重
         for name, data in top_s:
             weight = (data['score'] / t_score) if t_score > 0 else 0
-            weight = min(weight, self.max_pos)
-            
             targets[data['symbol']] = weight
         
+        # 2. 归一化（确保权重和=100%）
         t_weight = sum(targets.values())
         if t_weight > 0:
             targets = {k: v/t_weight for k, v in targets.items()}
-            # 限制总仓位到 80%，保留 20% 现金缓冲避免 Margin Call
-            for sym in targets:
-                targets[sym] *= 0.8
+        
+        # 3. 限制总仓位到 80%（保留20%现金）
+        for sym in targets:
+            targets[sym] *= 0.8
+        
+        # 4. 限制单票最大10%（确保不超过设定上限）
+        for sym in targets:
+            targets[sym] = min(targets[sym], self.max_pos)
         
         for symbol in list(self.cost_b.keys()):
             if symbol not in targets and self.GetTickerName(symbol) in m_sym and self.portfolio[symbol].invested:
