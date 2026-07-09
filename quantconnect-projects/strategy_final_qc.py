@@ -18,7 +18,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vol_low = 0.01
         
         self.vix_symbol = self.add_equity("VIXY", Resolution.DAILY).symbol
-        self.vix_th = 20.0  # 更敏感的VIX阈值，提前减仓
+        self.vix_th = 30.0
         
         self.max_pos = 0.08  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
@@ -228,6 +228,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.liquidate(symbol)
                     del self.cost_b[symbol]
     
+
     def RebalanceUS(self):
         if self.is_warming_up:
             return
