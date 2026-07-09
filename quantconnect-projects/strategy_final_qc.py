@@ -21,7 +21,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vix_th = 30.0
         self.vix_scale = 0.4
         
-        self.max_pos = 0.03  # 5% max per stock to avoid margin calls
+        self.max_pos = 0.08  # 5% max per stock to avoid margin calls
         self.n_stocks = 10
         self.min_score = 0.0
         self.g_pos_scale = 1.0
