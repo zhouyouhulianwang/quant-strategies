@@ -326,11 +326,25 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 计算当前总仓位
         t_weight = sum(targets.values())
         
+        # 日志记录原始分配
+        top5_alloc = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
+        top5_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in top5_alloc])
+        self.log(f"[{self.time.strftime('%Y-%m-%d')}] 原始分配: {len(targets)}只票, 总仓位{t_weight*100:.1f}%, 最高单票{max(targets.values())*100:.1f}%, top5: {top5_str}")
+        
         # 如果总仓位超过80%，等比例缩减到80%
         if t_weight > 0.8:
             scale = 0.8 / t_weight
             for sym in targets:
                 targets[sym] *= scale
+            self.log(f"  总仓位{t_weight*100:.1f}%超过80%，等比例缩减到80%")
+        elif t_weight < 0.8:
+            self.log(f"  总仓位{t_weight*100:.1f}%低于80%，保持原比例不放大")
+        
+        # 记录最终分配
+        final_weight = sum(targets.values())
+        final_top5 = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
+        final_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in final_top5])
+        self.log(f"  最终分配: 总仓位{final_weight*100:.1f}%, 最高单票{max(targets.values())*100:.1f}%, top5: {final_str}")
         
         for symbol in list(self.cost_b.keys()):
             if symbol not in targets and self.GetTickerName(symbol) in m_sym and self.portfolio[symbol].invested:
