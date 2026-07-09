@@ -360,6 +360,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 if self.portfolio[symbol].invested and symbol not in self.cost_b:
                     self.cost_b[symbol] = self.portfolio[symbol].average_price
     
+
     def GetTickerName(self, symbol):
         for name, sym in self.symbols.items():
             if sym == symbol:
