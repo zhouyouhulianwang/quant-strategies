@@ -47,7 +47,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # ============ RSI超买超卖参数（个股动态权重） ============
         self.rsi_overbought = 65
         self.rsi_oversold = 35
-        self.rsi_adjustment_factor = 0.4  # 更温和的调整
+        self.rsi_adjustment_factor = 0.3  # 最佳调整系数
         
         # ============ VIX参数（仅用于市场状态判断，不动态调整权重） ============
         # 优先使用VIX指数，如果不可用则回退到VIXY
@@ -112,9 +112,29 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.rsi_overbought = 70
         self.rsi_oversold = 30
         
+        # ============ 多因子参数 ============
+        self.multi_factor_enabled = False  # 禁用多因子，单RSI表现更好
+        self.factor_weights = {
+            'momentum': 0.60,  # 动量因子权重（增加）
+            'rsi': 0.25,       # RSI因子权重（增加）
+            'macd': 0.10,      # MACD因子权重（减少）
+            'bollinger': 0.05  # 布林带因子权重（减少）
+        }
+        
+        # MACD参数
+        self.macd_fast = 12
+        self.macd_slow = 26
+        self.macd_signal = 9
+        
+        # 布林带参数
+        self.bb_period = 20
+        self.bb_std = 2.0
+        
         # ============ 数据缓存 ============
         self.price_history = {}
         self.rsi_indicators = {}
+        self.macd_indicators = {}      # MACD指标
+        self.bb_indicators = {}        # 布林带指标
         self.sma_indicators = {}
         self.high_water_mark = 0  # 用于回撤保护
         self.position_high = {}  # 用于追踪止损
@@ -423,6 +443,24 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 if ticker not in self.safe_tickers:
                     self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
                     self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
+                    
+                    # 初始化MACD和布林带指标（多因子）
+                    if self.multi_factor_enabled:
+                        self.macd_indicators[symbol] = self.MACD(
+                            symbol, 
+                            self.macd_fast, 
+                            self.macd_slow, 
+                            self.macd_signal, 
+                            MovingAverageType.Exponential, 
+                            Resolution.DAILY
+                        )
+                        self.bb_indicators[symbol] = self.BB(
+                            symbol, 
+                            self.bb_period, 
+                            self.bb_std, 
+                            MovingAverageType.Simple, 
+                            Resolution.DAILY
+                        )
                 
                 # 为SPY也添加SMA指标（用于动态仓位）
                 if ticker == "SPY" and symbol not in self.sma_indicators:
@@ -692,51 +730,117 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             # 计算加权动量得分（基础分）
             base_score = sum(returns[p] * self.current_weights[p] for p in returns)
             
-            # ========== 基于个股RSI超买超卖动态调整 ==========
-            rsi_adjusted_score = base_score
-            rsi_value = 50  # 默认值
-            rsi_state = "neutral"
-            
-            try:
-                # 获取该股票的RSI指标
-                if symbol in self.rsi_indicators:
-                    rsi = self.rsi_indicators[symbol]
-                    if rsi.IsReady:
-                        rsi_value = rsi.Current.Value
-                        
-                        # 根据RSI状态调整动量得分
-                        if rsi_value > self.rsi_overbought:
-                            # RSI超买 (>70)：降低动量得分（避免追高）
-                            rsi_adjusted_score = base_score * self.rsi_adjustment_factor
-                            rsi_state = f"overbought({rsi_value:.1f})"
-                        elif rsi_value < self.rsi_oversold:
-                            # RSI超卖 (<30)：增加动量得分（抄底机会）
-                            # 但只在基础分为正时增强（避免接下跌的刀）
-                            if base_score > 0:
-                                rsi_adjusted_score = base_score * (1.0 + (1.0 - self.rsi_adjustment_factor))
-                                rsi_state = f"oversold_boost({rsi_value:.1f})"
-                            else:
-                                # 基础分为负时，超卖也不抄底（趋势向下）
-                                rsi_adjusted_score = base_score * self.rsi_adjustment_factor
-                                rsi_state = f"oversold_weak({rsi_value:.1f})"
-                        else:
-                            # 正常区间：使用基础得分
-                            rsi_adjusted_score = base_score
-                            rsi_state = f"neutral({rsi_value:.1f})"
-            except Exception as e:
-                self.Log(f"RSI调整失败 {ticker}: {e}")
+            # ========== 多因子评分系统 ==========
+            if self.multi_factor_enabled:
+                # 1. 动量因子 (50%)
+                momentum_score = base_score
+                
+                # 2. RSI因子 (20%)
+                rsi_factor = 0.0
+                try:
+                    if symbol in self.rsi_indicators:
+                        rsi = self.rsi_indicators[symbol]
+                        if rsi.IsReady:
+                            rsi_value = rsi.Current.Value
+                            # RSI 50为中轴，高于50为正值，低于50为负值
+                            # 归一化到 -1 ~ 1
+                            rsi_factor = (rsi_value - 50) / 50.0
+                            # 反转：RSI越高越危险（避免超买）
+                            rsi_factor = -rsi_factor * 0.5  # 反转并缩放
+                except:
+                    pass
+                
+                # 3. MACD因子 (15%)
+                macd_factor = 0.0
+                try:
+                    if symbol in self.macd_indicators:
+                        macd = self.macd_indicators[symbol]
+                        if macd.IsReady:
+                            # MACD柱状图 = MACD线 - 信号线
+                            histogram = macd.Current.Value - macd.Signal.Current.Value
+                            # 归一化（使用当前价格作为参考）
+                            if current_price > 0:
+                                macd_factor = histogram / current_price * 100  # 缩放
+                except:
+                    pass
+                
+                # 4. 布林带因子 (15%)
+                bb_factor = 0.0
+                try:
+                    if symbol in self.bb_indicators:
+                        bb = self.bb_indicators[symbol]
+                        if bb.IsReady:
+                            upper = bb.UpperBand.Current.Value
+                            lower = bb.LowerBand.Current.Value
+                            middle = bb.MiddleBand.Current.Value
+                            
+                            if upper > lower:  # 避免除零
+                                # 价格在布林带中的位置 (0=下轨, 1=上轨)
+                                position = (current_price - lower) / (upper - lower)
+                                # 反转：价格越接近下轨越好（超卖）
+                                bb_factor = (0.5 - position) * 2.0  # 反转并归一化到 -1~1
+                except:
+                    pass
+                
+                # 组合所有因子
+                weights = self.factor_weights
+                final_score = (
+                    momentum_score * weights['momentum'] +
+                    rsi_factor * weights['rsi'] +
+                    macd_factor * weights['macd'] +
+                    bb_factor * weights['bollinger']
+                )
+                
+                # 记录多因子详情
+                factor_details = {
+                    'momentum': momentum_score,
+                    'rsi': rsi_factor,
+                    'macd': macd_factor,
+                    'bollinger': bb_factor,
+                    'final': final_score
+                }
+                
+                score = final_score
+                
+            else:
+                # 使用原有的RSI调整逻辑
+                # ========== 基于个股RSI超买超卖动态调整 ==========
                 rsi_adjusted_score = base_score
-            
-            # 使用RSI调整后的得分
-            score = rsi_adjusted_score
+                rsi_value = 50
+                rsi_state = "neutral"
+                
+                try:
+                    if symbol in self.rsi_indicators:
+                        rsi = self.rsi_indicators[symbol]
+                        if rsi.IsReady:
+                            rsi_value = rsi.Current.Value
+                            
+                            if rsi_value > self.rsi_overbought:
+                                rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                                rsi_state = f"overbought({rsi_value:.1f})"
+                            elif rsi_value < self.rsi_oversold:
+                                if base_score > 0:
+                                    rsi_adjusted_score = base_score * (1.0 + (1.0 - self.rsi_adjustment_factor))
+                                    rsi_state = f"oversold_boost({rsi_value:.1f})"
+                                else:
+                                    rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                                    rsi_state = f"oversold_weak({rsi_value:.1f})"
+                            else:
+                                rsi_adjusted_score = base_score
+                                rsi_state = f"neutral({rsi_value:.1f})"
+                except Exception as e:
+                    self.Log(f"RSI调整失败 {ticker}: {e}")
+                    rsi_adjusted_score = base_score
+                
+                score = rsi_adjusted_score
+                factor_details = None
             
             return {
                 'symbol': symbol,
                 'ticker': ticker,
                 'score': score,
-                'base_score': base_score,  # 原始动量得分
-                'rsi_value': rsi_value,     # RSI值
-                'rsi_state': rsi_state,     # RSI状态
+                'base_score': base_score,
+                'factor_details': factor_details,
                 'returns': returns,
                 'current_price': current_price
             }
@@ -989,30 +1093,36 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 7. 计算总权重并调整
         total_weight = sum(targets.values())
         
-        # 8. 记录原始分配（含RSI调整信息）
+        # 8. 记录原始分配（含多因子信息）
         top5 = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
         
-        # 获取top5的RSI信息
-        rsi_info = []
+        # 获取top5的多因子详情
+        factor_info = []
         for sym, w in top5:
             ticker = self.GetTickerName(sym)
             if ticker in positive_scores:
-                rsi_val = positive_scores[ticker].get('rsi_value', 50)
-                rsi_state = positive_scores[ticker].get('rsi_state', 'neutral')
                 base = positive_scores[ticker].get('base_score', 0)
                 final = positive_scores[ticker].get('score', 0)
-                rsi_info.append(f"{ticker}(RSI={rsi_val:.0f},{rsi_state},base={base:.3f},final={final:.3f})")
+                details = positive_scores[ticker].get('factor_details')
+                if details and self.multi_factor_enabled:
+                    factor_info.append(
+                        f"{ticker}(base={base:.3f},final={final:.3f},"
+                        f"M={details.get('momentum',0):.3f},R={details.get('rsi',0):.3f},"
+                        f"MACD={details.get('macd',0):.3f},BB={details.get('bollinger',0):.3f})"
+                    )
+                else:
+                    factor_info.append(f"{ticker}(base={base:.3f},final={final:.3f})")
             else:
-                rsi_info.append(f"{ticker}")
+                factor_info.append(f"{ticker}")
         
         top5_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in top5])
         self.Log(f"[{self.Time.strftime('%Y-%m-%d')}] {market_name}原始: "
                 f"{len(targets)}只, 总仓位{total_weight*100:.1f}%, "
                 f"最高{max(targets.values())*100:.1f}%, top5: {top5_str}")
         
-        # 记录RSI调整详情
-        if rsi_info:
-            self.Log(f"  RSI调整: {', '.join(rsi_info[:3])}")
+        # 记录多因子详情
+        if factor_info and self.multi_factor_enabled:
+            self.Log(f"  多因子: {', '.join(factor_info[:2])}")
         
         # 9. 限制总仓位（使用动态仓位）
         total_weight = sum(targets.values())
