@@ -45,9 +45,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.target_volatility = 0.15  # 年化目标波动率
         
         # ============ RSI超买超卖参数（个股动态权重） ============
-        self.rsi_overbought = 70  # RSI超买阈值
-        self.rsi_oversold = 30    # RSI超卖阈值
-        self.rsi_adjustment_factor = 0.5  # 超买/超卖时的权重调整系数
+        self.rsi_overbought = 65
+        self.rsi_oversold = 35
+        self.rsi_adjustment_factor = 0.4  # 更温和的调整
         
         # ============ VIX参数（仅用于市场状态判断，不动态调整权重） ============
         # 优先使用VIX指数，如果不可用则回退到VIXY
