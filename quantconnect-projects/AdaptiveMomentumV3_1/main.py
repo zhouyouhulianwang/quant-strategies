@@ -193,7 +193,10 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.SetSecurityInitializer(self.CustomSecurityInitializer)
         
         # ============ 流动性过滤参数（P0优化）============
-        self.min_daily_volume = 1000000  # 最小日均成交量100万
+        # P0优化：动态流动性过滤（牛市严格，熊市宽松）
+        self.min_daily_volume_bull = 10000000  # 牛市最小日均成交量1000万
+        self.min_daily_volume_bear = 5000000   # 熊市最小日均成交量500万
+        self.min_daily_volume = self.min_daily_volume_bull  # 当前阈值（动态）
         self.min_price = 5.0  # 最小股价$5
         self.liquid_stocks = set()  # 高流动性股票集合
         
@@ -503,6 +506,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         """P0优化：检查股票是否高流动性"""
         return ticker in self.liquid_stocks or ticker in self.safe_tickers
     
+    def _UpdateDynamicVolumeFilter(self):
+        """P0优化：根据市场状态动态调整流动性过滤阈值"""
+        new_threshold = (self.min_daily_volume_bear if self.market_bear_mode 
+                        else self.min_daily_volume_bull)
+        
+        if new_threshold != self.min_daily_volume:
+            self.min_daily_volume = new_threshold
+            self.Log(f"流动性过滤调整: 牛市={self.min_daily_volume_bull/1e6:.0f}M → 熊市={self.min_daily_volume_bear/1e6:.0f}M, 当前={self.min_daily_volume/1e6:.0f}M")
+    
     def GetTickerName(self, symbol: Symbol) -> str:
         """根据Symbol获取Ticker名称"""
         for name, sym in self.symbols.items():
@@ -672,6 +684,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.current_total_exposure = 0.45
             
             if self.market_bear_mode and not was_bear:
+                # 刚进入熊市：调整流动性过滤为宽松模式
+                self._UpdateDynamicVolumeFilter()
                 # 刚进入熊市：清仓股票，转投避险资产
                 self.Log(f"⚠️ 市场进入熊市模式: SPY={current_spy:.2f} < 50MA={sma50:.2f} (连续{self.bear_mode_counter}天), 仓位降至{self.current_total_exposure*100:.0f}%")
                 self.Liquidate()
@@ -680,6 +694,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
                 self.Log("已清仓股票，转入TLT/GLD避险")
             elif not self.market_bear_mode and was_bear:
+                # 刚退出熊市：调整流动性过滤为严格模式
+                self._UpdateDynamicVolumeFilter()
                 # 刚退出熊市：清仓避险资产，恢复股票策略
                 self.Log(f"✅ 市场恢复牛市模式: SPY={current_spy:.2f} > 50MA={sma50:.2f}, 仓位提升至{self.current_total_exposure*100:.0f}%")
                 for ticker in self.safe_tickers:
