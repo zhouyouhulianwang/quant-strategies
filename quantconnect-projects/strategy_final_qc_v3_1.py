@@ -130,6 +130,13 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.current_put = None  # 当前持有的Put
         self.spy_option = None
         
+        # ============ 股票池配置 ============
+        self.stock_pool_source = "combined"  # 可选: "sp500", "nasdaq100", "combined", "custom"
+        self.stock_pool_file = "stock_pools.json"  # 股票池配置文件
+        self.enable_dynamic_pool = True  # 启用动态股票池更新
+        self.pool_update_freq = 30  # 每30天检查更新一次
+        self.last_pool_update = self.Time
+        
         # ============ 股票池 ============
         self.us_tickers = self._GetUSStockPool()
         self.safe_tickers = ["TLT", "GLD"]
@@ -139,6 +146,14 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 初始化股票 ============
         self._InitializeSymbols()
+        
+        # 如果启用动态更新，设置定时检查
+        if self.enable_dynamic_pool:
+            self.Schedule.On(
+                self.DateRules.MonthStart("SPY"),
+                self.TimeRules.AfterMarketOpen("SPY", 30),
+                self.UpdateStockPool
+            )
         
         # ============ 初始化SPY期权（对冲用）============
         if self.hedge_enabled:
@@ -178,9 +193,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """构建行业映射表"""
+        """构建行业映射表 - 扩展版覆盖更多标普500/纳指100成分股"""
         return {
-            # Tech
+            # ========== 科技 ==========
             'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech', 
             'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech', 
             'INTC': 'Tech', 'CRM': 'Tech', 'ORCL': 'Tech', 'ADBE': 'Tech',
@@ -189,54 +204,207 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'ANET': 'Tech', 'FSLR': 'Tech', 'FTNT': 'Tech', 'SNPS': 'Tech',
             'KLAC': 'Tech', 'MRVL': 'Tech', 'NXPI': 'Tech', 'SWKS': 'Tech',
             'MCHP': 'Tech', 'CDNS': 'Tech', 'DDOG': 'Tech', 'PLTR': 'Tech',
-            'NOW': 'Tech', 'NET': 'Tech',
-            # Finance
+            'NOW': 'Tech', 'NET': 'Tech', 'APP': 'Tech', 'CRWD': 'Tech',
+            'ZS': 'Tech', 'TEAM': 'Tech', 'WDAY': 'Tech', 'DDOG': 'Tech',
+            'SNOW': 'Tech', 'OKTA': 'Tech', 'PLTR': 'Tech', 'RBLX': 'Tech',
+            'ZM': 'Tech', 'DOCU': 'Tech', 'UBER': 'Tech', 'ABNB': 'Tech',
+            'DASH': 'Tech', 'SQ': 'Tech', 'PYPL': 'Tech', 'ADYEY': 'Tech',
+            'GPN': 'Tech', 'VRSK': 'Tech', 'ANSS': 'Tech', 'PTC': 'Tech',
+            'FSLR': 'Tech', 'ENPH': 'Tech', 'SEDG': 'Tech', 'RUN': 'Tech',
+            'TER': 'Tech', 'LRCX': 'Tech', 'AMAT': 'Tech', 'KLAC': 'Tech',
+            'MCHP': 'Tech', 'NXPI': 'Tech', 'SWKS': 'Tech', 'QRVO': 'Tech',
+            'MPWR': 'Tech', 'RMBS': 'Tech', 'COHR': 'Tech', 'DIOD': 'Tech',
+            'POWI': 'Tech', 'SLAB': 'Tech', 'SIMO': 'Tech', 'MXL': 'Tech',
+            'SMTC': 'Tech', 'CCMP': 'Tech', 'RBC': 'Tech', 'VSH': 'Tech',
+            # ========== 金融 ==========
             'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance', 'MS': 'Finance',
             'WFC': 'Finance', 'BLK': 'Finance', 'C': 'Finance', 'AXP': 'Finance',
             'SCHW': 'Finance', 'PNC': 'Finance', 'SPGI': 'Finance', 'MCO': 'Finance',
             'ICE': 'Finance', 'CME': 'Finance', 'TFC': 'Finance', 'USB': 'Finance',
             'COF': 'Finance', 'BK': 'Finance', 'STT': 'Finance', 'NDAQ': 'Finance',
-            # Healthcare
+            'AON': 'Finance', 'MMC': 'Finance', 'AJG': 'Finance', 'WLTW': 'Finance',
+            'RJF': 'Finance', 'BRO': 'Finance', 'AFL': 'Finance', 'PGR': 'Finance',
+            'ALL': 'Finance', 'TRV': 'Finance', 'CB': 'Finance', 'CINF': 'Finance',
+            'WRB': 'Finance', 'GL': 'Finance', 'AFG': 'Finance', 'Y': 'Finance',
+            'RE': 'Finance', 'RNR': 'Finance', 'MHLD': 'Finance', 'SIGI': 'Finance',
+            'PLMR': 'Finance', 'KNSL': 'Finance', 'EG': 'Finance', 'FAF': 'Finance',
+            'ORI': 'Finance', 'SIG': 'Finance', 'SLM': 'Finance', 'NAVI': 'Finance',
+            'OMF': 'Finance', 'ENVA': 'Finance', 'WRAY': 'Finance', 'PFSI': 'Finance',
+            # ========== 医疗健康 ==========
             'JNJ': 'Healthcare', 'UNH': 'Healthcare', 'LLY': 'Healthcare', 
             'PFE': 'Healthcare', 'MRK': 'Healthcare', 'ABBV': 'Healthcare',
             'ABT': 'Healthcare', 'TMO': 'Healthcare', 'DHR': 'Healthcare',
             'BMY': 'Healthcare', 'AMGN': 'Healthcare', 'GILD': 'Healthcare',
             'REGN': 'Healthcare', 'VRTX': 'Healthcare', 'MRNA': 'Healthcare',
-            'BIIB': 'Healthcare',
-            # Consumer
+            'BIIB': 'Healthcare', 'CI': 'Healthcare', 'HUM': 'Healthcare',
+            'CVS': 'Healthcare', 'ELV': 'Healthcare', 'CNC': 'Healthcare',
+            'MOH': 'Healthcare', 'ANTM': 'Healthcare', 'ISRG': 'Healthcare',
+            'SYK': 'Healthcare', 'ZBH': 'Healthcare', 'RMD': 'Healthcare',
+            'DXCM': 'Healthcare', 'PODD': 'Healthcare', 'TNDM': 'Healthcare',
+            'HOLX': 'Healthcare', 'DGX': 'Healthcare', 'LH': 'Healthcare',
+            'A': 'Healthcare', 'MTD': 'Healthcare', 'WAT': 'Healthcare',
+            'IQV': 'Healthcare', 'CRL': 'Healthcare', 'PRAH': 'Healthcare',
+            'MEDP': 'Healthcare', 'ICLR': 'Healthcare', 'SYNH': 'Healthcare',
+            'CTLT': 'Healthcare', 'BIO': 'Healthcare', 'TECH': 'Healthcare',
+            'EXAS': 'Healthcare', 'GH': 'Healthcare', 'NTRA': 'Healthcare',
+            'MYGN': 'Healthcare', 'VCYT': 'Healthcare', 'CDNA': 'Healthcare',
+            'MASI': 'Healthcare', 'NUVA': 'Healthcare', 'GMED': 'Healthcare',
+            'OFIX': 'Healthcare', 'FMS': 'Healthcare', 'DVA': 'Healthcare',
+            'USPH': 'Healthcare', 'AFAM': 'Healthcare', 'AMN': 'Healthcare',
+            'CHE': 'Healthcare', 'AMEH': 'Healthcare', 'CCRN': 'Healthcare',
+            # ========== 消费 ==========
             'HD': 'Consumer', 'COST': 'Consumer', 'NKE': 'Consumer', 
             'MCD': 'Consumer', 'SBUX': 'Consumer', 'LOW': 'Consumer', 
             'TJX': 'Consumer', 'PG': 'Consumer', 'KO': 'Consumer',
             'PEP': 'Consumer', 'WMT': 'Consumer', 'MDLZ': 'Consumer',
             'CL': 'Consumer', 'KMB': 'Consumer', 'GIS': 'Consumer', 'CPB': 'Consumer',
-            # Energy
+            'EL': 'Consumer', 'ULTA': 'Consumer', 'DG': 'Consumer', 'DLTR': 'Consumer',
+            'ROST': 'Consumer', 'BURL': 'Consumer', 'TSCO': 'Consumer', 'ORLY': 'Consumer',
+            'AZO': 'Consumer', 'AAP': 'Consumer', 'KMX': 'Consumer', 'AN': 'Consumer',
+            'CRI': 'Consumer', 'GPC': 'Consumer', 'POOL': 'Consumer', 'WHR': 'Consumer',
+            'LEG': 'Consumer', 'MHK': 'Consumer', 'FBHS': 'Consumer', 'LEN': 'Consumer',
+            'DHI': 'Consumer', 'PHM': 'Consumer', 'TOL': 'Consumer', 'NVR': 'Consumer',
+            'TPH': 'Consumer', 'TMHC': 'Consumer', 'CVCO': 'Consumer', 'SKY': 'Consumer',
+            'MTH': 'Consumer', 'BZH': 'Consumer', 'HOV': 'Consumer', 'RYL': 'Consumer',
+            'EL': 'Consumer', 'COTY': 'Consumer', 'ELF': 'Consumer', 'REV': 'Consumer',
+            'IPAR': 'Consumer', 'ESTE': 'Consumer', 'SMG': 'Consumer', 'CLX': 'Consumer',
+            'CHD': 'Consumer', 'ENR': 'Consumer', 'HELE': 'Consumer', 'SPB': 'Consumer',
+            # ========== 能源 ==========
             'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy',
             'OXY': 'Energy', 'EOG': 'Energy', 'MPC': 'Energy', 'VLO': 'Energy',
-            'PSX': 'Energy', 'KMI': 'Energy',
-            # Industrial
+            'PSX': 'Energy', 'KMI': 'Energy', 'WMB': 'Energy', 'OKE': 'Energy',
+            'EPD': 'Energy', 'ET': 'Energy', 'MPLX': 'Energy', 'ENB': 'Energy',
+            'TRP': 'Energy', 'PBA': 'Energy', 'CNQ': 'Energy', 'IMO': 'Energy',
+            'SU': 'Energy', 'CVE': 'Energy', 'OVV': 'Energy', 'MRO': 'Energy',
+            'DVN': 'Energy', 'FANG': 'Energy', 'PXD': 'Energy', 'MUR': 'Energy',
+            'SM': 'Energy', 'GPOR': 'Energy', 'RRC': 'Energy', 'AR': 'Energy',
+            'SWN': 'Energy', 'CTRA': 'Energy', 'EQT': 'Energy', 'CNX': 'Energy',
+            # ========== 工业 ==========
             'CAT': 'Industrial', 'HON': 'Industrial', 'UPS': 'Industrial',
             'BA': 'Industrial', 'GE': 'Industrial', 'RTX': 'Industrial',
             'LMT': 'Industrial', 'NOC': 'Industrial', 'GD': 'Industrial',
             'ITW': 'Industrial', 'MMM': 'Industrial', 'EMR': 'Industrial',
-            # Telecom
+            'PH': 'Industrial', 'ROP': 'Industrial', 'TT': 'Industrial',
+            'CMI': 'Industrial', 'PCAR': 'Industrial', 'CSX': 'Industrial',
+            'UNP': 'Industrial', 'NSC': 'Industrial', 'ODFL': 'Industrial',
+            'EXPD': 'Industrial', 'CHRW': 'Industrial', 'LDL': 'Industrial',
+            'KEX': 'Industrial', 'MATX': 'Industrial', 'GOGL': 'Industrial',
+            'DAC': 'Industrial', 'GSL': 'Industrial', 'CMRE': 'Industrial',
+            'DAC': 'Industrial', 'TRTN': 'Industrial', 'TGH': 'Industrial',
+            'WSC': 'Industrial', 'MOD': 'Industrial', 'GTLS': 'Industrial',
+            'FLS': 'Industrial', 'FLOW': 'Industrial', 'GNRC': 'Industrial',
+            'PWR': 'Industrial', 'MTZ': 'Industrial', 'DY': 'Industrial',
+            'EME': 'Industrial', 'IESC': 'Industrial', 'FIX': 'Industrial',
+            # ========== 通信 ==========
             'VZ': 'Telecom', 'T': 'Telecom', 'CMCSA': 'Telecom', 'TMUS': 'Telecom',
-            'CHTR': 'Telecom', 'CCI': 'Telecom', 'AMT': 'Telecom'
+            'CHTR': 'Telecom', 'CCI': 'Telecom', 'AMT': 'Telecom', 'SBAC': 'Telecom',
+            'RYTM': 'Telecom', 'UNIT': 'Telecom', 'LUMN': 'Telecom', 'FYBR': 'Telecom',
+            'TDS': 'Telecom', 'USM': 'Telecom', 'CNSL': 'Telecom', 'ALSK': 'Telecom',
+            # ========== 房地产 ==========
+            'PLD': 'REITs', 'AMT': 'REITs', 'EQIX': 'REITs', 'PSA': 'REITs',
+            'O': 'REITs', 'VICI': 'REITs', 'DLR': 'REITs', 'SPG': 'REITs',
+            'WELL': 'REITs', 'AVB': 'REITs', 'EQR': 'REITs', 'UDR': 'REITs',
+            'ESS': 'REITs', 'MAA': 'REITs', 'CPT': 'REITs', 'AIRC': 'REITs',
+            'EXR': 'REITs', 'REXR': 'REITs', 'LSI': 'REITs', 'RYAAY': 'REITs',
+            'SBRA': 'REITs', 'PEAK': 'REITs', 'VTR': 'REITs', 'WPC': 'REITs',
+            'OHI': 'REITs', 'HR': 'REITs', 'MPW': 'REITs', 'RHP': 'REITs',
+            # ========== 公用事业 ==========
+            'NEE': 'Utilities', 'SO': 'Utilities', 'DUK': 'Utilities', 
+            'AEP': 'Utilities', 'EXC': 'Utilities', 'SRE': 'Utilities',
+            'XEL': 'Utilities', 'WEC': 'Utilities', 'ES': 'Utilities',
+            'D': 'Utilities', 'ED': 'Utilities', 'FE': 'Utilities', 
+            'EIX': 'Utilities', 'ETR': 'Utilities', 'CNP': 'Utilities',
+            'NI': 'Utilities', 'PPL': 'Utilities', 'AEE': 'Utilities',
+            'ATO': 'Utilities', 'LNT': 'Utilities', 'CMS': 'Utilities',
+            # ========== 材料 ==========
+            'LIN': 'Materials', 'APD': 'Materials', 'SHW': 'Materials', 
+            'ECL': 'Materials', 'FCX': 'Materials', 'NEM': 'Materials',
+            'DOW': 'Materials', 'DD': 'Materials', 'EMN': 'Materials',
+            'ALB': 'Materials', 'CF': 'Materials', 'MOS': 'Materials',
+            'FMC': 'Materials', 'IFF': 'Materials', 'CE': 'Materials',
+            'PPG': 'Materials', 'RPM': 'Materials', 'BCPC': 'Materials',
+            'ASH': 'Materials', 'HUN': 'Materials', 'WLK': 'Materials',
+            'IP': 'Materials', 'PKG': 'Materials', 'WRK': 'Materials',
+            'SEE': 'Materials', 'GEF': 'Materials', 'SON': 'Materials',
+            'MATV': 'Materials', 'UFS': 'Materials', 'MLI': 'Materials',
+            'ROCK': 'Materials', 'CSTE': 'Materials', 'USLM': 'Materials',
         }
 
     def _GetUSStockPool(self) -> List[str]:
-        """获取美国股票池"""
-        return [
-            "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AMD", "INTC", "CRM",
-            "ORCL", "ADBE", "CSCO", "AVGO", "QCOM", "TXN", "AMAT", "MU", "NFLX", "INTU",
-            "ANET", "FSLR", "FTNT", "SNPS", "KLAC", "MRVL", "NXPI", "SWKS", "MCHP", "CDNS",
-            "DDOG", "PLTR", "NOW", "NET", "JPM", "BAC", "GS", "MS", "WFC", "BLK",
-            "C", "AXP", "SCHW", "PNC", "SPGI", "MCO", "ICE", "CME", "JNJ", "UNH",
-            "LLY", "PFE", "MRK", "ABBV", "ABT", "TMO", "DHR", "BMY", "AMGN", "GILD",
-            "REGN", "VRTX", "MRNA", "HD", "COST", "NKE", "MCD", "SBUX", "LOW", "TJX",
-            "PG", "KO", "PEP", "WMT", "MDLZ", "XOM", "CVX", "COP", "SLB", "OXY",
-            "CAT", "HON", "UPS", "BA", "GE", "RTX", "LMT", "VZ", "T", "CMCSA",
-            "SPY", "QQQ", "IWM", "VTV", "VUG", "TLT", "GLD", "VIXY"
+        """获取美国股票池
+        支持从JSON配置文件动态加载，失败时使用硬编码核心列表
+        """
+        # 尝试从配置文件加载
+        if self.enable_dynamic_pool:
+            try:
+                import json
+                import os
+                
+                # 尝试多个路径
+                possible_paths = [
+                    self.stock_pool_file,
+                    f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
+                    f"../{self.stock_pool_file}",
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        with open(path, 'r') as f:
+                            pools = json.load(f)
+                            tickers = pools.get(self.stock_pool_source, [])
+                            if tickers:
+                                self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
+                                return list(dict.fromkeys(tickers))
+            except Exception as e:
+                self.Log(f"加载股票池文件失败: {e}")
+        
+        # 硬编码核心股票池（高流动性大盘股，本地数据通常可用）
+        self.Log(f"使用硬编码核心股票池 ({self.stock_pool_source})")
+        
+        # 核心大盘股（约100只，确保本地数据可用）
+        core_stocks = [
+            # 科技巨头 (15)
+            "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "CRM", "ORCL",
+            "ADBE", "INTU", "NOW", "AMD", "INTC",
+            # 金融 (15)
+            "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP",
+            "SPGI", "PGR", "CB", "SCHW", "ICE",
+            # 医疗健康 (12)
+            "UNH", "LLY", "JNJ", "MRK", "ABBV", "ABT", "TMO", "DHR", "PFE", "AMGN",
+            "GILD", "REGN",
+            # 消费 (15)
+            "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX", "PG", "KO",
+            "PEP", "MDLZ", "CL", "KMB", "EL",
+            # 工业 (10)
+            "HON", "CAT", "UPS", "BA", "GE", "RTX", "LMT", "DE", "ITW", "EMR",
+            # 通信 (8)
+            "VZ", "T", "CMCSA", "TMUS", "CHTR", "DIS", "NFLX", "CCI",
+            # 能源 (10)
+            "XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "VLO", "PSX", "KMI",
+            # 房地产 (5)
+            "PLD", "AMT", "EQIX", "PSA", "SPG",
+            # 公用事业 (5)
+            "NEE", "SO", "DUK", "AEP", "EXC",
+            # 材料 (5)
+            "LIN", "APD", "SHW", "FCX", "NEM",
         ]
+        
+        # 纳斯达克100成长补充（科技+创新）
+        growth_stocks = [
+            "MELI", "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS",
+            "AMAT", "FSLR", "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG",
+            "NET", "PLTR", "SNOW", "MDB", "TEAM", "WDAY",
+        ]
+        
+        # 根据配置返回不同股票池
+        if self.stock_pool_source == "sp500":
+            return list(dict.fromkeys(core_stocks))
+        elif self.stock_pool_source == "nasdaq100":
+            return list(dict.fromkeys(growth_stocks))
+        elif self.stock_pool_source == "combined":
+            return list(dict.fromkeys(core_stocks + growth_stocks))
+        else:
+            return list(dict.fromkeys(core_stocks))
 
     def _InitializeSymbols(self):
         """初始化所有股票symbol"""
@@ -273,6 +441,53 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if sym == symbol:
                 return name
         return str(symbol)
+
+    def UpdateStockPool(self):
+        """定期更新股票池"""
+        if not self.enable_dynamic_pool or self.IsWarmingUp:
+            return
+        
+        try:
+            # 检查是否需要更新
+            days_since_update = (self.Time - self.last_pool_update).days
+            if days_since_update < self.pool_update_freq:
+                return
+            
+            self.Log(f"检查股票池更新...")
+            
+            # 尝试重新加载股票池
+            new_tickers = self._GetUSStockPool()
+            
+            # 检查是否有新增股票
+            current_tickers = set(self.us_tickers)
+            new_additions = [t for t in new_tickers if t not in current_tickers]
+            
+            if new_additions:
+                self.Log(f"新增 {len(new_additions)} 只股票: {', '.join(new_additions[:10])}")
+                
+                # 添加新股票到symbols
+                for ticker in new_additions:
+                    try:
+                        if ticker not in self.symbols:
+                            symbol = self.AddEquity(ticker, Resolution.DAILY).Symbol
+                            self.symbols[ticker] = symbol
+                            self.ticker_list.append(ticker)
+                            
+                            if ticker not in self.safe_tickers:
+                                self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
+                                self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
+                    except Exception as e:
+                        self.Log(f"添加新股 {ticker} 失败: {e}")
+                
+                # 更新股票池列表
+                self.us_tickers = list(dict.fromkeys(self.us_tickers + new_additions))
+                self.last_pool_update = self.Time
+                self.Log(f"股票池更新完成，当前共 {len(self.us_tickers)} 只")
+            else:
+                self.Log("股票池无需更新")
+                
+        except Exception as e:
+            self.Log(f"股票池更新失败: {e}")
 
     # ============ 核心策略方法 ============
     def WeeklyUpdate(self):
