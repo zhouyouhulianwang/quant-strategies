@@ -79,8 +79,12 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.min_position_pct = 0.00  # 取消最小仓位限制
         self.max_stocks = 10
         self.min_score = 0.0
-        self.max_total_exposure = 0.50  # 总仓位上限 80%→50%（严控回撤）
-        self.min_total_exposure = 0.30  # 总仓位下限 20%→30%
+        
+        # P2优化：动态总仓位
+        self.max_total_exposure = 0.80  # 总仓位上限 50%→80%（牛市提高仓位）
+        self.min_total_exposure = 0.30  # 总仓位下限 30%（熊市最低仓位）
+        self.current_total_exposure = self.min_total_exposure  # 动态总仓位
+        
         self.max_sector_pct = 0.30  # 单行业最大占比30%
         
         # ============ 行业轮动参数 ============
@@ -101,9 +105,14 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 止损参数 ============
         self.stop_loss_pct = 0.08  # 固定止损 15%→8%（更严格）
+        self.use_atr_stop = True  # P1优化：启用ATR止损
+        self.atr_period = 14
+        self.atr_multiplier = 2.0  # ATR倍数
+        self.atr_indicators = {}  # ATR指标缓存
+        
         self.trailing_stop_enabled = True
         self.trailing_stop_pct = 0.10  # 追踪止损 20%→10%（更积极）
-        self.max_drawdown_pct = 0.15  # 最大回撤保护 25%→15%（更早触发）
+        self.max_drawdown_pct = 0.10  # P1优化：最大回撤保护 15%→10%
         
         # ============ 趋势过滤参数 ============
         self.trend_filter_enabled = False  # 关闭趋势过滤（牛市中过度限制选股）
@@ -115,29 +124,13 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.rsi_filter_enabled = False  # 关闭RSI过滤（牛市中过度限制选股）
         self.rsi_period = 14
         
-        # ============ 多因子参数 ============
+        # ============ 多因子参数（已禁用，保留配置兼容性）============
         self.multi_factor_enabled = False  # 禁用多因子，单RSI表现更好
-        self.factor_weights = {
-            'momentum': 0.60,  # 动量因子权重（增加）
-            'rsi': 0.25,       # RSI因子权重（增加）
-            'macd': 0.10,      # MACD因子权重（减少）
-            'bollinger': 0.05  # 布林带因子权重（减少）
-        }
-        
-        # MACD参数
-        self.macd_fast = 12
-        self.macd_slow = 26
-        self.macd_signal = 9
-        
-        # 布林带参数
-        self.bb_period = 20
-        self.bb_std = 2.0
+        # 清理残留：MACD/BB指标不再初始化
         
         # ============ 数据缓存 ============
         self.price_history = {}
         self.rsi_indicators = {}
-        self.macd_indicators = {}      # MACD指标
-        self.bb_indicators = {}        # 布林带指标
         self.sma_indicators = {}
         self.high_water_mark = 0  # 用于回撤保护
         self.position_high = {}  # 用于追踪止损
@@ -145,6 +138,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 200日均线市场状态（v3.1 回撤控制核心）============
         self.market_bear_mode = False  # 是否处于熊市模式
+        self.bear_mode_confirm_days = 3  # P1优化：熊市确认天数
+        self.bear_mode_counter = 0  # 熊市计数器
         self.dynamic_sizing_enabled = True  # 保留向后兼容
         
         # ============ 期权对冲参数（v3.1 方案B）============
@@ -192,8 +187,19 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 self.Log(f"ERROR adding SPY option: {e}")
                 self.hedge_enabled = False
         
+        # ============ 执行模型设置（P0优化）============
+        # 设置滑点模型，模拟实盘成交成本
+        # 使用自定义滑点模型
+        self.SetSecurityInitializer(self.CustomSecurityInitializer)
+        
+        # ============ 流动性过滤参数（P0优化）============
+        self.min_daily_volume = 1000000  # 最小日均成交量100万
+        self.min_price = 5.0  # 最小股价$5
+        self.liquid_stocks = set()  # 高流动性股票集合
+        
         # ============ 成本基准记录 ============
         self.cost_basis = {}
+        self.position_high = {}
         
         # ============ 调度设置 ============
         self.Schedule.On(
@@ -449,23 +455,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
                     self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
                     
-                    # 初始化MACD和布林带指标（多因子）
-                    if self.multi_factor_enabled:
-                        self.macd_indicators[symbol] = self.MACD(
-                            symbol, 
-                            self.macd_fast, 
-                            self.macd_slow, 
-                            self.macd_signal, 
-                            MovingAverageType.Exponential, 
-                            Resolution.DAILY
-                        )
-                        self.bb_indicators[symbol] = self.BB(
-                            symbol, 
-                            self.bb_period, 
-                            self.bb_std, 
-                            MovingAverageType.Simple, 
-                            Resolution.DAILY
-                        )
+                    # P1优化：初始化ATR指标
+                    if self.use_atr_stop:
+                        self.atr_indicators[symbol] = self.ATR(symbol, self.atr_period)
                 
                 # 为SPY也添加SMA指标（用于动态仓位）
                 if ticker == "SPY" and symbol not in self.sma_indicators:
@@ -479,7 +471,38 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 self.safe_symbols[ticker] = self.AddEquity(ticker, Resolution.DAILY).Symbol
             except Exception as e:
                 self.Log(f"ERROR adding safe asset {ticker}: {e}")
+        
+        # P0优化：初始化流动性过滤（延迟到首次调仓时）
+        self.liquid_stocks_initialized = False
 
+    def CustomSecurityInitializer(self, security):
+        """P0优化：自定义证券初始化，设置滑点模型"""
+        # 设置滑点模型为常量0.1%
+        security.SetSlippageModel(ConstantSlippageModel(0.001))
+        
+    def _UpdateLiquidityFilter(self):
+        """P0优化：更新高流动性股票列表"""
+        self.liquid_stocks = set()
+        for ticker, symbol in self.symbols.items():
+            try:
+                security = self.Securities[symbol]
+                # 检查价格和成交量
+                if security.Price >= self.min_price:
+                    # 获取20日平均成交量
+                    history = self.History(symbol, 20, Resolution.DAILY)
+                    if not history.empty and len(history) >= 10:
+                        avg_volume = history['volume'].mean()
+                        if avg_volume >= self.min_daily_volume:
+                            self.liquid_stocks.add(ticker)
+            except:
+                pass
+        
+        self.Log(f"流动性过滤: {len(self.liquid_stocks)}/{len(self.symbols)} 只股票满足条件")
+    
+    def _IsLiquid(self, ticker: str) -> bool:
+        """P0优化：检查股票是否高流动性"""
+        return ticker in self.liquid_stocks or ticker in self.safe_tickers
+    
     def GetTickerName(self, symbol: Symbol) -> str:
         """根据Symbol获取Ticker名称"""
         for name, sym in self.symbols.items():
@@ -619,13 +642,38 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             current_spy = self.Securities[spy_symbol].Price
             sma50 = spy_sma50.Current.Value
             
-            # 判断市场状态
+            # P1优化：添加确认机制，连续3天低于50MA才确认熊市
+            is_below_sma = (current_spy < sma50)
+            
+            if is_below_sma:
+                self.bear_mode_counter += 1
+            else:
+                self.bear_mode_counter = 0
+            
+            # 判断市场状态（需要连续3天确认）
             was_bear = self.market_bear_mode
-            self.market_bear_mode = (current_spy < sma50)
+            self.market_bear_mode = (self.bear_mode_counter >= self.bear_mode_confirm_days)
+            
+            # P2优化：根据市场状态动态调整总仓位
+            if self.market_bear_mode:
+                # 熊市：最低仓位
+                self.current_total_exposure = self.min_total_exposure
+            else:
+                # 牛市：根据趋势强度动态调整
+                deviation = (current_spy - sma50) / sma50 if sma50 > 0 else 0
+                if deviation > 0.05:
+                    # 强势上涨：80%仓位
+                    self.current_total_exposure = self.max_total_exposure
+                elif deviation > 0.02:
+                    # 中等强势：60%仓位
+                    self.current_total_exposure = 0.60
+                else:
+                    # 温和上涨：45%仓位
+                    self.current_total_exposure = 0.45
             
             if self.market_bear_mode and not was_bear:
                 # 刚进入熊市：清仓股票，转投避险资产
-                self.Log(f"⚠️ 市场进入熊市模式: SPY={current_spy:.2f} < 50MA={sma50:.2f}")
+                self.Log(f"⚠️ 市场进入熊市模式: SPY={current_spy:.2f} < 50MA={sma50:.2f} (连续{self.bear_mode_counter}天), 仓位降至{self.current_total_exposure*100:.0f}%")
                 self.Liquidate()
                 # 50% TLT, 50% GLD
                 for ticker, symbol in self.safe_symbols.items():
@@ -633,15 +681,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 self.Log("已清仓股票，转入TLT/GLD避险")
             elif not self.market_bear_mode and was_bear:
                 # 刚退出熊市：清仓避险资产，恢复股票策略
-                self.Log(f"✅ 市场恢复牛市模式: SPY={current_spy:.2f} > 50MA={sma50:.2f}")
+                self.Log(f"✅ 市场恢复牛市模式: SPY={current_spy:.2f} > 50MA={sma50:.2f}, 仓位提升至{self.current_total_exposure*100:.0f}%")
                 for ticker in self.safe_tickers:
                     if ticker in self.safe_symbols:
                         self.Liquidate(self.safe_symbols[ticker])
                 self.Log("已清仓避险资产，恢复股票策略")
             elif self.market_bear_mode:
-                self.Log(f"市场处于熊市: SPY={current_spy:.2f} < 50MA={sma50:.2f}")
+                self.Log(f"市场处于熊市: SPY={current_spy:.2f} < 50MA={sma50:.2f} (连续{self.bear_mode_counter}天), 仓位={self.current_total_exposure*100:.0f}%")
             else:
-                self.Log(f"市场处于牛市: SPY={current_spy:.2f} > 50MA={sma50:.2f}")
+                self.Log(f"市场处于牛市: SPY={current_spy:.2f} > 50MA={sma50:.2f}, 仓位={self.current_total_exposure*100:.0f}%")
             
         except Exception as e:
             self.Log(f"ERROR in CheckMarketState: {e}")
@@ -711,7 +759,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     def CalculateMomentumScore(self, symbol: Symbol, ticker: str) -> Optional[Dict]:
         """
-        计算动量得分
+        计算动量得分（v3.1优化版：仅使用RSI调整）
         返回: {'symbol': symbol, 'score': score, 'returns': {}, 'current_price': price}
         """
         try:
@@ -735,117 +783,41 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             # 计算加权动量得分（基础分）
             base_score = sum(returns[p] * self.current_weights[p] for p in returns)
             
-            # ========== 多因子评分系统 ==========
-            if self.multi_factor_enabled:
-                # 1. 动量因子 (50%)
-                momentum_score = base_score
-                
-                # 2. RSI因子 (20%)
-                rsi_factor = 0.0
-                try:
-                    if symbol in self.rsi_indicators:
-                        rsi = self.rsi_indicators[symbol]
-                        if rsi.IsReady:
-                            rsi_value = rsi.Current.Value
-                            # RSI 50为中轴，高于50为正值，低于50为负值
-                            # 归一化到 -1 ~ 1
-                            rsi_factor = (rsi_value - 50) / 50.0
-                            # 反转：RSI越高越危险（避免超买）
-                            rsi_factor = -rsi_factor * 0.5  # 反转并缩放
-                except:
-                    pass
-                
-                # 3. MACD因子 (15%)
-                macd_factor = 0.0
-                try:
-                    if symbol in self.macd_indicators:
-                        macd = self.macd_indicators[symbol]
-                        if macd.IsReady:
-                            # MACD柱状图 = MACD线 - 信号线
-                            histogram = macd.Current.Value - macd.Signal.Current.Value
-                            # 归一化（使用当前价格作为参考）
-                            if current_price > 0:
-                                macd_factor = histogram / current_price * 100  # 缩放
-                except:
-                    pass
-                
-                # 4. 布林带因子 (15%)
-                bb_factor = 0.0
-                try:
-                    if symbol in self.bb_indicators:
-                        bb = self.bb_indicators[symbol]
-                        if bb.IsReady:
-                            upper = bb.UpperBand.Current.Value
-                            lower = bb.LowerBand.Current.Value
-                            middle = bb.MiddleBand.Current.Value
-                            
-                            if upper > lower:  # 避免除零
-                                # 价格在布林带中的位置 (0=下轨, 1=上轨)
-                                position = (current_price - lower) / (upper - lower)
-                                # 反转：价格越接近下轨越好（超卖）
-                                bb_factor = (0.5 - position) * 2.0  # 反转并归一化到 -1~1
-                except:
-                    pass
-                
-                # 组合所有因子
-                weights = self.factor_weights
-                final_score = (
-                    momentum_score * weights['momentum'] +
-                    rsi_factor * weights['rsi'] +
-                    macd_factor * weights['macd'] +
-                    bb_factor * weights['bollinger']
-                )
-                
-                # 记录多因子详情
-                factor_details = {
-                    'momentum': momentum_score,
-                    'rsi': rsi_factor,
-                    'macd': macd_factor,
-                    'bollinger': bb_factor,
-                    'final': final_score
-                }
-                
-                score = final_score
-                
-            else:
-                # 使用原有的RSI调整逻辑
-                # ========== 基于个股RSI超买超卖动态调整 ==========
-                rsi_adjusted_score = base_score
-                rsi_value = 50
-                rsi_state = "neutral"
-                
-                try:
-                    if symbol in self.rsi_indicators:
-                        rsi = self.rsi_indicators[symbol]
-                        if rsi.IsReady:
-                            rsi_value = rsi.Current.Value
-                            
-                            if rsi_value > self.rsi_overbought:
-                                rsi_adjusted_score = base_score * self.rsi_adjustment_factor
-                                rsi_state = f"overbought({rsi_value:.1f})"
-                            elif rsi_value < self.rsi_oversold:
-                                if base_score > 0:
-                                    rsi_adjusted_score = base_score * (1.0 + (1.0 - self.rsi_adjustment_factor))
-                                    rsi_state = f"oversold_boost({rsi_value:.1f})"
-                                else:
-                                    rsi_adjusted_score = base_score * self.rsi_adjustment_factor
-                                    rsi_state = f"oversold_weak({rsi_value:.1f})"
+            # v3.1: 基于个股RSI超买超卖动态调整
+            rsi_adjusted_score = base_score
+            rsi_value = 50
+            rsi_state = "neutral"
+            
+            try:
+                if symbol in self.rsi_indicators:
+                    rsi = self.rsi_indicators[symbol]
+                    if rsi.IsReady:
+                        rsi_value = rsi.Current.Value
+                        
+                        if rsi_value > self.rsi_overbought:
+                            rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                            rsi_state = f"overbought({rsi_value:.1f})"
+                        elif rsi_value < self.rsi_oversold:
+                            if base_score > 0:
+                                rsi_adjusted_score = base_score * (1.0 + (1.0 - self.rsi_adjustment_factor))
+                                rsi_state = f"oversold_boost({rsi_value:.1f})"
                             else:
-                                rsi_adjusted_score = base_score
-                                rsi_state = f"neutral({rsi_value:.1f})"
-                except Exception as e:
-                    self.Log(f"RSI调整失败 {ticker}: {e}")
-                    rsi_adjusted_score = base_score
-                
-                score = rsi_adjusted_score
-                factor_details = None
+                                rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                                rsi_state = f"oversold_weak({rsi_value:.1f})"
+                        else:
+                            rsi_adjusted_score = base_score
+                            rsi_state = f"neutral({rsi_value:.1f})"
+            except Exception as e:
+                self.Log(f"RSI调整失败 {ticker}: {e}")
+                rsi_adjusted_score = base_score
+            
+            score = rsi_adjusted_score
             
             return {
                 'symbol': symbol,
                 'ticker': ticker,
                 'score': score,
                 'base_score': base_score,
-                'factor_details': factor_details,
                 'returns': returns,
                 'current_price': current_price
             }
@@ -945,21 +917,41 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             return 1.0
 
     def CheckStopLoss(self):
-        """检查止损和追踪止损"""
+        """检查止损和追踪止损（P1优化：添加ATR止损）"""
         if self.IsWarmingUp:
             return
         
-        # 固定止损
+        # 固定止损或ATR止损
         for symbol, cost in list(self.cost_basis.items()):
             if self.Portfolio[symbol].Invested:
                 current_price = self.Portfolio[symbol].Price
+                
+                # P1优化：使用ATR止损
+                if self.use_atr_stop and symbol in self.atr_indicators:
+                    try:
+                        atr = self.atr_indicators[symbol]
+                        if atr.IsReady:
+                            atr_value = atr.Current.Value
+                            stop_price = cost - (self.atr_multiplier * atr_value)
+                            if current_price < stop_price:
+                                self.Liquidate(symbol)
+                                if symbol in self.cost_basis:
+                                    del self.cost_basis[symbol]
+                                if symbol in self.position_high:
+                                    del self.position_high[symbol]
+                                self.Log(f"ATR止损触发: {self.GetTickerName(symbol)} at {current_price:.2f} (ATR={atr_value:.2f})")
+                                continue
+                    except:
+                        pass
+                
+                # 固定止损（备用）
                 if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
                     self.Liquidate(symbol)
                     if symbol in self.cost_basis:
                         del self.cost_basis[symbol]
                     if symbol in self.position_high:
                         del self.position_high[symbol]
-                    self.Log(f"止损触发: {self.GetTickerName(symbol)} at {current_price:.2f}")
+                    self.Log(f"固定止损触发: {self.GetTickerName(symbol)} at {current_price:.2f}")
         
         # 追踪止损
         if self.trailing_stop_enabled:
@@ -1017,6 +1009,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             self.Log("熊市模式：跳过股票再平衡")
             return
         
+        # P0优化：延迟初始化流动性过滤
+        if not self.liquid_stocks_initialized:
+            self._UpdateLiquidityFilter()
+            self.liquid_stocks_initialized = True
+        
+        # P0优化：定期更新流动性过滤
+        if self.week_counter % 4 == 0:  # 每4周更新一次
+            self._UpdateLiquidityFilter()
+        
         # 获取行业过滤
         if self.sector_rotation_enabled:
             top_sectors = self.GetSectorMomentum()
@@ -1027,15 +1028,17 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if 'Other' not in top_sectors:
                 top_sectors.append('Other')
             
-            # 筛选股票
+            # 筛选股票（加入流动性过滤）
             us_symbols = {}
             for ticker, symbol in self.symbols.items():
-                if ticker in self.us_tickers:
+                if ticker in self.us_tickers and self._IsLiquid(ticker):
                     sector = self.sector_map.get(ticker, 'Other')
                     if sector in top_sectors or ticker in ['SPY', 'QQQ', 'TLT', 'GLD']:
                         us_symbols[ticker] = symbol
         else:
-            us_symbols = {k: v for k, v in self.symbols.items() if k in self.us_tickers}
+            # P0优化：应用流动性过滤
+            us_symbols = {k: v for k, v in self.symbols.items() 
+                         if k in self.us_tickers and self._IsLiquid(k)}
         
         self.RebalanceMarket(us_symbols, "US")
 
@@ -1098,36 +1101,13 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 7. 计算总权重并调整
         total_weight = sum(targets.values())
         
-        # 8. 记录原始分配（含多因子信息）
+        # 8. 记录原始分配
         top5 = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        # 获取top5的多因子详情
-        factor_info = []
-        for sym, w in top5:
-            ticker = self.GetTickerName(sym)
-            if ticker in positive_scores:
-                base = positive_scores[ticker].get('base_score', 0)
-                final = positive_scores[ticker].get('score', 0)
-                details = positive_scores[ticker].get('factor_details')
-                if details and self.multi_factor_enabled:
-                    factor_info.append(
-                        f"{ticker}(base={base:.3f},final={final:.3f},"
-                        f"M={details.get('momentum',0):.3f},R={details.get('rsi',0):.3f},"
-                        f"MACD={details.get('macd',0):.3f},BB={details.get('bollinger',0):.3f})"
-                    )
-                else:
-                    factor_info.append(f"{ticker}(base={base:.3f},final={final:.3f})")
-            else:
-                factor_info.append(f"{ticker}")
         
         top5_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in top5])
         self.Log(f"[{self.Time.strftime('%Y-%m-%d')}] {market_name}原始: "
                 f"{len(targets)}只, 总仓位{total_weight*100:.1f}%, "
                 f"最高{max(targets.values())*100:.1f}%, top5: {top5_str}")
-        
-        # 记录多因子详情
-        if factor_info and self.multi_factor_enabled:
-            self.Log(f"  多因子: {', '.join(factor_info[:2])}")
         
         # 9. 限制总仓位（使用动态仓位）
         total_weight = sum(targets.values())
