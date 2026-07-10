@@ -1,12 +1,12 @@
 from AlgorithmImports import *
 import os
 import json
+
 class AdaptiveMomentumStrategy(QCAlgorithm):
     def Initialize(self):
         self.set_start_date(2020, 1, 1)
-        self.set_end_date(2026, 6, 30)  # 回测版：固定结束日期
+        self.set_end_date(2026, 6, 30)
         self.set_cash(100000)
-        # 使用 Margin 账户，支持更大仓位灵活性
         self.set_brokerage_model(BrokerageName.INTERACTIVE_BROKERS_BROKERAGE, AccountType.MARGIN)
         
         self.lbs = {'1d':1,'1w':5,'2w':10,'1m':21,'3m':63,'6m':126}
@@ -20,18 +20,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vix_symbol = self.add_equity("VIXY", Resolution.DAILY).symbol
         self.vix_th = 30.0
         
-        # 风格池：作为行业轮动的"特殊行业"
-        # 使用 us_t 中已有的股票，避免数据缺失
-        self.style_pools = {
-            'Style_LargeCapTech':   ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA","NFLX","CRM","ADBE"],
-            'Style_SmallCapGrowth': ["AMD","INTC","MU","FTNT","DDOG","PLTR","NOW","NET","FSLR","ANET"],
-            'Style_Value':          ["CVX","XOM","JPM","BAC","WFC","GS","JNJ","PFE","UNH","KO","PEP"],
-            'Style_HighMomentum':   ["NVDA","AMD","FTNT","DDOG","NET","AAPL","MSFT","GOOGL","AMZN","META"],
-            'Style_Defensive':      ["JNJ","UNH","WMT","PG","KO","PEP","XOM","CVX","JPM","T"]
-        }
-        
-        self.max_pos = 0.15  # 单票最大15%（最优）
-        self.n_stocks = 10  # 10×8%=80%，与总仓位限制匹配
+        self.max_pos = 0.15
+        self.n_stocks = 10
         self.min_score = 0.0
         
         self.sec_rot = True
@@ -52,14 +42,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'XOM':'Energy','CVX':'Energy','COP':'Energy','SLB':'Energy','OXY':'Energy','EOG':'Energy','MPC':'Energy','VLO':'Energy','PSX':'Energy','KMI':'Energy',
             'CAT':'Industrial','HON':'Industrial','UPS':'Industrial','BA':'Industrial','GE':'Industrial','RTX':'Industrial','LMT':'Industrial',
             'NOC':'Industrial','GD':'Industrial','ITW':'Industrial','MMM':'Industrial','EMR':'Industrial',
-            'VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom','CHTR':'Telecom','CCI':'Telecom','AMT':'Telecom',
-            # 补充映射 - 这些股票原来被映射到'Other'，现在正确归类
-            'ORCL':'Tech','CSCO':'Tech','AVGO':'Tech','QCOM':'Tech','TXN':'Tech',
-            'AMAT':'Tech','INTU':'Tech','ANET':'Tech','SNPS':'Tech','KLAC':'Tech',
-            'MRVL':'Tech','NXPI':'Tech','SWKS':'Tech','MCHP':'Tech',
-            'CAT':'Industrial','HON':'Industrial','UPS':'Industrial','BA':'Industrial',
-            'GE':'Industrial','RTX':'Industrial','LMT':'Industrial','NOC':'Industrial',
-            'GD':'Industrial','ITW':'Industrial','MMM':'Industrial','EMR':'Industrial'
+            'VZ':'Telecom','T':'Telecom','CMCSA':'Telecom','TMUS':'Telecom','CHTR':'Telecom','CCI':'Telecom','AMT':'Telecom'
         }
         
         self.base_freq = 2
@@ -73,10 +56,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.val_extreme = 0.8
         self.max_pause = 4
         
-        self.us_alloc = 1.0
-        self.hk_alloc = 0.0
-        self.rel_strength = False
-        self.enable_hk = False
         self.sl_pct = 0.15
         
         self.us_t = [
@@ -102,26 +81,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 self.symbols[ticker] = self.add_equity(ticker, Resolution.DAILY).symbol
                 self.tickers.append(ticker)
             except Exception as e:
-                self.log(f"ERROR: {e}")
+                self.log(f"ERROR adding {ticker}: {e}")
         
         for ticker in self.safe_t:
             self.safe_s[ticker] = self.add_equity(ticker, Resolution.DAILY).symbol
         
         self.cost_b = {}
-        self.market_heat_limit = 0.30  # SPY 3个月涨幅超过30%视为过热
-        self.heat_reduce = 0.60        # 过热时总仓位降低到60%
         
         self.schedule.on(self.date_rules.every(DayOfWeek.MONDAY), self.time_rules.after_market_open("SPY",5), self.WeeklyUpdate)
         self.schedule.on(self.date_rules.every_day("SPY"), self.time_rules.after_market_open("SPY",60), self.CheckStopLoss)
-        
-        # 风格指数：用这些指数代表对应风格的行业动量（必须在 symbols 创建后）
-        self.style_indices = {
-            'Style_LargeCapTech':   self.symbols.get("SPY"),   # 大盘用 SPY
-            'Style_SmallCapGrowth': self.symbols.get("IWM"),   # 小盘用 IWM
-            'Style_Value':          self.symbols.get("VTV"),   # 价值用 VTV
-            'Style_HighMomentum':   self.symbols.get("QQQ"),   # 高动量用 QQQ
-            'Style_Defensive':      self.symbols.get("SPY")    # 防御用 SPY
-        }
         
         warmup = max(self.lbs['6m'], self.sec_lookback) + 20
         self.set_warm_up(timedelta(days=warmup))
@@ -229,7 +197,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     def GetSectorMomentum(self):
         sec_ret = {}
         
-        # 1. 计算标准行业动量
         for ticker, sector in self.sec_m.items():
             if ticker in self.symbols:
                 try:
@@ -239,17 +206,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                         if sector not in sec_ret:
                             sec_ret[sector] = []
                         sec_ret[sector].append(ret)
-                except Exception as e:
-                    self.log(f"ERROR: {e}")
-        
-        # 2. 计算风格行业动量（使用指数代表）
-        for style_name, index_symbol in self.style_indices.items():
-            if index_symbol and index_symbol in self.symbols.values():
-                try:
-                    history = self.history(index_symbol, self.sec_lookback + 5, Resolution.DAILY)
-                    if not history.empty and len(history) >= self.sec_lookback:
-                        ret = (history['close'].iloc[-1] - history['close'].iloc[-self.sec_lookback]) / history['close'].iloc[-self.sec_lookback]
-                        sec_ret[style_name] = [ret]  # 单值作为风格行业动量
                 except Exception as e:
                     self.log(f"ERROR: {e}")
         
@@ -271,26 +227,24 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.liquidate(symbol)
                     del self.cost_b[symbol]
     
-
     def RebalanceUS(self):
         if self.is_warming_up:
             return
         
         if self.sec_rot:
             top_sectors = self.GetSectorMomentum()
+            if not top_sectors:
+                top_sectors = ['Tech', 'Finance', 'Healthcare']
             
-            # 收集选中的风格行业中的股票
-            selected_style_stocks = set()
-            for sector in top_sectors:
-                if sector in self.style_pools:
-                    selected_style_stocks.update(self.style_pools[sector])
+            # 增加 Other 行业，确保未映射股票也能入选
+            if 'Other' not in top_sectors:
+                top_sectors.append('Other')
             
             us_symbols = {}
             for k, v in self.symbols.items():
                 if k in self.us_t:
                     sector = self.sec_m.get(k, 'Other')
-                    # 属于选中的标准行业 或 属于选中的风格行业 或 是安全资产
-                    if sector in top_sectors or k in selected_style_stocks or k in ['SPY','QQQ','TLT','GLD']:
+                    if sector in top_sectors or k in ['SPY','QQQ','TLT','GLD']:
                         us_symbols[k] = v
         else:
             us_symbols = {k:v for k,v in self.symbols.items() if k in self.us_t}
@@ -315,7 +269,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         sort_s = sorted(pos.items(), key=lambda x: x[1]['score'], reverse=True)
         top_s = sort_s[:self.n_stocks]
         
-        # 动量比例分配
         t_score = sum(data['score'] for _, data in top_s)
         targets = {}
         
@@ -323,31 +276,15 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             weight = (data['score'] / t_score) if t_score > 0 else 0
             targets[data['symbol']] = weight
         
-        # 限制单票不超过 max_pos
         for sym in targets:
             targets[sym] = min(targets[sym], self.max_pos)
         
-        # 检查市场是否过热（SPY 3个月涨幅 > 30%）
-        heat_scale = 1.0
-        try:
-            spy_history = self.history(self.symbols.get("SPY"), 63, Resolution.DAILY)
-            if not spy_history.empty and len(spy_history) >= 63:
-                spy_3m_return = (spy_history['close'].iloc[-1] / spy_history['close'].iloc[-63]) - 1
-                if spy_3m_return > self.market_heat_limit:
-                    heat_scale = self.heat_reduce
-                    self.log(f"  市场过热: SPY 3个月涨{spy_3m_return*100:.1f}% > {self.market_heat_limit*100}%, 总仓位限制到{self.heat_reduce*100:.0f}%")
-        except:
-            pass
-        
-        # 计算当前总仓位
         t_weight = sum(targets.values())
         
-        # 日志记录原始分配
         top5_alloc = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
         top5_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in top5_alloc])
         self.log(f"[{self.time.strftime('%Y-%m-%d')}] 原始分配: {len(targets)}只票, 总仓位{t_weight*100:.1f}%, 最高单票{max(targets.values())*100:.1f}%, top5: {top5_str}")
         
-        # 如果总仓位超过80%，等比例缩减到80%
         if t_weight > 0.8:
             scale = 0.8 / t_weight
             for sym in targets:
@@ -356,7 +293,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         elif t_weight < 0.8:
             self.log(f"  总仓位{t_weight*100:.1f}%低于80%，保持原比例不放大")
         
-        # 记录最终分配
         final_weight = sum(targets.values())
         final_top5 = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
         final_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in final_top5])
@@ -376,7 +312,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 if self.portfolio[symbol].invested and symbol not in self.cost_b:
                     self.cost_b[symbol] = self.portfolio[symbol].average_price
     
-
     def GetTickerName(self, symbol):
         for name, sym in self.symbols.items():
             if sym == symbol:
