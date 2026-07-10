@@ -40,7 +40,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         }
         self.base_weights = {
             '1d': 0.1, '1w': 0.5, '2w': 1.0, 
-            '1m': 1.0, '3m': 0.7, '6m': 0.5  # 保守配置：降低长期动量权重
+            '1m': 1.0, '3m': 0.7, '6m': 0.5  # 保守配置
         }
         self.current_weights = self.base_weights.copy()
         
