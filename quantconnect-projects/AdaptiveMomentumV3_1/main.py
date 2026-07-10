@@ -1133,7 +1133,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             else:
                 weight = 0
             
-            # 应用波动率缩放
+            # 应用波动率缩放（默认关闭=1.0）
             vol_scale = self.CalculateVolatilityScaling(data['symbol'])
             weight *= vol_scale
             
