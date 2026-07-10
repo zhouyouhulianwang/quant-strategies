@@ -26,6 +26,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             AccountType.MARGIN
         )
         
+        # 设置现金缓冲，避免购买力不足错误
+        self.Settings.FreePortfolioValuePercentage = 0.05  # 保留5%现金作为缓冲
+        
         # ============ 动量参数 ============
         self.lookback_periods = {
             '1d': 1, '1w': 5, '2w': 10, 
@@ -107,10 +110,10 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.trend_lookback = 200  # 200日均线
         
         # ============ RSI参数 ============
+        # 注意：最佳参数在Initialize()开头已定义（65/35/0.3）
+        # 这里只初始化RSI指标，不覆盖参数
         self.rsi_filter_enabled = False  # 关闭RSI过滤（牛市中过度限制选股）
         self.rsi_period = 14
-        self.rsi_overbought = 70
-        self.rsi_oversold = 30
         
         # ============ 多因子参数 ============
         self.multi_factor_enabled = False  # 禁用多因子，单RSI表现更好
@@ -215,6 +218,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 日志 ============
         self.Log(f"策略初始化完成。WarmUp: {warmup_days}天")
+        self.Log(f"RSI参数: overbought={self.rsi_overbought}, oversold={self.rsi_oversold}, factor={self.rsi_adjustment_factor}")
+        self.Log(f"多因子: enabled={self.multi_factor_enabled}")
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
