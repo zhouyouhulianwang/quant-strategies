@@ -1,0 +1,26 @@
+# QuantConnect backtest outputs
+My First Project/backtests_*/
+My Project V*/backtests_*/
+*.backup
+
+# QuantConnect cache
+.QuantConnect/cache/
+
+# Lean data (large files)
+data/
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Misc
+.DS_Store
+*.log
+
+# Secrets (NEVER commit)
+.secrets/
