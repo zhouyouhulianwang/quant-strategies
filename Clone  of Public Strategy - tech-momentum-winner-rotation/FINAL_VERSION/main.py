@@ -4,7 +4,7 @@ import json
 class AdaptiveMomentumStrategy(QCAlgorithm):
     def Initialize(self):
         self.SetStartDate(2020, 1, 1)
-        self.SetEndDate(2025, 6, 1)
+        self.SetEndDate(2025, 6, 30)
         self.SetCash(100000)
         
         self.lbs = {'1d':1,'1w':5,'2w':10,'1m':21,'3m':63,'6m':126}

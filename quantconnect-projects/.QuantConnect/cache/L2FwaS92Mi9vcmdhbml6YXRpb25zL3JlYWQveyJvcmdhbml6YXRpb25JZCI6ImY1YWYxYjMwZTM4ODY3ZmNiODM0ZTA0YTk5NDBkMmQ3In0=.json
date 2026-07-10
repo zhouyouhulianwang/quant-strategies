@@ -98,15 +98,15 @@
             },
             {
                 "name": "Lines",
-                "value": "0"
+                "value": "4,295"
             },
             {
                 "name": "Projects",
-                "value": "0"
+                "value": "3"
             },
             {
                 "name": "Backtests",
-                "value": "0"
+                "value": "9"
             },
             {
                 "name": "Members",
@@ -250,7 +250,32 @@
         "objectStoreHighestConsumers": [],
         "objectStorageUsed": 0,
         "objectStorageUsedHuman": "0 Bytes",
-        "storageHighestConsumers": [],
+        "storageHighestConsumers": [
+            {
+                "projectId": 33884981,
+                "userName": "YOU ZHOU",
+                "userProfile": "af1459b467b91f71783403682.png",
+                "name": "Clone  of Public Strategy - tech-momentum-winner-rotation",
+                "storageUsed": 10,
+                "modified": "2026-07-09 07:01:33"
+            },
+            {
+                "projectId": 33917937,
+                "userName": "YOU ZHOU",
+                "userProfile": "af1459b467b91f71783403682.png",
+                "name": "Recycle Bin/2026-07-09 04-07-47 Swimming Green Mule",
+                "storageUsed": 0,
+                "modified": "2026-07-09 04:03:12"
+            },
+            {
+                "projectId": 33917988,
+                "userName": "YOU ZHOU",
+                "userProfile": "af1459b467b91f71783403682.png",
+                "name": "Recycle Bin/2026-07-09 04-07-53 Creative Yellow-Green Pelican",
+                "storageUsed": 0,
+                "modified": "2026-07-09 04:07:48"
+            }
+        ],
         "members": [
             {
                 "id": 514024,
@@ -261,7 +286,7 @@
                 "editable": false,
                 "support": null,
                 "linkedin": null,
-                "lastLoginTimestamp": "2026-07-08 05:39:58",
+                "lastLoginTimestamp": "2026-07-09 08:27:58",
                 "email": "zhouyouhulianwang@gmail.com",
                 "profileUrl": "/u/you-zhou_2",
                 "publicId": "you-zhou_2",
@@ -444,15 +469,15 @@
         },
         "logs": {
             "limit": 10240,
-            "remaining": 3145728,
-            "dailyRemaining": 3145728,
+            "remaining": 3135327,
+            "dailyRemaining": 3135327,
             "dailyAllowance": 3145728
         },
         "downgradeScheduled": null,
         "userOrganizationStatistics": {
-            "storageUsed": 0,
+            "storageUsed": 10,
             "storageQuota": 2000,
-            "projectsCount": 0
+            "projectsCount": 3
         },
         "ipAccessControl": [],
         "ipAccessControlEnabled": false
