@@ -89,7 +89,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.position_entry_date = {}  # 记录买入日期
         
         # 添加单票/单日亏损限制
-        self.max_loss_per_position = 500.0  # 单票最大亏损$500（绝对金额）
+        self.max_loss_per_position = 999999999.0  # 取消单票亏损限制  # 单票最大亏损$500（绝对金额）
         self.max_daily_loss_pct = 0.05  # 单日最大亏损5%（净值）
         self.last_day_net_value = 0  # 记录上一日净值
         self.trading_paused_days = 0  # 暂停交易天数（触发单日亏损限制后）
@@ -213,10 +213,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.SetSecurityInitializer(self.CustomSecurityInitializer)
         
         # ============ 流动性过滤参数（P0优化）============
-        # P0优化：动态流动性过滤（牛市严格，熊市宽松）
-        self.min_daily_volume_bull = 10000000  # 牛市最小日均成交量1000万
-        self.min_daily_volume_bear = 5000000   # 熊市最小日均成交量500万
-        self.min_daily_volume = self.min_daily_volume_bull  # 当前阈值（动态）
+        # 流动性过滤：固定1000万日均成交量（不区分牛市熊市）
+        self.min_daily_volume = 10000000  # 最小日均成交量1000万
         self.min_price = 5.0  # 最小股价$5
         self.liquid_stocks = set()  # 高流动性股票集合
         
@@ -448,13 +446,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         return ticker in self.liquid_stocks or ticker in self.safe_tickers
     
     def _UpdateDynamicVolumeFilter(self):
-        """P0优化：根据市场状态动态调整流动性过滤阈值"""
-        new_threshold = (self.min_daily_volume_bear if self.market_bear_mode 
-                        else self.min_daily_volume_bull)
-        
-        if new_threshold != self.min_daily_volume:
-            self.min_daily_volume = new_threshold
-            self.Log(f"流动性过滤调整: 牛市={self.min_daily_volume_bull/1e6:.0f}M → 熊市={self.min_daily_volume_bear/1e6:.0f}M, 当前={self.min_daily_volume/1e6:.0f}M")
+        """流动性过滤已固定为1000万，此方法保留兼容性但不再切换阈值"""
+        pass
     
     def _CanSell(self, symbol: Symbol) -> bool:
         """P0修复：检查是否可以卖出（最小持仓时间限制，避免PDT）"""
