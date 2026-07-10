@@ -26,10 +26,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             AccountType.MARGIN
         )
         
-        # P0备注：IB佣金模型已内置于BrokerageModel中
-        # 实际佣金：每股$0.005，最低$1.00/笔，最高交易价值的1%
-        # 21,000笔交易 × $1.00 = ~$21,000 佣金（回测已自动扣除）
-        
         # 设置现金缓冲，避免购买力不足错误
         self.Settings.FreePortfolioValuePercentage = 0.05  # 保留5%现金作为缓冲
         
@@ -84,18 +80,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.max_stocks = 10
         self.min_score = 0.0
         
-        # 添加最小持仓时间（避免PDT规则 + 减少交易摩擦）
-        self.min_hold_days = 3  # 最少持有3天（减少日内交易，避免PDT）
-        self.position_entry_date = {}  # 记录买入日期
-        
-        # 添加单票/单日亏损限制
-        self.max_loss_per_position = 999999999.0  # 取消单票亏损限制  # 单票最大亏损$500（绝对金额）
-        self.max_daily_loss_pct = 0.05  # 单日最大亏损5%（净值）
-        self.last_day_net_value = 0  # 记录上一日净值
-        self.trading_paused_days = 0  # 暂停交易天数（触发单日亏损限制后）
-        self.pause_after_daily_loss = 1  # 触发单日亏损后暂停1天
-        
-        # 动态总仓位
+        # P2优化：动态总仓位
         self.max_total_exposure = 0.80  # 总仓位上限 50%→80%（牛市提高仓位）
         self.min_total_exposure = 0.30  # 总仓位下限 30%（熊市最低仓位）
         self.current_total_exposure = self.min_total_exposure  # 动态总仓位
@@ -120,7 +105,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 止损参数 ============
         self.stop_loss_pct = 0.08  # 固定止损 15%→8%（更严格）
-        self.use_atr_stop = False  # P0修复：禁用ATR止损（回测证明增加72%交易但不降低回撤）
+        self.use_atr_stop = True  # P1优化：启用ATR止损
         self.atr_period = 14
         self.atr_multiplier = 2.0  # ATR倍数
         self.atr_indicators = {}  # ATR指标缓存
@@ -134,7 +119,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.trend_lookback = 200  # 200日均线
         
         # ============ RSI参数 ============
-
+        # 注意：最佳参数在Initialize()开头已定义（65/35/0.3）
         # 这里只初始化RSI指标，不覆盖参数
         self.rsi_filter_enabled = False  # 关闭RSI过滤（牛市中过度限制选股）
         self.rsi_period = 14
@@ -147,14 +132,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.price_history = {}
         self.rsi_indicators = {}
         self.sma_indicators = {}
-        self.high_water_mark = 0  # 用于回撤保护（策略启动以来的最高净值，不重置）
+        self.high_water_mark = 0  # 用于回撤保护
         self.position_high = {}  # 用于追踪止损
-        
-        # 添加阶梯式回撤保护 + 触发状态记录
-        self.drawdown_protection_triggered = False  # 回撤保护是否已触发
-        self.drawdown_trigger_level = 0.10  # 首次触发阈值10%
-        self.drawdown_severe_level = 0.15   # 严重回撤阈值15%（转投现金）
-        self.drawdown_extreme_level = 0.20  # 极端回撤阈值20%（全面清仓）
         
         # ============ 200日均线市场状态（v3.1 回撤控制核心）============
         self.market_bear_mode = False  # 是否处于熊市模式
@@ -163,7 +142,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.dynamic_sizing_enabled = True  # 保留向后兼容
         
         # ============ 期权对冲参数（v3.1 方案B）============
-
+        # 注意：本地回测期权数据不可用，改用做空SPY对冲
         self.hedge_enabled = False  # 默认禁用，可选启用
         self.hedge_method = "short_spy"  # 可选: "put_option"（需期权数据）或 "short_spy"
         self.hedge_ratio = 1.0  # 对冲比例：100%股票敞口
@@ -213,8 +192,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.SetSecurityInitializer(self.CustomSecurityInitializer)
         
         # ============ 流动性过滤参数（P0优化）============
-        # 流动性过滤：固定1000万日均成交量（不区分牛市熊市）
-        self.min_daily_volume = 10000000  # 最小日均成交量1000万
+        self.min_daily_volume = 1000000  # 最小日均成交量100万
         self.min_price = 5.0  # 最小股价$5
         self.liquid_stocks = set()  # 高流动性股票集合
         
@@ -250,7 +228,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """行业映射表（精简版，<64KB限制）"""
+        """构建行业映射表 - 核心股票覆盖（精简版）"""
         return {
             # Tech (30)
             'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech', 
@@ -337,53 +315,80 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         }
 
     def _GetUSStockPool(self) -> List[str]:
-        """获取股票池"""
-        # 尝试从JSON配置文件加载
+        """获取美国股票池
+        支持从JSON配置文件动态加载，失败时使用硬编码核心列表
+        """
+        # 尝试从配置文件加载
         if self.enable_dynamic_pool:
             try:
-                import json, os
-                paths = [self.stock_pool_file, 
-                         f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
-                         f"../{self.stock_pool_file}"]
-                for p in paths:
-                    if os.path.exists(p):
-                        with open(p, 'r') as f:
+                import json
+                import os
+                
+                # 尝试多个路径
+                possible_paths = [
+                    self.stock_pool_file,
+                    f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
+                    f"../{self.stock_pool_file}",
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        with open(path, 'r') as f:
                             pools = json.load(f)
                             tickers = pools.get(self.stock_pool_source, [])
                             if tickers:
-                                self.Log(f"从 {p} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
+                                self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
                                 return list(dict.fromkeys(tickers))
             except Exception as e:
                 self.Log(f"加载股票池文件失败: {e}")
         
+        # 硬编码核心股票池（高流动性大盘股，本地数据通常可用）
         self.Log(f"使用硬编码核心股票池 ({self.stock_pool_source})")
         
-        core = [
+        # 核心大盘股（约100只，确保本地数据可用）
+        core_stocks = [
+            # 科技巨头 (15)
             "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "CRM", "ORCL",
-            "ADBE", "INTU", "NOW", "AMD", "INTC", "JPM", "V", "MA", "BAC", "WFC",
-            "GS", "MS", "BLK", "C", "AXP", "SPGI", "PGR", "CB", "SCHW", "ICE",
+            "ADBE", "INTU", "NOW", "AMD", "INTC",
+            # 金融 (15)
+            "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP",
+            "SPGI", "PGR", "CB", "SCHW", "ICE",
+            # 医疗健康 (12)
             "UNH", "LLY", "JNJ", "MRK", "ABBV", "ABT", "TMO", "DHR", "PFE", "AMGN",
-            "GILD", "REGN", "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX",
-            "PG", "KO", "PEP", "MDLZ", "CL", "KMB", "HON", "CAT", "UPS", "BA",
-            "GE", "RTX", "LMT", "DE", "ITW", "EMR", "VZ", "T", "CMCSA", "TMUS",
-            "CHTR", "DIS", "NFLX", "CCI", "XOM", "CVX", "COP", "SLB", "OXY", "EOG",
-            "MPC", "VLO", "PSX", "KMI", "PLD", "AMT", "EQIX", "PSA", "SPG", "NEE",
-            "SO", "DUK", "AEP", "EXC", "LIN", "APD", "SHW", "FCX", "NEM", "MELI",
-            "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS", "AMAT", "FSLR",
-            "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG", "NET", "PLTR", "SNOW",
-            "MDB", "TEAM", "WDAY",
+            "GILD", "REGN",
+            # 消费 (15)
+            "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX", "PG", "KO",
+            "PEP", "MDLZ", "CL", "KMB", "EL",
+            # 工业 (10)
+            "HON", "CAT", "UPS", "BA", "GE", "RTX", "LMT", "DE", "ITW", "EMR",
+            # 通信 (8)
+            "VZ", "T", "CMCSA", "TMUS", "CHTR", "DIS", "NFLX", "CCI",
+            # 能源 (10)
+            "XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "VLO", "PSX", "KMI",
+            # 房地产 (5)
+            "PLD", "AMT", "EQIX", "PSA", "SPG",
+            # 公用事业 (5)
+            "NEE", "SO", "DUK", "AEP", "EXC",
+            # 材料 (5)
+            "LIN", "APD", "SHW", "FCX", "NEM",
         ]
         
-        growth = [
+        # 纳斯达克100成长补充（科技+创新）
+        growth_stocks = [
             "MELI", "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS",
             "AMAT", "FSLR", "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG",
             "NET", "PLTR", "SNOW", "MDB", "TEAM", "WDAY",
         ]
         
-        if self.stock_pool_source == "sp500": return list(dict.fromkeys(core))
-        elif self.stock_pool_source == "nasdaq100": return list(dict.fromkeys(growth))
-        elif self.stock_pool_source == "combined": return list(dict.fromkeys(core + growth))
-        return list(dict.fromkeys(core))
+        # 根据配置返回不同股票池
+        if self.stock_pool_source == "sp500":
+            return list(dict.fromkeys(core_stocks))
+        elif self.stock_pool_source == "nasdaq100":
+            return list(dict.fromkeys(growth_stocks))
+        elif self.stock_pool_source == "combined":
+            return list(dict.fromkeys(core_stocks + growth_stocks))
+        else:
+            return list(dict.fromkeys(core_stocks))
 
     def _InitializeSymbols(self):
         """初始化所有股票symbol"""
@@ -398,7 +403,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
                     self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
                     
-                    # 初始化ATR指标
+                    # P1优化：初始化ATR指标
                     if self.use_atr_stop:
                         self.atr_indicators[symbol] = self.ATR(symbol, self.atr_period)
                 
@@ -419,7 +424,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.liquid_stocks_initialized = False
 
     def CustomSecurityInitializer(self, security):
-        """设置滑点模型"""
+        """P0优化：自定义证券初始化，设置滑点模型"""
+        # 设置滑点模型为常量0.1%
         security.SetSlippageModel(ConstantSlippageModel(0.001))
         
     def _UpdateLiquidityFilter(self):
@@ -444,26 +450,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     def _IsLiquid(self, ticker: str) -> bool:
         """P0优化：检查股票是否高流动性"""
         return ticker in self.liquid_stocks or ticker in self.safe_tickers
-    
-    def _UpdateDynamicVolumeFilter(self):
-        """流动性过滤已固定为1000万，此方法保留兼容性但不再切换阈值"""
-        pass
-    
-    def _CanSell(self, symbol: Symbol) -> bool:
-        """P0修复：检查是否可以卖出（最小持仓时间限制，避免PDT）"""
-        if symbol not in self.position_entry_date:
-            return True  # 没有记录，允许卖出（可能是系统重启后）
-        
-        hold_days = (self.Time - self.position_entry_date[symbol]).days
-        if hold_days < self.min_hold_days:
-            # self.Log(f"持仓时间不足: {self.GetTickerName(symbol)} 仅持有{hold_days}天，最少需要{self.min_hold_days}天")
-            return False
-        return True
-    
-    def _RecordBuyDate(self, symbol: Symbol):
-        """P0修复：记录买入日期"""
-        if self.Portfolio[symbol].Invested and symbol not in self.position_entry_date:
-            self.position_entry_date[symbol] = self.Time
     
     def GetTickerName(self, symbol: Symbol) -> str:
         """根据Symbol获取Ticker名称"""
@@ -604,7 +590,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             current_spy = self.Securities[spy_symbol].Price
             sma50 = spy_sma50.Current.Value
             
-    # 添加确认机制，连续3天低于50MA才确认熊市
+            # P1优化：添加确认机制，连续3天低于50MA才确认熊市
             is_below_sma = (current_spy < sma50)
             
             if is_below_sma:
@@ -616,7 +602,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             was_bear = self.market_bear_mode
             self.market_bear_mode = (self.bear_mode_counter >= self.bear_mode_confirm_days)
             
-            # 根据市场状态动态调整总仓位
+            # P2优化：根据市场状态动态调整总仓位
             if self.market_bear_mode:
                 # 熊市：最低仓位
                 self.current_total_exposure = self.min_total_exposure
@@ -634,18 +620,14 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.current_total_exposure = 0.45
             
             if self.market_bear_mode and not was_bear:
-                # 刚进入熊市：调整流动性过滤为宽松模式
-                self._UpdateDynamicVolumeFilter()
                 # 刚进入熊市：清仓股票，转投避险资产
-                self.Log(f"[WARNING]  市场进入熊市模式: SPY={current_spy:.2f} < 50MA={sma50:.2f} (连续{self.bear_mode_counter}天), 仓位降至{self.current_total_exposure*100:.0f}%")
+                self.Log(f"⚠️ 市场进入熊市模式: SPY={current_spy:.2f} < 50MA={sma50:.2f} (连续{self.bear_mode_counter}天), 仓位降至{self.current_total_exposure*100:.0f}%")
                 self.Liquidate()
                 # 50% TLT, 50% GLD
                 for ticker, symbol in self.safe_symbols.items():
                     self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
                 self.Log("已清仓股票，转入TLT/GLD避险")
             elif not self.market_bear_mode and was_bear:
-                # 刚退出熊市：调整流动性过滤为严格模式
-                self._UpdateDynamicVolumeFilter()
                 # 刚退出熊市：清仓避险资产，恢复股票策略
                 self.Log(f"✅ 市场恢复牛市模式: SPY={current_spy:.2f} > 50MA={sma50:.2f}, 仓位提升至{self.current_total_exposure*100:.0f}%")
                 for ticker in self.safe_tickers:
@@ -659,6 +641,42 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             
         except Exception as e:
             self.Log(f"ERROR in CheckMarketState: {e}")
+        """根据SPY 50日均线动态调整总仓位（更敏感）"""
+        if not self.dynamic_sizing_enabled or self.IsWarmingUp:
+            return
+        
+        try:
+            # 获取SPY 50日均线
+            spy_sma = self.SMA(self.symbols.get("SPY"), 50)
+            if spy_sma is None or not spy_sma.IsReady:
+                return
+            
+            current_spy = self.Securities[self.symbols.get("SPY")].Price
+            sma50 = spy_sma.Current.Value
+            
+            # 计算偏离度
+            deviation = (current_spy - sma50) / sma50 if sma50 > 0 else 0
+            
+            # 根据偏离度设定仓位（直接设定，无平滑过渡）
+            if deviation > 0.02:
+                # 强势上涨：50%仓位
+                target_exposure = 0.50
+            elif deviation > -0.02:
+                # 小幅偏离：30%仓位
+                target_exposure = 0.30
+            elif deviation > -0.05:
+                # 明显走弱：15%仓位
+                target_exposure = 0.15
+            else:
+                # 严重下跌：5%仓位（几乎清仓）
+                target_exposure = 0.05
+            
+            self.current_total_exposure = target_exposure
+            
+            self.Log(f"动态仓位: SPY偏离50MA={deviation:.2%}, 目标={target_exposure:.0%}")
+            
+        except Exception as e:
+            self.Log(f"ERROR in UpdateDynamicExposure: {e}")
     
     def LimitSectorConcentration(self, targets):
         """限制行业集中度，单行业不超过max_sector_pct"""
@@ -689,7 +707,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     def CalculateMomentumScore(self, symbol: Symbol, ticker: str) -> Optional[Dict]:
         """
-        # 计算动量得分（v3.1优化版：仅使用RSI调整）
+        计算动量得分（v3.1优化版：仅使用RSI调整）
         返回: {'symbol': symbol, 'score': score, 'returns': {}, 'current_price': price}
         """
         try:
@@ -846,62 +864,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         except:
             return 1.0
 
-    def CheckDailyLossLimit(self):
-        """P1优化：检查单日亏损限制，如果单日亏损超过阈值则暂停交易"""
-        if self.IsWarmingUp:
-            self.last_day_net_value = self.Portfolio.TotalPortfolioValue
-            return
-        
-        # 如果正在暂停期，递减
-        if self.trading_paused_days > 0:
-            self.trading_paused_days -= 1
-            self.Log(f"交易暂停中: 还剩{self.trading_paused_days}天")
-            return True  # 返回True表示暂停中
-        
-        current_value = self.Portfolio.TotalPortfolioValue
-        
-        if self.last_day_net_value > 0:
-            daily_return = (current_value - self.last_day_net_value) / self.last_day_net_value
-            
-            if daily_return < -self.max_daily_loss_pct:
-                # 单日亏损超过阈值
-                self.Log(f"[WARNING] 单日亏损限制触发: {daily_return:.2%} (>{self.max_daily_loss_pct:.2%}), 暂停交易{self.pause_after_daily_loss}天")
-                self.trading_paused_days = self.pause_after_daily_loss
-                
-                # 可选：部分清仓降低风险
-                # self.Liquidate([s for s in self.Portfolio.Keys if self.Portfolio[s].UnrealizedProfit < -self.max_loss_per_position])
-                
-                self.last_day_net_value = current_value
-                return True
-        
-        self.last_day_net_value = current_value
-        return False
-    
-    def CheckPositionLossLimit(self, symbol: Symbol):
-        """P1优化：检查单票亏损限制，如果超过阈值则强制清仓"""
-        if not self.Portfolio[symbol].Invested:
-            return False
-        
-        # 计算当前持仓盈亏（绝对金额）
-        unrealized_pnl = self.Portfolio[symbol].UnrealizedProfit
-        
-        if unrealized_pnl < -self.max_loss_per_position:
-            # 单票亏损超过$500
-            ticker = self.GetTickerName(symbol)
-            self.Log(f"[WARNING] 单票亏损限制触发: {ticker} 亏损 ${-unrealized_pnl:.2f} (>${self.max_loss_per_position:.0f}), 强制清仓")
-            self.Liquidate(symbol)
-            
-            # 清理相关记录
-            if symbol in self.cost_basis:
-                del self.cost_basis[symbol]
-            if symbol in self.position_high:
-                del self.position_high[symbol]
-            if symbol in self.position_entry_date:
-                del self.position_entry_date[symbol]
-            return True
-        
-        return False
-    
     def CheckStopLoss(self):
         """检查止损和追踪止损（P1优化：添加ATR止损）"""
         if self.IsWarmingUp:
@@ -912,7 +874,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if self.Portfolio[symbol].Invested:
                 current_price = self.Portfolio[symbol].Price
                 
-# 使用ATR止损（P0修复：已禁用，代码保留但跳过）
+                # P1优化：使用ATR止损
                 if self.use_atr_stop and symbol in self.atr_indicators:
                     try:
                         atr = self.atr_indicators[symbol]
@@ -920,16 +882,11 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                             atr_value = atr.Current.Value
                             stop_price = cost - (self.atr_multiplier * atr_value)
                             if current_price < stop_price:
-                                # 检查最小持仓时间
-                                if not self._CanSell(symbol):
-                                    continue
                                 self.Liquidate(symbol)
                                 if symbol in self.cost_basis:
                                     del self.cost_basis[symbol]
                                 if symbol in self.position_high:
                                     del self.position_high[symbol]
-                                if symbol in self.position_entry_date:
-                                    del self.position_entry_date[symbol]
                                 self.Log(f"ATR止损触发: {self.GetTickerName(symbol)} at {current_price:.2f} (ATR={atr_value:.2f})")
                                 continue
                     except:
@@ -937,16 +894,11 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 
                 # 固定止损（备用）
                 if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
-                    # 检查最小持仓时间
-                    if not self._CanSell(symbol):
-                        continue
                     self.Liquidate(symbol)
                     if symbol in self.cost_basis:
                         del self.cost_basis[symbol]
                     if symbol in self.position_high:
                         del self.position_high[symbol]
-                    if symbol in self.position_entry_date:
-                        del self.position_entry_date[symbol]
                     self.Log(f"固定止损触发: {self.GetTickerName(symbol)} at {current_price:.2f}")
         
         # 追踪止损
@@ -961,25 +913,20 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     # 检查是否从最高价回撤超过阈值
                     high = self.position_high[symbol]
                     if high > 0 and (current_price - high) / high < -self.trailing_stop_pct:
-                        # 检查最小持仓时间
-                        if not self._CanSell(symbol):
-                            continue
                         self.Liquidate(symbol)
                         del self.position_high[symbol]
                         if symbol in self.cost_basis:
                             del self.cost_basis[symbol]
-                        if symbol in self.position_entry_date:
-                            del self.position_entry_date[symbol]
                         self.Log(f"追踪止损: {self.GetTickerName(symbol)} at {current_price:.2f} (high: {high:.2f})")
 
     def CheckMaxDrawdown(self):
-        """检查最大回撤保护（P0修复：阶梯式回撤保护）"""
+        """检查最大回撤保护"""
         if self.IsWarmingUp:
             return
         
         current_value = self.Portfolio.TotalPortfolioValue
         
-        # 更新最高水位（策略启动以来的最高净值，不重置）
+        # 更新最高水位
         if current_value > self.high_water_mark:
             self.high_water_mark = current_value
         
@@ -987,47 +934,18 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         if self.high_water_mark > 0:
             drawdown = (current_value - self.high_water_mark) / self.high_water_mark
             
-            # 极端回撤 >20%：全面清仓，转投现金（国库券）
-            if drawdown < -self.drawdown_extreme_level:
-                if self.drawdown_protection_triggered != "extreme":
-                    self.Log(f"[CRITICAL]  极端回撤保护触发: {drawdown:.2%} > 20%，全面清仓！")
-                    self.Liquidate()
-                    # 100% 现金，不持有任何资产
-                    self.drawdown_protection_triggered = "extreme"
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-                return
-            
-            # 严重回撤 >15%：清仓股票+避险资产，转投现金
-            elif drawdown < -self.drawdown_severe_level:
-                if self.drawdown_protection_triggered not in ["severe", "extreme"]:
-                    self.Log(f"[WARNING]  严重回撤保护触发: {drawdown:.2%} > 15%，清仓转现金！")
-                    self.Liquidate()
-                    # 100% 现金
-                    self.drawdown_protection_triggered = "severe"
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-                return
-            
-            # 首次回撤 >10%：清仓股票，转投安全资产（TLT/GLD各50%）
-            elif drawdown < -self.drawdown_trigger_level:
-                if not self.drawdown_protection_triggered:
-                    self.Log(f"最大回撤保护触发: {drawdown:.2%}，清仓并转投安全资产")
-                    self.Liquidate()
-                    
-                    # 转入安全资产
-                    for ticker, symbol in self.safe_symbols.items():
-                        self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
-                    
-                    self.drawdown_protection_triggered = "triggered"
-                    # 暂停调仓一段时间
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-            
-            # 回撤恢复后重置触发状态（净值恢复到-5%以内）
-            elif drawdown > -0.05 and self.drawdown_protection_triggered:
-                self.Log(f"回撤恢复: {drawdown:.2%}，重置回撤保护状态")
-                self.drawdown_protection_triggered = False
+            if drawdown < -self.max_drawdown_pct:
+                # 大幅回撤：清仓并转投安全资产
+                self.Log(f"最大回撤保护触发: {drawdown:.2%}，清仓并转投安全资产")
+                self.Liquidate()
+                
+                # 转入安全资产
+                for ticker, symbol in self.safe_symbols.items():
+                    self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
+                
+                # 暂停调仓一段时间
+                self.current_rebalance_freq = self.max_rebalance_freq
+                self.pause_weeks = 0
 
     def RebalanceUS(self):
         """美国股票池再平衡"""
@@ -1162,20 +1080,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.Log(f"  {market_name}最终: 总仓位{final_weight*100:.1f}%, "
                 f"最高{max(targets.values())*100:.1f}%, top5: {final_str}")
         
-        # 11. 清仓不在目标列表中的股票（P0修复：检查最小持仓时间）
+        # 11. 清仓不在目标列表中的股票
         for symbol in list(self.cost_basis.keys()):
             ticker = self.GetTickerName(symbol)
             if ticker not in [self.GetTickerName(s) for s in targets.keys()] and ticker in market_symbols:
                 if self.Portfolio[symbol].Invested:
-                    if not self._CanSell(symbol):
-                        continue  # 跳过持仓时间不足的股票
                     self.Liquidate(symbol)
                     if symbol in self.cost_basis:
                         del self.cost_basis[symbol]
                     if symbol in self.position_high:
                         del self.position_high[symbol]
-                    if symbol in self.position_entry_date:
-                        del self.position_entry_date[symbol]
         
         # 12. 执行调仓
         for symbol, target in targets.items():
@@ -1187,10 +1101,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             # 只在偏差大于10%时调仓，减少交易摩擦
             if current_weight == 0 or deviation > 0.10:
                 self.SetHoldings(symbol, target)
-                
-# 记录买入日期（用于最小持仓时间检查）
-                if self.Portfolio[symbol].Invested and self.Portfolio[symbol].Quantity > 0:
-                    self._RecordBuyDate(symbol)
                 
                 # 记录成本基准（用于止损）
                 if self.Portfolio[symbol].Invested:
