@@ -84,11 +84,18 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.max_stocks = 10
         self.min_score = 0.0
         
-        # P0修复：添加最小持仓时间（避免PDT规则 + 减少交易摩擦）
+        # 添加最小持仓时间（避免PDT规则 + 减少交易摩擦）
         self.min_hold_days = 3  # 最少持有3天（减少日内交易，避免PDT）
         self.position_entry_date = {}  # 记录买入日期
         
-        # P2优化：动态总仓位
+        # 添加单票/单日亏损限制
+        self.max_loss_per_position = 500.0  # 单票最大亏损$500（绝对金额）
+        self.max_daily_loss_pct = 0.05  # 单日最大亏损5%（净值）
+        self.last_day_net_value = 0  # 记录上一日净值
+        self.trading_paused_days = 0  # 暂停交易天数（触发单日亏损限制后）
+        self.pause_after_daily_loss = 1  # 触发单日亏损后暂停1天
+        
+        # 动态总仓位
         self.max_total_exposure = 0.80  # 总仓位上限 50%→80%（牛市提高仓位）
         self.min_total_exposure = 0.30  # 总仓位下限 30%（熊市最低仓位）
         self.current_total_exposure = self.min_total_exposure  # 动态总仓位
@@ -127,7 +134,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.trend_lookback = 200  # 200日均线
         
         # ============ RSI参数 ============
-        # 注意：最佳参数在Initialize()开头已定义（65/35/0.3）
+
         # 这里只初始化RSI指标，不覆盖参数
         self.rsi_filter_enabled = False  # 关闭RSI过滤（牛市中过度限制选股）
         self.rsi_period = 14
@@ -143,7 +150,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.high_water_mark = 0  # 用于回撤保护（策略启动以来的最高净值，不重置）
         self.position_high = {}  # 用于追踪止损
         
-        # P0修复：添加阶梯式回撤保护 + 触发状态记录
+        # 添加阶梯式回撤保护 + 触发状态记录
         self.drawdown_protection_triggered = False  # 回撤保护是否已触发
         self.drawdown_trigger_level = 0.10  # 首次触发阈值10%
         self.drawdown_severe_level = 0.15   # 严重回撤阈值15%（转投现金）
@@ -156,7 +163,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.dynamic_sizing_enabled = True  # 保留向后兼容
         
         # ============ 期权对冲参数（v3.1 方案B）============
-        # 注意：本地回测期权数据不可用，改用做空SPY对冲
+
         self.hedge_enabled = False  # 默认禁用，可选启用
         self.hedge_method = "short_spy"  # 可选: "put_option"（需期权数据）或 "short_spy"
         self.hedge_ratio = 1.0  # 对冲比例：100%股票敞口
@@ -245,9 +252,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """构建行业映射表 - 核心股票覆盖（精简版，避免64KB限制）"""
+        """行业映射表（精简版，<64KB限制）"""
         return {
-            # ========== 科技 (核心30只) ==========
+            # Tech (30)
             'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech', 
             'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech', 
             'INTC': 'Tech', 'CRM': 'Tech', 'ORCL': 'Tech', 'ADBE': 'Tech',
@@ -262,7 +269,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'UBER': 'Tech', 'ABNB': 'Tech', 'DASH': 'Tech', 'SQ': 'Tech',
             'PYPL': 'Tech', 'ENPH': 'Tech', 'SEDG': 'Tech', 'LRCX': 'Tech',
             'TER': 'Tech', 'MPWR': 'Tech', 'COHR': 'Tech', 'RUN': 'Tech',
-            # ========== 金融 (核心25只) ==========
+            # Finance (25)
             'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance', 'MS': 'Finance',
             'WFC': 'Finance', 'BLK': 'Finance', 'C': 'Finance', 'AXP': 'Finance',
             'SCHW': 'Finance', 'PNC': 'Finance', 'SPGI': 'Finance', 'MCO': 'Finance',
@@ -270,7 +277,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'COF': 'Finance', 'BK': 'Finance', 'STT': 'Finance', 'NDAQ': 'Finance',
             'AON': 'Finance', 'MMC': 'Finance', 'AJG': 'Finance', 'PGR': 'Finance',
             'ALL': 'Finance', 'TRV': 'Finance', 'CB': 'Finance', 'AFL': 'Finance',
-            # ========== 医疗健康 (核心25只) ==========
+            # Healthcare (25)
             'JNJ': 'Healthcare', 'UNH': 'Healthcare', 'LLY': 'Healthcare', 
             'PFE': 'Healthcare', 'MRK': 'Healthcare', 'ABBV': 'Healthcare',
             'ABT': 'Healthcare', 'TMO': 'Healthcare', 'DHR': 'Healthcare',
@@ -281,7 +288,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'ISRG': 'Healthcare', 'SYK': 'Healthcare', 'ZBH': 'Healthcare',
             'RMD': 'Healthcare', 'DXCM': 'Healthcare', 'HOLX': 'Healthcare',
             'DGX': 'Healthcare', 'LH': 'Healthcare', 'IQV': 'Healthcare',
-            # ========== 消费 (核心25只) ==========
+            # Consumer (25)
             'HD': 'Consumer', 'COST': 'Consumer', 'NKE': 'Consumer', 
             'MCD': 'Consumer', 'SBUX': 'Consumer', 'LOW': 'Consumer', 
             'TJX': 'Consumer', 'PG': 'Consumer', 'KO': 'Consumer',
@@ -289,16 +296,16 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'CL': 'Consumer', 'KMB': 'Consumer', 'GIS': 'Consumer', 'CPB': 'Consumer',
             'EL': 'Consumer', 'ULTA': 'Consumer', 'DG': 'Consumer', 'DLTR': 'Consumer',
             'ROST': 'Consumer', 'LEN': 'Consumer', 'DHI': 'Consumer', 'PHM': 'Consumer',
-            'TOL': 'Consumer', 'NVR': 'Consumer', 'EL': 'Consumer', 'COTY': 'Consumer',
+            'TOL': 'Consumer', 'NVR': 'Consumer', 'COTY': 'Consumer',
             'ELF': 'Consumer', 'CHD': 'Consumer', 'ENR': 'Consumer', 'HELE': 'Consumer',
-            # ========== 能源 (核心20只) ==========
+            # Energy (20)
             'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy',
             'OXY': 'Energy', 'EOG': 'Energy', 'MPC': 'Energy', 'VLO': 'Energy',
             'PSX': 'Energy', 'KMI': 'Energy', 'WMB': 'Energy', 'OKE': 'Energy',
             'EPD': 'Energy', 'ET': 'Energy', 'ENB': 'Energy',
             'SU': 'Energy', 'CVE': 'Energy', 'OVV': 'Energy', 'MRO': 'Energy',
             'DVN': 'Energy', 'FANG': 'Energy', 'PXD': 'Energy',
-            # ========== 工业 (核心20只) ==========
+            # Industrial (20)
             'CAT': 'Industrial', 'HON': 'Industrial', 'UPS': 'Industrial',
             'BA': 'Industrial', 'GE': 'Industrial', 'RTX': 'Industrial',
             'LMT': 'Industrial', 'NOC': 'Industrial', 'GD': 'Industrial',
@@ -307,21 +314,21 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             'CMI': 'Industrial', 'PCAR': 'Industrial', 'CSX': 'Industrial',
             'UNP': 'Industrial', 'NSC': 'Industrial', 'ODFL': 'Industrial',
             'EXPD': 'Industrial', 'CHRW': 'Industrial', 'PWR': 'Industrial',
-            # ========== 通信 (核心10只) ==========
+            # Telecom (10)
             'VZ': 'Telecom', 'T': 'Telecom', 'CMCSA': 'Telecom', 'TMUS': 'Telecom',
             'CHTR': 'Telecom', 'CCI': 'Telecom', 'AMT': 'Telecom', 'SBAC': 'Telecom',
             'TDS': 'Telecom', 'LUMN': 'Telecom',
-            # ========== 房地产 (核心10只) ==========
+            # REITs (10)
             'PLD': 'REITs', 'AMT': 'REITs', 'EQIX': 'REITs', 'PSA': 'REITs',
             'O': 'REITs', 'VICI': 'REITs', 'DLR': 'REITs', 'SPG': 'REITs',
             'WELL': 'REITs', 'AVB': 'REITs', 'EQR': 'REITs', 'EXR': 'REITs',
-            # ========== 公用事业 (核心10只) ==========
+            # Utilities (10)
             'NEE': 'Utilities', 'SO': 'Utilities', 'DUK': 'Utilities', 
             'AEP': 'Utilities', 'EXC': 'Utilities', 'SRE': 'Utilities',
             'XEL': 'Utilities', 'WEC': 'Utilities', 'ES': 'Utilities',
             'D': 'Utilities', 'ED': 'Utilities', 'FE': 'Utilities', 
             'EIX': 'Utilities', 'ETR': 'Utilities', 'CNP': 'Utilities',
-            # ========== 材料 (核心10只) ==========
+            # Materials (10)
             'LIN': 'Materials', 'APD': 'Materials', 'SHW': 'Materials', 
             'ECL': 'Materials', 'FCX': 'Materials', 'NEM': 'Materials',
             'DOW': 'Materials', 'DD': 'Materials', 'EMN': 'Materials',
@@ -332,80 +339,53 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         }
 
     def _GetUSStockPool(self) -> List[str]:
-        """获取美国股票池
-        支持从JSON配置文件动态加载，失败时使用硬编码核心列表
-        """
-        # 尝试从配置文件加载
+        """获取股票池"""
+        # 尝试从JSON配置文件加载
         if self.enable_dynamic_pool:
             try:
-                import json
-                import os
-                
-                # 尝试多个路径
-                possible_paths = [
-                    self.stock_pool_file,
-                    f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
-                    f"../{self.stock_pool_file}",
-                ]
-                
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        with open(path, 'r') as f:
+                import json, os
+                paths = [self.stock_pool_file, 
+                         f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
+                         f"../{self.stock_pool_file}"]
+                for p in paths:
+                    if os.path.exists(p):
+                        with open(p, 'r') as f:
                             pools = json.load(f)
                             tickers = pools.get(self.stock_pool_source, [])
                             if tickers:
-                                self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
+                                self.Log(f"从 {p} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
                                 return list(dict.fromkeys(tickers))
             except Exception as e:
                 self.Log(f"加载股票池文件失败: {e}")
         
-        # 硬编码核心股票池（高流动性大盘股，本地数据通常可用）
         self.Log(f"使用硬编码核心股票池 ({self.stock_pool_source})")
         
-        # 核心大盘股（约100只，确保本地数据可用）
-        core_stocks = [
-            # 科技巨头 (15)
+        core = [
             "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "CRM", "ORCL",
-            "ADBE", "INTU", "NOW", "AMD", "INTC",
-            # 金融 (15)
-            "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP",
-            "SPGI", "PGR", "CB", "SCHW", "ICE",
-            # 医疗健康 (12)
+            "ADBE", "INTU", "NOW", "AMD", "INTC", "JPM", "V", "MA", "BAC", "WFC",
+            "GS", "MS", "BLK", "C", "AXP", "SPGI", "PGR", "CB", "SCHW", "ICE",
             "UNH", "LLY", "JNJ", "MRK", "ABBV", "ABT", "TMO", "DHR", "PFE", "AMGN",
-            "GILD", "REGN",
-            # 消费 (15)
-            "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX", "PG", "KO",
-            "PEP", "MDLZ", "CL", "KMB", "EL",
-            # 工业 (10)
-            "HON", "CAT", "UPS", "BA", "GE", "RTX", "LMT", "DE", "ITW", "EMR",
-            # 通信 (8)
-            "VZ", "T", "CMCSA", "TMUS", "CHTR", "DIS", "NFLX", "CCI",
-            # 能源 (10)
-            "XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "VLO", "PSX", "KMI",
-            # 房地产 (5)
-            "PLD", "AMT", "EQIX", "PSA", "SPG",
-            # 公用事业 (5)
-            "NEE", "SO", "DUK", "AEP", "EXC",
-            # 材料 (5)
-            "LIN", "APD", "SHW", "FCX", "NEM",
+            "GILD", "REGN", "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX",
+            "PG", "KO", "PEP", "MDLZ", "CL", "KMB", "HON", "CAT", "UPS", "BA",
+            "GE", "RTX", "LMT", "DE", "ITW", "EMR", "VZ", "T", "CMCSA", "TMUS",
+            "CHTR", "DIS", "NFLX", "CCI", "XOM", "CVX", "COP", "SLB", "OXY", "EOG",
+            "MPC", "VLO", "PSX", "KMI", "PLD", "AMT", "EQIX", "PSA", "SPG", "NEE",
+            "SO", "DUK", "AEP", "EXC", "LIN", "APD", "SHW", "FCX", "NEM", "MELI",
+            "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS", "AMAT", "FSLR",
+            "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG", "NET", "PLTR", "SNOW",
+            "MDB", "TEAM", "WDAY",
         ]
         
-        # 纳斯达克100成长补充（科技+创新）
-        growth_stocks = [
+        growth = [
             "MELI", "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS",
             "AMAT", "FSLR", "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG",
             "NET", "PLTR", "SNOW", "MDB", "TEAM", "WDAY",
         ]
         
-        # 根据配置返回不同股票池
-        if self.stock_pool_source == "sp500":
-            return list(dict.fromkeys(core_stocks))
-        elif self.stock_pool_source == "nasdaq100":
-            return list(dict.fromkeys(growth_stocks))
-        elif self.stock_pool_source == "combined":
-            return list(dict.fromkeys(core_stocks + growth_stocks))
-        else:
-            return list(dict.fromkeys(core_stocks))
+        if self.stock_pool_source == "sp500": return list(dict.fromkeys(core))
+        elif self.stock_pool_source == "nasdaq100": return list(dict.fromkeys(growth))
+        elif self.stock_pool_source == "combined": return list(dict.fromkeys(core + growth))
+        return list(dict.fromkeys(core))
 
     def _InitializeSymbols(self):
         """初始化所有股票symbol"""
@@ -420,7 +400,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
                     self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
                     
-                    # P1优化：初始化ATR指标
+                    # 初始化ATR指标
                     if self.use_atr_stop:
                         self.atr_indicators[symbol] = self.ATR(symbol, self.atr_period)
                 
@@ -441,8 +421,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.liquid_stocks_initialized = False
 
     def CustomSecurityInitializer(self, security):
-        """P0优化：自定义证券初始化，设置滑点模型"""
-        # 设置滑点模型为常量0.1%
+        """设置滑点模型"""
         security.SetSlippageModel(ConstantSlippageModel(0.001))
         
     def _UpdateLiquidityFilter(self):
@@ -632,7 +611,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             current_spy = self.Securities[spy_symbol].Price
             sma50 = spy_sma50.Current.Value
             
-            # P1优化：添加确认机制，连续3天低于50MA才确认熊市
+    # 添加确认机制，连续3天低于50MA才确认熊市
             is_below_sma = (current_spy < sma50)
             
             if is_below_sma:
@@ -644,7 +623,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             was_bear = self.market_bear_mode
             self.market_bear_mode = (self.bear_mode_counter >= self.bear_mode_confirm_days)
             
-            # P2优化：根据市场状态动态调整总仓位
+            # 根据市场状态动态调整总仓位
             if self.market_bear_mode:
                 # 熊市：最低仓位
                 self.current_total_exposure = self.min_total_exposure
@@ -717,7 +696,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     def CalculateMomentumScore(self, symbol: Symbol, ticker: str) -> Optional[Dict]:
         """
-        计算动量得分（v3.1优化版：仅使用RSI调整）
+        # 计算动量得分（v3.1优化版：仅使用RSI调整）
         返回: {'symbol': symbol, 'score': score, 'returns': {}, 'current_price': price}
         """
         try:
@@ -874,6 +853,62 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         except:
             return 1.0
 
+    def CheckDailyLossLimit(self):
+        """P1优化：检查单日亏损限制，如果单日亏损超过阈值则暂停交易"""
+        if self.IsWarmingUp:
+            self.last_day_net_value = self.Portfolio.TotalPortfolioValue
+            return
+        
+        # 如果正在暂停期，递减
+        if self.trading_paused_days > 0:
+            self.trading_paused_days -= 1
+            self.Log(f"交易暂停中: 还剩{self.trading_paused_days}天")
+            return True  # 返回True表示暂停中
+        
+        current_value = self.Portfolio.TotalPortfolioValue
+        
+        if self.last_day_net_value > 0:
+            daily_return = (current_value - self.last_day_net_value) / self.last_day_net_value
+            
+            if daily_return < -self.max_daily_loss_pct:
+                # 单日亏损超过阈值
+                self.Log(f"[WARNING] 单日亏损限制触发: {daily_return:.2%} (>{self.max_daily_loss_pct:.2%}), 暂停交易{self.pause_after_daily_loss}天")
+                self.trading_paused_days = self.pause_after_daily_loss
+                
+                # 可选：部分清仓降低风险
+                # self.Liquidate([s for s in self.Portfolio.Keys if self.Portfolio[s].UnrealizedProfit < -self.max_loss_per_position])
+                
+                self.last_day_net_value = current_value
+                return True
+        
+        self.last_day_net_value = current_value
+        return False
+    
+    def CheckPositionLossLimit(self, symbol: Symbol):
+        """P1优化：检查单票亏损限制，如果超过阈值则强制清仓"""
+        if not self.Portfolio[symbol].Invested:
+            return False
+        
+        # 计算当前持仓盈亏（绝对金额）
+        unrealized_pnl = self.Portfolio[symbol].UnrealizedProfit
+        
+        if unrealized_pnl < -self.max_loss_per_position:
+            # 单票亏损超过$500
+            ticker = self.GetTickerName(symbol)
+            self.Log(f"[WARNING] 单票亏损限制触发: {ticker} 亏损 ${-unrealized_pnl:.2f} (>${self.max_loss_per_position:.0f}), 强制清仓")
+            self.Liquidate(symbol)
+            
+            # 清理相关记录
+            if symbol in self.cost_basis:
+                del self.cost_basis[symbol]
+            if symbol in self.position_high:
+                del self.position_high[symbol]
+            if symbol in self.position_entry_date:
+                del self.position_entry_date[symbol]
+            return True
+        
+        return False
+    
     def CheckStopLoss(self):
         """检查止损和追踪止损（P1优化：添加ATR止损）"""
         if self.IsWarmingUp:
@@ -884,7 +919,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if self.Portfolio[symbol].Invested:
                 current_price = self.Portfolio[symbol].Price
                 
-                # P1优化：使用ATR止损（P0修复：已禁用，代码保留但跳过）
+# 使用ATR止损（P0修复：已禁用，代码保留但跳过）
                 if self.use_atr_stop and symbol in self.atr_indicators:
                     try:
                         atr = self.atr_indicators[symbol]
@@ -892,7 +927,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                             atr_value = atr.Current.Value
                             stop_price = cost - (self.atr_multiplier * atr_value)
                             if current_price < stop_price:
-                                # P0修复：检查最小持仓时间
+                                # 检查最小持仓时间
                                 if not self._CanSell(symbol):
                                     continue
                                 self.Liquidate(symbol)
@@ -909,7 +944,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 
                 # 固定止损（备用）
                 if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
-                    # P0修复：检查最小持仓时间
+                    # 检查最小持仓时间
                     if not self._CanSell(symbol):
                         continue
                     self.Liquidate(symbol)
@@ -933,7 +968,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     # 检查是否从最高价回撤超过阈值
                     high = self.position_high[symbol]
                     if high > 0 and (current_price - high) / high < -self.trailing_stop_pct:
-                        # P0修复：检查最小持仓时间
+                        # 检查最小持仓时间
                         if not self._CanSell(symbol):
                             continue
                         self.Liquidate(symbol)
@@ -1160,7 +1195,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if current_weight == 0 or deviation > 0.10:
                 self.SetHoldings(symbol, target)
                 
-                # P0修复：记录买入日期（用于最小持仓时间检查）
+# 记录买入日期（用于最小持仓时间检查）
                 if self.Portfolio[symbol].Invested and self.Portfolio[symbol].Quantity > 0:
                     self._RecordBuyDate(symbol)
                 
