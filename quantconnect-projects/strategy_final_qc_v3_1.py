@@ -45,7 +45,23 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.target_volatility = 0.15  # 年化目标波动率
         
         # ============ VIX参数 ============
-        self.vix_symbol = self.AddEquity("VIXY", Resolution.DAILY).Symbol
+        # 优先使用VIX指数，如果不可用则回退到VIXY
+        # VIXY是ETF有衰减问题，但本地数据更完整
+        vix_available = False
+        try:
+            vix_sym = self.AddIndex("VIX", Resolution.DAILY).Symbol
+            # 验证VIX数据是否真正可用（价格>0）
+            if self.Securities[vix_sym].Price > 0:
+                self.vix_symbol = vix_sym
+                vix_available = True
+                self.Log("使用VIX指数")
+        except:
+            pass
+        
+        if not vix_available:
+            self.vix_symbol = self.AddEquity("VIXY", Resolution.DAILY).Symbol
+            self.Log("VIX数据不可用，使用VIXY替代")
+        
         self.vix_threshold = 30.0
         self.vix_pause_level = 30.0
         self.vix_boost_level = 18.0
