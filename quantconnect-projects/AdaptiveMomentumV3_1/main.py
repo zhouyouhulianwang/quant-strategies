@@ -26,7 +26,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             AccountType.MARGIN
         )
         
-        # P0备注：IB佣金模型已内置于BrokerageModel中
+       
         # 实际佣金：每股$0.005，最低$1.00/笔，最高交易价值的1%
         # 21,000笔交易 × $1.00 = ~$21,000 佣金（回测已自动扣除）
         
@@ -79,21 +79,21 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.vix_boost_level = 18.0
         
         # ============ 仓位管理 ============
-        self.max_position_pct = 0.10  # 单票最大仓位 15%→10%
+        self.max_position_pct = 0.15  # 单票最大仓位15%：平均10%，强势股可达15%
         self.min_position_pct = 0.00  # 取消最小仓位限制
         self.max_stocks = 10
         self.min_score = 0.0
         
-        # P0修复：添加最小持仓时间（避免PDT规则 + 减少交易摩擦）
+       
         self.min_hold_days = 3  # 最少持有3天（减少日内交易，避免PDT）
         self.position_entry_date = {}  # 记录买入日期
         
-        # P2优化：动态总仓位
+       
         self.max_total_exposure = 0.80  # 总仓位上限 50%→80%（牛市提高仓位）
         self.min_total_exposure = 0.30  # 总仓位下限 30%（熊市最低仓位）
         self.current_total_exposure = self.min_total_exposure  # 动态总仓位
         
-        self.max_sector_pct = 0.40  # 单行业最大占比40%（测试：放宽无显著影响，保持安全边界）
+        self.max_sector_pct = 0.50  # 单行业最大占比50%（更宽松，允许集中）
         
         # ============ 行业轮动参数 ============
         self.sector_rotation_enabled = True
@@ -113,21 +113,21 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 止损参数 ============
         self.stop_loss_pct = 0.08  # 固定止损 15%→8%（更严格）
-        self.use_atr_stop = False  # P0修复：禁用ATR止损（回测证明增加72%交易但不降低回撤）
+        self.use_atr_stop = False 
         self.atr_period = 14
         self.atr_multiplier = 2.0  # ATR倍数
         self.atr_indicators = {}  # ATR指标缓存
         
         self.trailing_stop_enabled = True
         self.trailing_stop_pct = 0.10  # 追踪止损 20%→10%（更积极）
-        self.max_drawdown_pct = 0.10  # P1优化：最大回撤保护 15%→10%
+        self.max_drawdown_pct = 0.10 
         
         # ============ 趋势过滤参数 ============
         self.trend_filter_enabled = False  # 关闭趋势过滤（牛市中过度限制选股）
         self.trend_lookback = 200  # 200日均线
         
         # ============ RSI参数 ============
-        # 注意：最佳参数在Initialize()开头已定义（65/35/0.3）
+       
         # 这里只初始化RSI指标，不覆盖参数
         self.rsi_filter_enabled = False  # 关闭RSI过滤（牛市中过度限制选股）
         self.rsi_period = 14
@@ -143,7 +143,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.high_water_mark = 0  # 用于回撤保护（策略启动以来的最高净值，不重置）
         self.position_high = {}  # 用于追踪止损
         
-        # P0修复：添加阶梯式回撤保护 + 触发状态记录
+       
         self.drawdown_protection_triggered = False  # 回撤保护是否已触发
         self.drawdown_trigger_level = 0.10  # 首次触发阈值10%
         self.drawdown_severe_level = 0.15   # 严重回撤阈值15%（转投现金）
@@ -151,12 +151,12 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 200日均线市场状态（v3.1 回撤控制核心）============
         self.market_bear_mode = False  # 是否处于熊市模式
-        self.bear_mode_confirm_days = 3  # P1优化：熊市确认天数
+        self.bear_mode_confirm_days = 3 
         self.bear_mode_counter = 0  # 熊市计数器
         self.dynamic_sizing_enabled = True  # 保留向后兼容
         
-        # ============ 期权对冲参数（v3.1 方案B）============
-        # 注意：本地回测期权数据不可用，改用做空SPY对冲
+        # ============ 期权对冲参数============
+       
         self.hedge_enabled = False  # 默认禁用，可选启用
         self.hedge_method = "short_spy"  # 可选: "put_option"（需期权数据）或 "short_spy"
         self.hedge_ratio = 1.0  # 对冲比例：100%股票敞口
@@ -420,7 +420,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
                     self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
                     
-                    # P1优化：初始化ATR指标
+                   
                     if self.use_atr_stop:
                         self.atr_indicators[symbol] = self.ATR(symbol, self.atr_period)
                 
@@ -680,7 +680,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             current_spy = self.Securities[spy_symbol].Price
             sma50 = spy_sma50.Current.Value
             
-            # P1优化：添加确认机制，连续3天低于50MA才确认熊市
+           
             is_below_sma = (current_spy < sma50)
             
             if is_below_sma:
@@ -692,7 +692,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             was_bear = self.market_bear_mode
             self.market_bear_mode = (self.bear_mode_counter >= self.bear_mode_confirm_days)
             
-            # P2优化：根据市场状态动态调整总仓位
+           
             if self.market_bear_mode:
                 # 熊市：最低仓位
                 self.current_total_exposure = self.min_total_exposure
@@ -932,7 +932,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if self.Portfolio[symbol].Invested:
                 current_price = self.Portfolio[symbol].Price
                 
-                # P1优化：使用ATR止损（P0修复：已禁用，代码保留但跳过）
+               
                 if self.use_atr_stop and symbol in self.atr_indicators:
                     try:
                         atr = self.atr_indicators[symbol]
@@ -940,7 +940,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                             atr_value = atr.Current.Value
                             stop_price = cost - (self.atr_multiplier * atr_value)
                             if current_price < stop_price:
-                                # P0修复：检查最小持仓时间
+                               
                                 if not self._CanSell(symbol):
                                     continue
                                 self.Liquidate(symbol)
@@ -957,7 +957,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 
                 # 固定止损（备用）
                 if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
-                    # P0修复：检查最小持仓时间
+                   
                     if not self._CanSell(symbol):
                         continue
                     self.Liquidate(symbol)
@@ -981,7 +981,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                     # 检查是否从最高价回撤超过阈值
                     high = self.position_high[symbol]
                     if high > 0 and (current_price - high) / high < -self.trailing_stop_pct:
-                        # P0修复：检查最小持仓时间
+                       
                         if not self._CanSell(symbol):
                             continue
                         self.Liquidate(symbol)
@@ -1123,7 +1123,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         sorted_scores = sorted(positive_scores.items(), key=lambda x: x[1]['score'], reverse=True)
         top_stocks = sorted_scores[:self.max_stocks]
         
-        # 4. 计算目标权重
+        # 4. 计算目标权重 - 得分比例分配，单票上限15%
         total_score = sum(data['score'] for _, data in top_stocks)
         targets = {}
         
@@ -1139,9 +1139,13 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             
             targets[data['symbol']] = weight
         
-        # 5. 限制单票最大仓位
-        for symbol in targets:
-            targets[symbol] = min(targets[symbol], self.max_position_pct)
+        # 5. 限制单票最大仓位 - 按比例缩放，保持相对权重
+        max_weight = max(targets.values()) if targets else 0
+        if max_weight > self.max_position_pct:
+            scale = self.max_position_pct / max_weight
+            for symbol in targets:
+                targets[symbol] *= scale
+            self.Log(f"  单票最高{max_weight*100:.1f}%>{self.max_position_pct*100:.0f}%, 全局缩放{scale:.2f}x保持相对权重")
         
         # 6. 确保最小仓位
         for symbol in list(targets.keys()):
@@ -1208,7 +1212,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if current_weight == 0 or deviation > 0.10:
                 self.SetHoldings(symbol, target)
                 
-                # P0修复：记录买入日期（用于最小持仓时间检查）
+               
                 if self.Portfolio[symbol].Invested and self.Portfolio[symbol].Quantity > 0:
                     self._RecordBuyDate(symbol)
                 
