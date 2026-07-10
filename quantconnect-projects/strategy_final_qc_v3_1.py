@@ -44,7 +44,12 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.volatility_scaling = False  # 关闭波动率缩放（牛市中压缩高动量股票收益）
         self.target_volatility = 0.15  # 年化目标波动率
         
-        # ============ VIX参数 ============
+        # ============ RSI超买超卖参数（个股动态权重） ============
+        self.rsi_overbought = 70  # RSI超买阈值
+        self.rsi_oversold = 30    # RSI超卖阈值
+        self.rsi_adjustment_factor = 0.5  # 超买/超卖时的权重调整系数
+        
+        # ============ VIX参数（仅用于市场状态判断，不动态调整权重） ============
         # 优先使用VIX指数，如果不可用则回退到VIXY
         # VIXY是ETF有衰减问题，但本地数据更完整
         vix_available = False
@@ -552,67 +557,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             self.current_rebalance_freq = self.base_rebalance_freq
 
     def UpdateAdaptiveWeights(self):
-        """根据市场波动率自适应调整动量权重"""
-        if self.IsWarmingUp:
-            return
-            
-        try:
-            # 获取SPY历史数据
-            spy_history = self.History(
-                self.symbols.get("SPY"), 
-                self.volatility_lookback + 5, 
-                Resolution.DAILY
-            )
-            
-            if spy_history.empty or len(spy_history) < self.volatility_lookback:
-                return
-            
-            # 计算当前波动率
-            spy_returns = spy_history['close'].pct_change().dropna()
-            current_volatility = spy_returns.iloc[-self.volatility_lookback:].std()
-            
-            # 获取VIXY价格
-            vixy_price = self.Securities[self.vix_symbol].Price
-            if vixy_price <= 0:
-                vixy_price = 0
-            
-            # 计算SPY 3月收益率用于判断趋势
-            spy_3m_return = 0
-            if len(spy_history) >= 63:
-                spy_3m_return = (spy_history['close'].iloc[-1] / spy_history['close'].iloc[-63]) - 1
-            
-            # 判断估值水平
-            if spy_3m_return > 0.15:
-                valuation_level = 'high'
-            elif spy_3m_return < -0.15:
-                valuation_level = 'low'
-            else:
-                valuation_level = 'medium'
-            
-            # 根据波动率和估值调整权重
-            if current_volatility > self.volatility_high or vixy_price > self.vix_threshold:
-                # 高波动环境：偏向长期动量
-                self.current_weights = {
-                    '1d': 0.0, '1w': 0.2, '2w': 0.5, 
-                    '1m': 1.0, '3m': 1.5, '6m': 2.0
-                }
-            elif current_volatility < self.volatility_low:
-                # 低波动环境：偏向短期动量
-                self.current_weights = {
-                    '1d': 0.2, '1w': 0.8, '2w': 1.2, 
-                    '1m': 1.0, '3m': 0.8, '6m': 0.5
-                }
-            else:
-                # 正常环境：使用基础权重
-                self.current_weights = self.base_weights.copy()
-            
-            # 记录权重变化
-            self.Log(f"权重更新: vol={current_volatility:.4f}, vix={vixy_price:.2f}, "
-                    f"val={valuation_level}, weights={self.current_weights}")
-            
-        except Exception as e:
-            self.Log(f"ERROR in UpdateAdaptiveWeights: {e}")
-            self.current_weights = self.base_weights.copy()
+        """v3.1: 禁用基于VIX的全局权重调整，改为个股RSI动态调整"""
+        # 全局权重保持固定，个股权重在CalculateMomentumScore中根据RSI调整
+        return
 
     def CheckMarketState(self):
         """检查SPY是否在50日均线上方，决定市场状态（v3.1核心回撤控制）"""
@@ -742,13 +689,54 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 else:
                     returns[period] = 0
             
-            # 计算加权动量得分
-            score = sum(returns[p] * self.current_weights[p] for p in returns)
+            # 计算加权动量得分（基础分）
+            base_score = sum(returns[p] * self.current_weights[p] for p in returns)
+            
+            # ========== 基于个股RSI超买超卖动态调整 ==========
+            rsi_adjusted_score = base_score
+            rsi_value = 50  # 默认值
+            rsi_state = "neutral"
+            
+            try:
+                # 获取该股票的RSI指标
+                if symbol in self.rsi_indicators:
+                    rsi = self.rsi_indicators[symbol]
+                    if rsi.IsReady:
+                        rsi_value = rsi.Current.Value
+                        
+                        # 根据RSI状态调整动量得分
+                        if rsi_value > self.rsi_overbought:
+                            # RSI超买 (>70)：降低动量得分（避免追高）
+                            rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                            rsi_state = f"overbought({rsi_value:.1f})"
+                        elif rsi_value < self.rsi_oversold:
+                            # RSI超卖 (<30)：增加动量得分（抄底机会）
+                            # 但只在基础分为正时增强（避免接下跌的刀）
+                            if base_score > 0:
+                                rsi_adjusted_score = base_score * (1.0 + (1.0 - self.rsi_adjustment_factor))
+                                rsi_state = f"oversold_boost({rsi_value:.1f})"
+                            else:
+                                # 基础分为负时，超卖也不抄底（趋势向下）
+                                rsi_adjusted_score = base_score * self.rsi_adjustment_factor
+                                rsi_state = f"oversold_weak({rsi_value:.1f})"
+                        else:
+                            # 正常区间：使用基础得分
+                            rsi_adjusted_score = base_score
+                            rsi_state = f"neutral({rsi_value:.1f})"
+            except Exception as e:
+                self.Log(f"RSI调整失败 {ticker}: {e}")
+                rsi_adjusted_score = base_score
+            
+            # 使用RSI调整后的得分
+            score = rsi_adjusted_score
             
             return {
                 'symbol': symbol,
                 'ticker': ticker,
                 'score': score,
+                'base_score': base_score,  # 原始动量得分
+                'rsi_value': rsi_value,     # RSI值
+                'rsi_state': rsi_state,     # RSI状态
                 'returns': returns,
                 'current_price': current_price
             }
@@ -1001,12 +989,30 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 7. 计算总权重并调整
         total_weight = sum(targets.values())
         
-        # 8. 记录原始分配
+        # 8. 记录原始分配（含RSI调整信息）
         top5 = sorted(targets.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # 获取top5的RSI信息
+        rsi_info = []
+        for sym, w in top5:
+            ticker = self.GetTickerName(sym)
+            if ticker in positive_scores:
+                rsi_val = positive_scores[ticker].get('rsi_value', 50)
+                rsi_state = positive_scores[ticker].get('rsi_state', 'neutral')
+                base = positive_scores[ticker].get('base_score', 0)
+                final = positive_scores[ticker].get('score', 0)
+                rsi_info.append(f"{ticker}(RSI={rsi_val:.0f},{rsi_state},base={base:.3f},final={final:.3f})")
+            else:
+                rsi_info.append(f"{ticker}")
+        
         top5_str = ", ".join([f"{self.GetTickerName(sym)}:{w*100:.1f}%" for sym, w in top5])
         self.Log(f"[{self.Time.strftime('%Y-%m-%d')}] {market_name}原始: "
                 f"{len(targets)}只, 总仓位{total_weight*100:.1f}%, "
                 f"最高{max(targets.values())*100:.1f}%, top5: {top5_str}")
+        
+        # 记录RSI调整详情
+        if rsi_info:
+            self.Log(f"  RSI调整: {', '.join(rsi_info[:3])}")
         
         # 9. 限制总仓位（使用动态仓位）
         total_weight = sum(targets.values())
