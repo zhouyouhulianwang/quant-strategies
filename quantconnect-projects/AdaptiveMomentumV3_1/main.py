@@ -232,7 +232,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         )
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"),
-            self.TimeRules.BeforeMarketClose("SPY", 5),
+            self.TimeRules.AfterMarketOpen("SPY", 65),  # 止损后5分钟检查回撤
             self.CheckMaxDrawdown
         )
         
@@ -978,131 +978,140 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             return 1.0
 
     def CheckStopLoss(self):
-        """检查止损和追踪止损（P1优化：添加ATR止损）"""
+        """检查止损和追踪止损（优化版：简化逻辑，避免非交易时段警告）"""
         if self.IsWarmingUp:
             return
         
-        # 固定止损或ATR止损
+        # 避免在WarmUp或市场关闭时触发
+        spy_symbol = self.symbols.get("SPY")
+        if spy_symbol is None or not self.Securities.ContainsKey(spy_symbol):
+            return
+        if not self.Securities[spy_symbol].IsMarketOpen:
+            return
+        
+        # 固定止损 + ATR止损
         for symbol, cost in list(self.cost_basis.items()):
-            if self.Portfolio[symbol].Invested:
-                current_price = self.Portfolio[symbol].Price
-                
-               
-                if self.use_atr_stop and symbol in self.atr_indicators:
-                    try:
-                        atr = self.atr_indicators[symbol]
-                        if atr.IsReady:
-                            atr_value = atr.Current.Value
-                            stop_price = cost - (self.atr_multiplier * atr_value)
-                            if current_price < stop_price:
-                               
-                                if not self._CanSell(symbol):
-                                    continue
-                                self.Liquidate(symbol)
-                                if symbol in self.cost_basis:
-                                    del self.cost_basis[symbol]
-                                if symbol in self.position_high:
-                                    del self.position_high[symbol]
-                                if symbol in self.position_entry_date:
-                                    del self.position_entry_date[symbol]
-                                self.Log(f"ATR止损触发: {self.GetTickerName(symbol)} at {current_price:.2f} (ATR={atr_value:.2f})")
-                                continue
-                    except:
-                        pass
-                
-                # 固定止损（备用）
-                if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
-                   
-                    if not self._CanSell(symbol):
-                        continue
-                    self.Liquidate(symbol)
-                    if symbol in self.cost_basis:
-                        del self.cost_basis[symbol]
-                    if symbol in self.position_high:
-                        del self.position_high[symbol]
-                    if symbol in self.position_entry_date:
-                        del self.position_entry_date[symbol]
-                    self.Log(f"固定止损触发: {self.GetTickerName(symbol)} at {current_price:.2f}")
+            if not self.Portfolio[symbol].Invested:
+                continue
+            
+            ticker = self.GetTickerName(symbol)
+            current_price = self.Portfolio[symbol].Price
+            
+            # 检查最小持仓时间
+            if not self._CanSell(symbol):
+                continue
+            
+            # ATR止损（如果启用）
+            if self.use_atr_stop and symbol in self.atr_indicators:
+                try:
+                    atr = self.atr_indicators[symbol]
+                    if atr.IsReady:
+                        atr_value = atr.Current.Value
+                        stop_price = cost - (self.atr_multiplier * atr_value)
+                        if current_price < stop_price:
+                            self._ExecuteStopLoss(symbol, f"ATR止损@{current_price:.2f}(ATR={atr_value:.2f})")
+                            continue
+                except:
+                    pass
+            
+            # 固定止损
+            if cost > 0 and (current_price - cost) / cost < -self.stop_loss_pct:
+                self._ExecuteStopLoss(symbol, f"固定止损@{current_price:.2f}")
         
         # 追踪止损
         if self.trailing_stop_enabled:
             for symbol in list(self.position_high.keys()):
-                if self.Portfolio[symbol].Invested:
-                    current_price = self.Portfolio[symbol].Price
-                    # 更新最高价
-                    if current_price > self.position_high[symbol]:
-                        self.position_high[symbol] = current_price
-                    
-                    # 检查是否从最高价回撤超过阈值
-                    high = self.position_high[symbol]
-                    if high > 0 and (current_price - high) / high < -self.trailing_stop_pct:
-                       
-                        if not self._CanSell(symbol):
-                            continue
-                        self.Liquidate(symbol)
-                        del self.position_high[symbol]
-                        if symbol in self.cost_basis:
-                            del self.cost_basis[symbol]
-                        if symbol in self.position_entry_date:
-                            del self.position_entry_date[symbol]
-                        self.Log(f"追踪止损: {self.GetTickerName(symbol)} at {current_price:.2f} (high: {high:.2f})")
+                if not self.Portfolio[symbol].Invested:
+                    continue
+                
+                ticker = self.GetTickerName(symbol)
+                current_price = self.Portfolio[symbol].Price
+                
+                # 更新最高价
+                if current_price > self.position_high[symbol]:
+                    self.position_high[symbol] = current_price
+                
+                # 检查是否从最高价回撤超过阈值
+                high = self.position_high[symbol]
+                if high > 0 and (current_price - high) / high < -self.trailing_stop_pct:
+                    if not self._CanSell(symbol):
+                        continue
+                    self._ExecuteStopLoss(symbol, f"追踪止损@{current_price:.2f}(high:{high:.2f})")
+    
+    def _ExecuteStopLoss(self, symbol: Symbol, reason: str):
+        """执行止损：统一处理清仓和状态清理"""
+        ticker = self.GetTickerName(symbol)
+        self.Liquidate(symbol)
+        
+        # 清理状态
+        self.cost_basis.pop(symbol, None)
+        self.position_high.pop(symbol, None)
+        self.position_entry_date.pop(symbol, None)
+        
+        self.Log(f"{reason}: {ticker}")
 
     def CheckMaxDrawdown(self):
-        """检查最大回撤保护（P0修复：阶梯式回撤保护）"""
+        """检查最大回撤保护（阶梯式回撤保护，优化版：统一状态管理）"""
         if self.IsWarmingUp:
+            return
+        
+        # 避免在市场关闭时触发
+        spy_symbol = self.symbols.get("SPY")
+        if spy_symbol is None or not self.Securities.ContainsKey(spy_symbol):
+            return
+        if not self.Securities[spy_symbol].IsMarketOpen:
             return
         
         current_value = self.Portfolio.TotalPortfolioValue
         
-        # 更新最高水位（策略启动以来的最高净值，不重置）
+        # 更新最高水位
         if current_value > self.high_water_mark:
             self.high_water_mark = current_value
+            # 重置回撤保护状态（如果已恢复）
+            if self.drawdown_protection_triggered and current_value >= self.high_water_mark * 0.95:
+                self.Log(f"回撤恢复: 净值=${current_value:,.2f}，重置回撤保护状态")
+                self.drawdown_protection_triggered = False
         
         # 计算回撤
-        if self.high_water_mark > 0:
-            drawdown = (current_value - self.high_water_mark) / self.high_water_mark
-            
-            # 极端回撤 >20%：全面清仓，转投现金（国库券）
-            if drawdown < -self.drawdown_extreme_level:
-                if self.drawdown_protection_triggered != "extreme":
-                    self.Log(f"[CRITICAL]  极端回撤保护触发: {drawdown:.2%} > 20%，全面清仓！")
-                    self.Liquidate()
-                    # 100% 现金，不持有任何资产
-                    self.drawdown_protection_triggered = "extreme"
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-                return
-            
-            # 严重回撤 >15%：清仓股票+避险资产，转投现金
-            elif drawdown < -self.drawdown_severe_level:
-                if self.drawdown_protection_triggered not in ["severe", "extreme"]:
-                    self.Log(f"[WARNING]  严重回撤保护触发: {drawdown:.2%} > 15%，清仓转现金！")
-                    self.Liquidate()
-                    # 100% 现金
-                    self.drawdown_protection_triggered = "severe"
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-                return
-            
-            # 首次回撤 >10%：清仓股票，转投安全资产（TLT/GLD各50%）
-            elif drawdown < -self.drawdown_trigger_level:
-                if not self.drawdown_protection_triggered:
-                    self.Log(f"最大回撤保护触发: {drawdown:.2%}，清仓并转投安全资产")
-                    self.Liquidate()
-                    
-                    # 转入安全资产
-                    for ticker, symbol in self.safe_symbols.items():
-                        self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
-                    
-                    self.drawdown_protection_triggered = "triggered"
-                    # 暂停调仓一段时间
-                    self.current_rebalance_freq = self.max_rebalance_freq
-                    self.pause_weeks = 0
-            
-            # 回撤恢复后重置触发状态（净值恢复到-5%以内）
-            elif drawdown > -0.05 and self.drawdown_protection_triggered:
-                self.Log(f"回撤恢复: {drawdown:.2%}，重置回撤保护状态")
-                self.drawdown_protection_triggered = False
+        if self.high_water_mark <= 0:
+            return
+        
+        drawdown = (current_value - self.high_water_mark) / self.high_water_mark
+        
+        # 极端回撤 >20%：全面清仓
+        if drawdown < -self.drawdown_extreme_level:
+            if self.drawdown_protection_triggered != "extreme":
+                self._ExecuteDrawdownProtection("extreme", drawdown, "全面清仓")
+            return
+        
+        # 严重回撤 >15%：清仓转现金
+        elif drawdown < -self.drawdown_severe_level:
+            if self.drawdown_protection_triggered not in ["severe", "extreme"]:
+                self._ExecuteDrawdownProtection("severe", drawdown, "清仓转现金")
+            return
+        
+        # 首次回撤 >10%：清仓转安全资产
+        elif drawdown < -self.drawdown_trigger_level:
+            if not self.drawdown_protection_triggered:
+                self._ExecuteDrawdownProtection("triggered", drawdown, "转安全资产(TLT/GLD)")
+                # 转入安全资产
+                for ticker, symbol in self.safe_symbols.items():
+                    self.SetHoldings(symbol, 0.5 / len(self.safe_symbols))
+            return
+        
+        # 回撤恢复 >-5%：重置状态
+        elif drawdown > -0.05 and self.drawdown_protection_triggered:
+            self.Log(f"回撤恢复: {drawdown:.2%}，重置回撤保护状态")
+            self.drawdown_protection_triggered = False
+    
+    def _ExecuteDrawdownProtection(self, level: str, drawdown: float, action: str):
+        """执行回撤保护：统一处理清仓和状态更新"""
+        self.Log(f"[{'CRITICAL' if level=='extreme' else 'WARNING' if level=='severe' else 'INFO'}] "
+                 f"回撤保护触发({level}): {drawdown:.2%}, {action}")
+        self.Liquidate()
+        self.drawdown_protection_triggered = level
+        self.current_rebalance_freq = self.max_rebalance_freq
+        self.pause_weeks = 0
 
     def RebalanceUS(self):
         """美国股票池再平衡"""
