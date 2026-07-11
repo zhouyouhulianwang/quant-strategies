@@ -21,8 +21,8 @@ class VixPanicStatAndTrade(QCAlgorithm):
         self.rsi_period = 14
         self.rsi_oversold = 30
         self.rsi_overbought = 70
-        self.take_profit = 0.02  # 2%止盈
-        self.stop_loss = -0.02   # -2%止損
+        self.take_profit = 0.015  # 1.5%止盈
+        self.stop_loss = -0.015   # -1.5%止損
         self.max_hold_days = 5   # 最長持有5日
 
         self.rsi_indicator = self.rsi(self.spx, self.rsi_period, MovingAverageType.SIMPLE)
