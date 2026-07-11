@@ -250,90 +250,42 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """构建行业映射表 - 核心股票覆盖（精简版，避免64KB限制）"""
+        """构建行业映射表 - 从配置文件加载，硬编码作为fallback"""
+        import json, os, inspect
+        
+        # 尝试从配置文件加载
+        algorithm_dir = os.path.dirname(os.path.abspath(inspect.getfile(self.__class__)))
+        possible_paths = [
+            os.path.join(algorithm_dir, "sector_map.json"),
+            "sector_map.json",
+            "/home/pc/.openclaw/workspace/quantconnect-projects/sector_map.json",
+            "../sector_map.json",
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        sector_map = json.load(f)
+                        self.Log(f"从 {path} 加载行业映射: {len(sector_map)} 只股票")
+                        return sector_map
+                except Exception as e:
+                    self.Log(f"加载行业映射失败: {e}")
+        
+        # Fallback: 硬编码（如果配置文件不存在）
+        self.Log("WARNING: 使用硬编码行业映射")
         return {
-            # ========== 科技 (核心30只) ==========
-            'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech', 
-            'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech', 
-            'INTC': 'Tech', 'CRM': 'Tech', 'ORCL': 'Tech', 'ADBE': 'Tech',
-            'CSCO': 'Tech', 'AVGO': 'Tech', 'QCOM': 'Tech', 'TXN': 'Tech',
-            'AMAT': 'Tech', 'MU': 'Tech', 'NFLX': 'Tech', 'INTU': 'Tech',
-            'ANET': 'Tech', 'FSLR': 'Tech', 'FTNT': 'Tech', 'SNPS': 'Tech',
-            'KLAC': 'Tech', 'MRVL': 'Tech', 'NXPI': 'Tech', 'SWKS': 'Tech',
-            'MCHP': 'Tech', 'CDNS': 'Tech', 'DDOG': 'Tech', 'PLTR': 'Tech',
-            'NOW': 'Tech', 'NET': 'Tech', 'APP': 'Tech', 'CRWD': 'Tech',
-            'ZS': 'Tech', 'TEAM': 'Tech', 'WDAY': 'Tech', 'SNOW': 'Tech',
-            'OKTA': 'Tech', 'RBLX': 'Tech', 'ZM': 'Tech', 'DOCU': 'Tech',
-            'UBER': 'Tech', 'ABNB': 'Tech', 'DASH': 'Tech', 'SQ': 'Tech',
-            'PYPL': 'Tech', 'ENPH': 'Tech', 'SEDG': 'Tech', 'LRCX': 'Tech',
-            'TER': 'Tech', 'MPWR': 'Tech', 'COHR': 'Tech', 'RUN': 'Tech',
-            # ========== 金融 (核心25只) ==========
-            'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance', 'MS': 'Finance',
-            'WFC': 'Finance', 'BLK': 'Finance', 'C': 'Finance', 'AXP': 'Finance',
-            'SCHW': 'Finance', 'PNC': 'Finance', 'SPGI': 'Finance', 'MCO': 'Finance',
-            'ICE': 'Finance', 'CME': 'Finance', 'TFC': 'Finance', 'USB': 'Finance',
-            'COF': 'Finance', 'BK': 'Finance', 'STT': 'Finance', 'NDAQ': 'Finance',
-            'AON': 'Finance', 'MMC': 'Finance', 'AJG': 'Finance', 'PGR': 'Finance',
-            'ALL': 'Finance', 'TRV': 'Finance', 'CB': 'Finance', 'AFL': 'Finance',
-            # ========== 医疗健康 (核心25只) ==========
-            'JNJ': 'Healthcare', 'UNH': 'Healthcare', 'LLY': 'Healthcare', 
-            'PFE': 'Healthcare', 'MRK': 'Healthcare', 'ABBV': 'Healthcare',
-            'ABT': 'Healthcare', 'TMO': 'Healthcare', 'DHR': 'Healthcare',
-            'BMY': 'Healthcare', 'AMGN': 'Healthcare', 'GILD': 'Healthcare',
-            'REGN': 'Healthcare', 'VRTX': 'Healthcare', 'MRNA': 'Healthcare',
-            'BIIB': 'Healthcare', 'CI': 'Healthcare', 'HUM': 'Healthcare',
-            'CVS': 'Healthcare', 'ELV': 'Healthcare', 'CNC': 'Healthcare',
-            'ISRG': 'Healthcare', 'SYK': 'Healthcare', 'ZBH': 'Healthcare',
-            'RMD': 'Healthcare', 'DXCM': 'Healthcare', 'HOLX': 'Healthcare',
-            'DGX': 'Healthcare', 'LH': 'Healthcare', 'IQV': 'Healthcare',
-            # ========== 消费 (核心25只) ==========
-            'HD': 'Consumer', 'COST': 'Consumer', 'NKE': 'Consumer', 
-            'MCD': 'Consumer', 'SBUX': 'Consumer', 'LOW': 'Consumer', 
-            'TJX': 'Consumer', 'PG': 'Consumer', 'KO': 'Consumer',
-            'PEP': 'Consumer', 'WMT': 'Consumer', 'MDLZ': 'Consumer',
-            'CL': 'Consumer', 'KMB': 'Consumer', 'GIS': 'Consumer', 'CPB': 'Consumer',
-            'EL': 'Consumer', 'ULTA': 'Consumer', 'DG': 'Consumer', 'DLTR': 'Consumer',
-            'ROST': 'Consumer', 'LEN': 'Consumer', 'DHI': 'Consumer', 'PHM': 'Consumer',
-            'TOL': 'Consumer', 'NVR': 'Consumer', 'EL': 'Consumer', 'COTY': 'Consumer',
-            'ELF': 'Consumer', 'CHD': 'Consumer', 'ENR': 'Consumer', 'HELE': 'Consumer',
-            # ========== 能源 (核心20只) ==========
-            'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy',
-            'OXY': 'Energy', 'EOG': 'Energy', 'MPC': 'Energy', 'VLO': 'Energy',
-            'PSX': 'Energy', 'KMI': 'Energy', 'WMB': 'Energy', 'OKE': 'Energy',
-            'EPD': 'Energy', 'ET': 'Energy', 'ENB': 'Energy',
-            'SU': 'Energy', 'CVE': 'Energy', 'OVV': 'Energy', 'MRO': 'Energy',
-            'DVN': 'Energy', 'FANG': 'Energy', 'PXD': 'Energy',
-            # ========== 工业 (核心20只) ==========
+            'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech',
+            'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech',
+            'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance',
+            'JNJ': 'Healthcare', 'UNH': 'Healthcare', 'LLY': 'Healthcare',
+            'HD': 'Consumer', 'COST': 'Consumer', 'NKE': 'Consumer',
+            'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy',
             'CAT': 'Industrial', 'HON': 'Industrial', 'UPS': 'Industrial',
-            'BA': 'Industrial', 'GE': 'Industrial', 'RTX': 'Industrial',
-            'LMT': 'Industrial', 'NOC': 'Industrial', 'GD': 'Industrial',
-            'ITW': 'Industrial', 'MMM': 'Industrial', 'EMR': 'Industrial',
-            'PH': 'Industrial', 'ROP': 'Industrial', 'TT': 'Industrial',
-            'CMI': 'Industrial', 'PCAR': 'Industrial', 'CSX': 'Industrial',
-            'UNP': 'Industrial', 'NSC': 'Industrial', 'ODFL': 'Industrial',
-            'EXPD': 'Industrial', 'CHRW': 'Industrial', 'PWR': 'Industrial',
-            # ========== 通信 (核心10只) ==========
-            'VZ': 'Telecom', 'T': 'Telecom', 'CMCSA': 'Telecom', 'TMUS': 'Telecom',
-            'CHTR': 'Telecom', 'CCI': 'Telecom', 'AMT': 'Telecom', 'SBAC': 'Telecom',
-            'TDS': 'Telecom', 'LUMN': 'Telecom',
-            # ========== 房地产 (核心10只) ==========
-            'PLD': 'REITs', 'AMT': 'REITs', 'EQIX': 'REITs', 'PSA': 'REITs',
-            'O': 'REITs', 'VICI': 'REITs', 'DLR': 'REITs', 'SPG': 'REITs',
-            'WELL': 'REITs', 'AVB': 'REITs', 'EQR': 'REITs', 'EXR': 'REITs',
-            # ========== 公用事业 (核心10只) ==========
-            'NEE': 'Utilities', 'SO': 'Utilities', 'DUK': 'Utilities', 
-            'AEP': 'Utilities', 'EXC': 'Utilities', 'SRE': 'Utilities',
-            'XEL': 'Utilities', 'WEC': 'Utilities', 'ES': 'Utilities',
-            'D': 'Utilities', 'ED': 'Utilities', 'FE': 'Utilities', 
-            'EIX': 'Utilities', 'ETR': 'Utilities', 'CNP': 'Utilities',
-            # ========== 材料 (核心10只) ==========
-            'LIN': 'Materials', 'APD': 'Materials', 'SHW': 'Materials', 
-            'ECL': 'Materials', 'FCX': 'Materials', 'NEM': 'Materials',
-            'DOW': 'Materials', 'DD': 'Materials', 'EMN': 'Materials',
-            'ALB': 'Materials', 'CF': 'Materials', 'MOS': 'Materials',
-            'FMC': 'Materials', 'IFF': 'Materials', 'CE': 'Materials',
-            'PPG': 'Materials', 'RPM': 'Materials', 'ASH': 'Materials',
-            'HUN': 'Materials', 'WLK': 'Materials', 'IP': 'Materials',
+            'VZ': 'Telecom', 'T': 'Telecom', 'CMCSA': 'Telecom',
+            'PLD': 'REITs', 'AMT': 'REITs', 'EQIX': 'REITs',
+            'NEE': 'Utilities', 'SO': 'Utilities', 'DUK': 'Utilities',
+            'LIN': 'Materials', 'APD': 'Materials', 'SHW': 'Materials',
         }
 
     def _GetUSStockPool(self) -> List[str]:
