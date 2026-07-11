@@ -4,5 +4,6 @@
     "api-token": "2409bf6b14feaf8a29481c3a83d0d1ae0110378ef98bcabe17c6a93427d3343e",
     "default-language": "python",
     "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
-    "id": "Local"
+    "id": "Local",
+    "job-organization-id": "901244e2dd37ba36d87232576c651225"
 }

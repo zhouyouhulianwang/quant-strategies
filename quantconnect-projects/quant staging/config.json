@@ -1,5 +1,11 @@
 {
-    "local-id": 633154892,
     "algorithm-language": "Python",
-    "name": "quant staging"
+    "parameters": {},
+    "description": "Adaptive Momentum Strategy V3.1 - Dynamic Stock Pool",
+    "organization-id": "901244e2dd37ba36d87232576c651225",
+    "cloud-id": 33966982,
+    "local-id": 654113127,
+    "name": "Adaptive Momentum Strategy V3.1",
+    "python-venv": 1,
+    "encrypted": false
 }
