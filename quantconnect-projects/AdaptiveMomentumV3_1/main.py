@@ -223,8 +223,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.position_high = {}
         
         # ============ 调度设置 ============
-        self.SetRebalanceSchedule()
-        
+        # 所有操作统一在开盘后60分钟执行
+        # 顺序：1.止损检查 -> 2.回撤检查 -> 3.再平衡
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"), 
             self.TimeRules.AfterMarketOpen("SPY", 60), 
@@ -232,9 +232,11 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         )
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"),
-            self.TimeRules.AfterMarketOpen("SPY", 65),  # 止损后5分钟检查回撤
+            self.TimeRules.AfterMarketOpen("SPY", 60),
             self.CheckMaxDrawdown
         )
+        # 再平衡调度（在止损/回撤检查之后注册，确保同一时间点最后执行）
+        self.SetRebalanceSchedule()
         
         # ============ WarmUp ============
         warmup_days = max(self.lookback_periods['6m'], self.sector_lookback) + self.trend_lookback + 20
@@ -557,6 +559,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
     def SetRebalanceSchedule(self):
         """设置调仓调度 - 支持多种调仓频率
         基于用户参考代码改进，使用AfterMarketOpen避免MarketOnOpen警告
+        所有操作统一在开盘后60分钟执行
         """
         # 根据频率设置调仓月份
         if self.rebalance_frequency == "monthly":
@@ -572,23 +575,23 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             self.rebalance_frequency = "weekly"
             self.rebalance_months = list(range(1, 13))
         
-        # 设置调仓调度
+        # 设置调仓调度 - 统一在开盘后60分钟
         if self.rebalance_frequency == "weekly":
             # 每周一调仓，支持动态频率调整
             self.Schedule.On(
                 self.DateRules.Every(DayOfWeek.MONDAY),
-                self.TimeRules.AfterMarketOpen("SPY", 5),
+                self.TimeRules.AfterMarketOpen("SPY", 60),
                 self.WeeklyUpdate
             )
-            self.Log(f"调仓调度: 每周一 (AfterMarketOpen +5min), 基础频率={self.base_rebalance_freq}周")
+            self.Log(f"调仓调度: 每周一 开盘后60分钟, 基础频率={self.base_rebalance_freq}周")
         else:
             # 月度/双月/季度调仓
             self.Schedule.On(
                 self.DateRules.MonthStart("SPY"),
-                self.TimeRules.AfterMarketOpen("SPY", 30),
+                self.TimeRules.AfterMarketOpen("SPY", 60),
                 self.MonthlyRebalance
             )
-            self.Log(f"调仓调度: {self.rebalance_frequency} (月份: {self.rebalance_months}), AfterMarketOpen +30min")
+            self.Log(f"调仓调度: {self.rebalance_frequency} 开盘后60分钟 (月份: {self.rebalance_months})")
 
     def MonthlyRebalance(self):
         """月度调仓入口 - 检查是否在当前调仓月份"""
