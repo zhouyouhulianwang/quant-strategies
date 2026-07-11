@@ -337,80 +337,47 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         }
 
     def _GetUSStockPool(self) -> List[str]:
-        """获取美国股票池
-        支持从JSON配置文件动态加载，失败时使用硬编码核心列表
-        """
-        # 尝试从配置文件加载
-        if self.enable_dynamic_pool:
-            try:
-                import json
-                import os
-                
-                # 尝试多个路径
-                possible_paths = [
-                    self.stock_pool_file,
-                    f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
-                    f"../{self.stock_pool_file}",
-                ]
-                
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        with open(path, 'r') as f:
-                            pools = json.load(f)
-                            tickers = pools.get(self.stock_pool_source, [])
-                            if tickers:
-                                self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
-                                return list(dict.fromkeys(tickers))
-            except Exception as e:
-                self.Log(f"加载股票池文件失败: {e}")
+        """获取美国股票池 - 完全从JSON配置文件加载，禁止硬编码"""
+        # 强制从配置文件加载
+        try:
+            import json
+            import os
+            import inspect
+            
+            # 获取算法文件所在目录
+            algorithm_dir = os.path.dirname(os.path.abspath(inspect.getfile(self.__class__)))
+            
+            # 尝试多个路径（按优先级）
+            possible_paths = [
+                os.path.join(algorithm_dir, self.stock_pool_file),  # 算法所在目录
+                self.stock_pool_file,  # 当前工作目录
+                f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
+                f"../{self.stock_pool_file}",
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        pools = json.load(f)
+                        tickers = pools.get(self.stock_pool_source, [])
+                        if tickers:
+                            self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
+                            return list(dict.fromkeys(tickers))
+                        else:
+                            self.Log(f"WARNING: {path} 中未找到股票池 '{self.stock_pool_source}'")
+            
+            # 所有路径都失败
+            self.Log(f"ERROR: 无法加载股票池配置文件，已禁用动态加载")
+            self.Log(f"搜索路径: {possible_paths}")
+            self.enable_dynamic_pool = False
+            
+        except Exception as e:
+            self.Log(f"ERROR: 加载股票池文件失败: {e}")
+            self.enable_dynamic_pool = False
         
-        # 硬编码核心股票池（高流动性大盘股，本地数据通常可用）
-        self.Log(f"使用硬编码核心股票池 ({self.stock_pool_source})")
-        
-        # 核心大盘股（约100只，确保本地数据可用）
-        core_stocks = [
-            # 科技巨头 (15)
-            "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "CRM", "ORCL",
-            "ADBE", "INTU", "NOW", "AMD", "INTC",
-            # 金融 (15)
-            "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP",
-            "SPGI", "PGR", "CB", "SCHW", "ICE",
-            # 医疗健康 (12)
-            "UNH", "LLY", "JNJ", "MRK", "ABBV", "ABT", "TMO", "DHR", "PFE", "AMGN",
-            "GILD", "REGN",
-            # 消费 (15)
-            "WMT", "COST", "HD", "NKE", "MCD", "SBUX", "LOW", "TJX", "PG", "KO",
-            "PEP", "MDLZ", "CL", "KMB", "EL",
-            # 工业 (10)
-            "HON", "CAT", "UPS", "BA", "GE", "RTX", "LMT", "DE", "ITW", "EMR",
-            # 通信 (8)
-            "VZ", "T", "CMCSA", "TMUS", "CHTR", "DIS", "NFLX", "CCI",
-            # 能源 (10)
-            "XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "VLO", "PSX", "KMI",
-            # 房地产 (5)
-            "PLD", "AMT", "EQIX", "PSA", "SPG",
-            # 公用事业 (5)
-            "NEE", "SO", "DUK", "AEP", "EXC",
-            # 材料 (5)
-            "LIN", "APD", "SHW", "FCX", "NEM",
-        ]
-        
-        # 纳斯达克100成长补充（科技+创新）
-        growth_stocks = [
-            "MELI", "ABNB", "UBER", "LRCX", "KLAC", "MRVL", "NXPI", "SWKS",
-            "AMAT", "FSLR", "ENPH", "FTNT", "PANW", "CRWD", "ZS", "DDOG",
-            "NET", "PLTR", "SNOW", "MDB", "TEAM", "WDAY",
-        ]
-        
-        # 根据配置返回不同股票池
-        if self.stock_pool_source == "sp500":
-            return list(dict.fromkeys(core_stocks))
-        elif self.stock_pool_source == "nasdaq100":
-            return list(dict.fromkeys(growth_stocks))
-        elif self.stock_pool_source == "combined":
-            return list(dict.fromkeys(core_stocks + growth_stocks))
-        else:
-            return list(dict.fromkeys(core_stocks))
+        # 返回空列表（策略应处理空股票池的情况）
+        self.Log("WARNING: 股票池为空，请检查 stock_pools.json 配置文件")
+        return []
 
     def _InitializeSymbols(self):
         """初始化所有股票symbol"""
