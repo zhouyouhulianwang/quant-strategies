@@ -30,6 +30,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         # 实际佣金：每股$0.005，最低$1.00/笔，最高交易价值的1%
         # 21,000笔交易 × $1.00 = ~$21,000 佣金（回测已自动扣除）
         
+        # 设置每日精确结束时间为false，避免MarketOnOpen警告
+        self.Settings.DailyPreciseEndTime = False
+        
         # 设置现金缓冲，避免购买力不足错误
         self.Settings.FreePortfolioValuePercentage = 0.05  # 保留5%现金作为缓冲
         
@@ -102,7 +105,9 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.sector_map = self._BuildSectorMap()
         
         # ============ 调仓频率参数 ============
-        self.base_rebalance_freq = 2  # 基础调仓频率（周）
+        self.rebalance_frequency = "weekly"  # 可选: "weekly", "monthly", "bimonthly", "quarterly"
+        self.rebalance_months = list(range(1, 13))  # 默认所有月份
+        self.base_rebalance_freq = 2  # 基础调仓频率（周），仅weekly模式使用
         self.min_rebalance_freq = 1
         self.max_rebalance_freq = 8
         self.week_counter = 0
@@ -218,11 +223,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.position_high = {}
         
         # ============ 调度设置 ============
-        self.Schedule.On(
-            self.DateRules.Every(DayOfWeek.MONDAY), 
-            self.TimeRules.AfterMarketOpen("SPY", 5), 
-            self.WeeklyUpdate
-        )
+        self.SetRebalanceSchedule()
+        
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"), 
             self.TimeRules.AfterMarketOpen("SPY", 60), 
@@ -240,6 +242,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 日志 ============
         self.Log(f"策略初始化完成。WarmUp: {warmup_days}天")
+        self.Log(f"调仓频率: {self.rebalance_frequency}, 月份: {self.rebalance_months}")
         self.Log(f"RSI参数: overbought={self.rsi_overbought}, oversold={self.rsi_oversold}, factor={self.rsi_adjustment_factor}")
         self.Log(f"多因子: enabled={self.multi_factor_enabled}")
 
@@ -551,6 +554,58 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             self.Log(f"股票池更新失败: {e}")
 
     # ============ 核心策略方法 ============
+    def SetRebalanceSchedule(self):
+        """设置调仓调度 - 支持多种调仓频率
+        基于用户参考代码改进，使用AfterMarketOpen避免MarketOnOpen警告
+        """
+        # 根据频率设置调仓月份
+        if self.rebalance_frequency == "monthly":
+            self.rebalance_months = list(range(1, 13))  # 所有月份
+        elif self.rebalance_frequency == "bimonthly":
+            self.rebalance_months = [1, 3, 5, 7, 9, 11]  # 隔月
+        elif self.rebalance_frequency == "quarterly":
+            self.rebalance_months = [1, 4, 7, 10]  # 季度
+        elif self.rebalance_frequency == "weekly":
+            self.rebalance_months = list(range(1, 13))  # 所有月份
+        else:
+            self.Log(f"Invalid rebalance frequency: {self.rebalance_frequency}, defaulting to weekly")
+            self.rebalance_frequency = "weekly"
+            self.rebalance_months = list(range(1, 13))
+        
+        # 设置调仓调度
+        if self.rebalance_frequency == "weekly":
+            # 每周一调仓，支持动态频率调整
+            self.Schedule.On(
+                self.DateRules.Every(DayOfWeek.MONDAY),
+                self.TimeRules.AfterMarketOpen("SPY", 5),
+                self.WeeklyUpdate
+            )
+            self.Log(f"调仓调度: 每周一 (AfterMarketOpen +5min), 基础频率={self.base_rebalance_freq}周")
+        else:
+            # 月度/双月/季度调仓
+            self.Schedule.On(
+                self.DateRules.MonthStart("SPY"),
+                self.TimeRules.AfterMarketOpen("SPY", 30),
+                self.MonthlyRebalance
+            )
+            self.Log(f"调仓调度: {self.rebalance_frequency} (月份: {self.rebalance_months}), AfterMarketOpen +30min")
+
+    def MonthlyRebalance(self):
+        """月度调仓入口 - 检查是否在当前调仓月份"""
+        current_month = self.Time.month
+        
+        if current_month not in self.rebalance_months:
+            self.Log(f"本月({current_month})不在调仓月份列表{self.rebalance_months}，跳过")
+            return
+        
+        self.Log(f"执行{self.rebalance_frequency}调仓: 月份={current_month}")
+        self.CheckMarketState()
+        self.UpdateAdaptiveWeights()
+        self.RebalanceUS()
+        
+        # 期权对冲
+        self.HedgeWithPut()
+
     def WeeklyUpdate(self):
         """每周更新主入口"""
         self.week_counter += 1
