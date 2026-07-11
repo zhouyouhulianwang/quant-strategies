@@ -4,5 +4,7 @@
     "description": "MomentumProjects - Modular Momentum Strategy",
     "organization-id": "901244e2dd37ba36d87232576c651225",
     "python-venv": 1,
-    "name": "MomentumProjects"
+    "name": "MomentumProjects",
+    "local-id": 181778849,
+    "cloud-id": 34015923
 }

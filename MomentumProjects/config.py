@@ -1,6 +1,5 @@
 """
 config.py - Momentum Strategy Configuration
-
 All strategy parameters centralized here.
 """
 
@@ -10,17 +9,16 @@ END_DATE = (2026, 6, 30)
 INITIAL_CASH = 100000
 
 # ============ UNIVERSE SETTINGS ============
-MIN_PRICE = 10.0           # Minimum stock price
-MIN_MARKET_CAP_BILLIONS = 2.0  # Minimum market cap in billions
-MIN_AVG_VOLUME = 10_000_000   # Minimum average daily volume
-UNIVERSE_SIZE = 500        # Target universe size (top by volume)
+MIN_PRICE = 10.0
+MIN_AVG_VOLUME = 10000000
+UNIVERSE_SIZE = 500
 
 # ============ MOMENTUM ENGINE ============
 MOMENTUM_PERIODS = {
-    '1m': 21,      # 1 month
-    '3m': 63,      # 3 months
-    '6m': 126,     # 6 months
-    '12m': 252,    # 12 months
+    '1m': 21,
+    '3m': 63,
+    '6m': 126,
+    '12m': 252,
 }
 MOMENTUM_WEIGHTS = {
     '1m': 0.10,
@@ -29,12 +27,10 @@ MOMENTUM_WEIGHTS = {
     '12m': 0.30,
 }
 
-# RSI Settings
 RSI_PERIOD = 14
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 
-# Trend Filter
 USE_TREND_FILTER = True
 TREND_MA_PERIOD = 200
 
@@ -52,27 +48,22 @@ SECTOR_ETFS = {
     'Utilities': 'XLU',
     'RealEstate': 'XLRE',
 }
-SECTOR_MOMENTUM_PERIOD = 63  # 3 months for sector ranking
+SECTOR_MOMENTUM_PERIOD = 63
 TOP_N_SECTORS = 5
 
 # ============ PORTFOLIO CONSTRUCTION ============
-TOP_N_STOCKS = 20          # Number of stocks to hold
-POSITION_WEIGHT_METHOD = 'equal'  # 'equal' or 'risk_parity'
-
-# Risk Parity Settings (if enabled)
+TOP_N_STOCKS = 20
+POSITION_WEIGHT_METHOD = 'equal'
 RISK_PARITY_ATR_PERIOD = 20
-
-# Sector Limits
-MAX_SECTOR_PCT = 0.30      # Max 30% in one sector
+MAX_SECTOR_PCT = 0.30
 
 # ============ RISK MANAGER ============
-# VIX Control (Progressive)
 VIX_LEVELS = {
-    'normal': (0, 20),      # 100% position
-    'elevated': (20, 25),   # 80% position
-    'high': (25, 30),       # 60% position
-    'extreme': (30, 35),    # 40% position
-    'panic': (35, 100),     # 20% position
+    'normal': (0, 20),
+    'elevated': (20, 25),
+    'high': (25, 30),
+    'extreme': (30, 35),
+    'panic': (35, 100),
 }
 VIX_POSITION_PCT = {
     'normal': 1.0,
@@ -82,43 +73,31 @@ VIX_POSITION_PCT = {
     'panic': 0.2,
 }
 
-# Stop Loss
-STOP_LOSS_PCT = 0.08       # 8% stop loss
-
-# Take Profit
-TAKE_PROFIT_PCT = 0.20     # 20% take profit
-TAKE_PROFIT_PARTIAL = 0.5  # Sell 50% at take profit
-
-# Trailing Stop
+STOP_LOSS_PCT = 0.08
+TAKE_PROFIT_PCT = 0.20
+TAKE_PROFIT_PARTIAL = 0.5
 USE_TRAILING_STOP = True
-TRAILING_STOP_PCT = 0.10   # 10% trailing stop from peak
+TRAILING_STOP_PCT = 0.10
 
-# Market Trend Filter
 USE_MARKET_TREND_FILTER = True
 MARKET_TREND_SYMBOL = 'SPY'
 MARKET_TREND_MA = 200
 
-# Maximum Drawdown
-MAX_DRAWDOWN_PCT = 0.15    # 15% max drawdown
+MAX_DRAWDOWN_PCT = 0.15
 
 # ============ EXECUTION ============
-REBALANCE_FREQUENCY = 'weekly'  # 'weekly' or 'monthly'
-REBALANCE_DAY = 0  # 0 = Monday, 1 = Tuesday, etc.
-REBALANCE_MINUTES_AFTER_OPEN = 35  # 9:35 AM
+REBALANCE_FREQUENCY = 'weekly'
+REBALANCE_DAY = 0
+REBALANCE_MINUTES_AFTER_OPEN = 35
 
-# Position Limits
-MAX_POSITION_PCT = 0.05    # Max 5% per stock (for 20 stocks = 100%)
+MAX_POSITION_PCT = 0.05
 MIN_POSITION_PCT = 0.0
-
-# Cash Buffer
-CASH_BUFFER_PCT = 0.05     # Keep 5% cash
+CASH_BUFFER_PCT = 0.05
 
 # ============ MONITOR ============
-MONITOR_TIME_MINUTES_AFTER_OPEN = 30  # 9:30 AM
-LOG_LEVEL = 'INFO'
+MONITOR_TIME_MINUTES_AFTER_OPEN = 30
 
-# ============ SECTOR MAP (US Large Cap) ============
-# Simplified sector mapping - will be loaded from strategy_config.py if available
+# ============ SECTOR MAP ============
 SECTOR_MAP = {
     'AAPL': 'Technology', 'MSFT': 'Technology', 'GOOGL': 'Technology',
     'AMZN': 'Technology', 'META': 'Technology', 'NVDA': 'Technology',

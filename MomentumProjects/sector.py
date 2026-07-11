@@ -1,28 +1,19 @@
 """
 sector.py - Sector Rotation Module
-
 Industry momentum ranking and filtering.
 """
 from AlgorithmImports import *
-from typing import Dict, List, Tuple, Optional
 import config
 
 
-class SectorRotation:
-    """
-    Sector rotation filter based on industry momentum.
-    
-    Features:
-    - Calculate sector momentum from ETF returns
-    - Rank sectors by performance
-    - Filter stocks to top N sectors only
-    """
+class SectorFilter:
+    """Sector rotation filter based on industry momentum."""
     
     def __init__(self, algorithm):
         self.algo = algorithm
-        self.sector_symbols: Dict[str, Symbol] = {}  # sector name -> Symbol
-        self.sector_momentum: Dict[str, float] = {}    # sector name -> momentum score
-        self.top_sectors: List[str] = []
+        self.sector_symbols = {}
+        self.sector_momentum = {}
+        self.top_sectors = []
     
     def initialize(self):
         """Initialize sector ETF symbols."""
@@ -35,15 +26,12 @@ class SectorRotation:
                 symbol = self.algo.AddEquity(etf, Resolution.DAILY).Symbol
                 self.sector_symbols[sector] = symbol
             except Exception as e:
-                self.algo.Log(f"[Sector] ERROR adding {etf}: {e}")
+                self.algo.Log("[Sector] ERROR adding %s: %s" % (etf, str(e)))
         
-        self.algo.Log(f"[Sector] Loaded {len(self.sector_symbols)} sector ETFs")
+        self.algo.Log("[Sector] Loaded %d sector ETFs" % len(self.sector_symbols))
     
     def update_sector_momentum(self):
-        """
-        Calculate momentum for each sector ETF.
-        Runs weekly before rebalance.
-        """
+        """Calculate momentum for each sector ETF."""
         if not config.USE_SECTOR_ROTATION:
             return
         
@@ -56,33 +44,23 @@ class SectorRotation:
                     continue
                 
                 history = history.sort_index()
-                closes = history['close'].values
+                closes = history["close"].values
                 
                 if len(closes) >= 2:
                     ret = (closes[-1] / closes[0] - 1) * 100
                     self.sector_momentum[sector] = round(ret, 2)
             except Exception as e:
-                self.algo.Log(f"[Sector] ERROR calculating momentum for {sector}: {e}")
+                self.algo.Log("[Sector] ERROR calculating momentum for %s: %s" % (sector, str(e)))
         
-        # Sort sectors by momentum
         sorted_sectors = sorted(self.sector_momentum.items(), key=lambda x: x[1], reverse=True)
         self.top_sectors = [s[0] for s in sorted_sectors[:config.TOP_N_SECTORS]]
         
-        self.algo.Log(f"[Sector] Top {config.TOP_N_SECTORS} sectors: {self.top_sectors}")
+        self.algo.Log("[Sector] Top %d sectors: %s" % (config.TOP_N_SECTORS, str(self.top_sectors)))
         for sector, momentum in sorted_sectors[:config.TOP_N_SECTORS]:
-            self.algo.Log(f"  {sector}: {momentum:.2f}%")
+            self.algo.Log("  %s: %.2f%%" % (sector, momentum))
     
-    def filter_by_sector(self, tickers: List[str], universe_manager) -> List[str]:
-        """
-        Filter tickers to only those in top sectors.
-        
-        Args:
-            tickers: List of tickers to filter
-            universe_manager: UniverseManager instance
-            
-        Returns:
-            Filtered list of tickers
-        """
+    def filter_by_sector(self, tickers, universe_manager):
+        """Filter tickers to only those in top sectors."""
         if not config.USE_SECTOR_ROTATION or not self.top_sectors:
             return tickers
         
@@ -92,17 +70,17 @@ class SectorRotation:
             if sector in self.top_sectors:
                 filtered.append(ticker)
         
-        self.algo.Log(f"[Sector] Filtered {len(tickers)} -> {len(filtered)} stocks in top sectors")
+        self.algo.Log("[Sector] Filtered %d -> %d stocks in top sectors" % (len(tickers), len(filtered)))
         return filtered
     
-    def get_sector_momentum(self, sector: str) -> Optional[float]:
+    def get_sector_momentum(self, sector):
         """Get momentum score for a sector."""
         return self.sector_momentum.get(sector)
     
-    def get_top_sectors(self) -> List[str]:
+    def get_top_sectors(self):
         """Get current top sectors."""
-        return self.top_sectors.copy()
+        return list(self.top_sectors)
     
-    def is_top_sector(self, sector: str) -> bool:
+    def is_top_sector(self, sector):
         """Check if sector is in top N."""
         return sector in self.top_sectors
