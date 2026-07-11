@@ -250,19 +250,41 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """构建行业映射表 - 从配置文件加载，硬编码作为fallback"""
+        """构建行业映射表 - 优先从stock_pools.json加载，其次sector_map.json，最后硬编码fallback"""
         import json, os, inspect
         
-        # 尝试从配置文件加载
+        # 获取算法文件所在目录
         algorithm_dir = os.path.dirname(os.path.abspath(inspect.getfile(self.__class__)))
-        possible_paths = [
+        
+        # 方案1: 从 stock_pools.json 的 sector_map 字段读取（推荐）
+        stock_pool_paths = [
+            os.path.join(algorithm_dir, self.stock_pool_file),
+            self.stock_pool_file,
+            "/home/pc/.openclaw/workspace/quantconnect-projects/stock_pools.json",
+            "../stock_pools.json",
+        ]
+        
+        for path in stock_pool_paths:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        config = json.load(f)
+                        if 'sector_map' in config:
+                            sector_map = config['sector_map']
+                            self.Log(f"从 {path} 的 sector_map 加载行业映射: {len(sector_map)} 只股票")
+                            return sector_map
+                except Exception as e:
+                    self.Log(f"从 stock_pools.json 加载 sector_map 失败: {e}")
+        
+        # 方案2: 从独立的 sector_map.json 读取（向后兼容）
+        sector_map_paths = [
             os.path.join(algorithm_dir, "sector_map.json"),
             "sector_map.json",
             "/home/pc/.openclaw/workspace/quantconnect-projects/sector_map.json",
             "../sector_map.json",
         ]
         
-        for path in possible_paths:
+        for path in sector_map_paths:
             if os.path.exists(path):
                 try:
                     with open(path, 'r') as f:
@@ -272,7 +294,7 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
                 except Exception as e:
                     self.Log(f"加载行业映射失败: {e}")
         
-        # Fallback: 硬编码（如果配置文件不存在）
+        # Fallback: 硬编码（如果配置文件都不存在）
         self.Log("WARNING: 使用硬编码行业映射")
         return {
             'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech',
