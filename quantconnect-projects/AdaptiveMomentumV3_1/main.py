@@ -223,8 +223,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.position_high = {}
         
         # ============ 调度设置 ============
-        # 所有操作统一在开盘后60分钟执行
-        # 顺序：1.止损检查 -> 2.回撤检查 -> 3.再平衡
+        # 所有操作在开盘后不同阶段执行，分散订单压力
+        # 顺序：1.止损检查(60min) -> 2.回撤保护(65min) -> 3.再平衡(70min/80min)
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"), 
             self.TimeRules.AfterMarketOpen("SPY", 60), 
@@ -232,10 +232,10 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         )
         self.Schedule.On(
             self.DateRules.EveryDay("SPY"),
-            self.TimeRules.AfterMarketOpen("SPY", 60),
+            self.TimeRules.AfterMarketOpen("SPY", 65),
             self.CheckMaxDrawdown
         )
-        # 再平衡调度（在止损/回撤检查之后注册，确保同一时间点最后执行）
+        # 再平衡调度（在止损/回撤检查之后注册，避免同一时间点大量订单）
         self.SetRebalanceSchedule()
         
         # ============ WarmUp ============
@@ -580,18 +580,18 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             # 每周一调仓，支持动态频率调整
             self.Schedule.On(
                 self.DateRules.Every(DayOfWeek.MONDAY),
-                self.TimeRules.AfterMarketOpen("SPY", 60),
+                self.TimeRules.AfterMarketOpen("SPY", 70),  # 70分钟，在止损/回撤之后
                 self.WeeklyUpdate
             )
-            self.Log(f"调仓调度: 每周一 开盘后60分钟, 基础频率={self.base_rebalance_freq}周")
+            self.Log(f"调仓调度: 每周一 开盘后70分钟, 基础频率={self.base_rebalance_freq}周")
         else:
             # 月度/双月/季度调仓
             self.Schedule.On(
                 self.DateRules.MonthStart("SPY"),
-                self.TimeRules.AfterMarketOpen("SPY", 60),
+                self.TimeRules.AfterMarketOpen("SPY", 80),  # 80分钟，在所有操作之后
                 self.MonthlyRebalance
             )
-            self.Log(f"调仓调度: {self.rebalance_frequency} 开盘后60分钟 (月份: {self.rebalance_months})")
+            self.Log(f"调仓调度: {self.rebalance_frequency} 开盘后80分钟 (月份: {self.rebalance_months})")
 
     def MonthlyRebalance(self):
         """月度调仓入口 - 检查是否在当前调仓月份"""
