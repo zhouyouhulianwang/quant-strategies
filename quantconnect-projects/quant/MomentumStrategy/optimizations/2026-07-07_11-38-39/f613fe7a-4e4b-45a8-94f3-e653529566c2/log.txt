@@ -1,0 +1,242 @@
+2026-07-07T11:38:42.4500961Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.5.0.0 Mode: DEBUG (64bit) Host: pc
+2026-07-07T11:38:42.4529203Z TRACE:: Engine.Main(): Started 11:38 AM
+2026-07-07T11:38:42.4672362Z TRACE:: JobQueue.NextJob(): Selected /LeanCLI/main.py
+2026-07-07T11:38:42.4927525Z TRACE:: AlgorithmManager.CreateTokenBucket(): Initializing LeakyBucket: Capacity: 120 RefillAmount: 18 TimeInterval: 1440
+2026-07-07T11:38:42.4974378Z TRACE:: Engine.Run(): Resource limits '0' CPUs. 2147483647 MB RAM.
+2026-07-07T11:38:42.4977277Z TRACE:: TextSubscriptionDataSourceReader.SetCacheSize(): Setting cache size to 71582788 items
+2026-07-07T11:38:43.1346290Z TRACE:: PythonInitializer.Initialize(): start...
+2026-07-07T11:38:43.3190912Z TRACE:: PythonInitializer.Initialize(): ended
+2026-07-07T11:38:43.3200705Z TRACE:: AlgorithmPythonWrapper(): Python version 3.11.14 (main, Oct 21 2025, 18:40:40) [GCC 11.2.0]: Importing python module main
+2026-07-07T11:38:45.6924141Z TRACE:: AlgorithmPythonWrapper(): main successfully imported.
+2026-07-07T11:38:45.6971924Z TRACE:: AlgorithmPythonWrapper(): Creating IAlgorithm instance.
+2026-07-07T11:38:45.8309865Z TRACE:: LocalObjectStore.Initialize(): Storage Root: /Storage. StorageFileCount 9999999. StorageLimit 10240MB. StoragePermissions Read=True Write=True Delete=True
+2026-07-07T11:38:45.8433504Z TRACE:: HistoryProviderManager.Initialize(): history providers [SubscriptionDataReaderHistoryProvider]
+2026-07-07T11:38:45.8459239Z TRACE:: BaseSetupHandler.Setup(LocalPlatform): UID: 123456, PID: -169685342, Version: 2.5.0.0, Source: WebIDE
+2026-07-07T11:38:45.9444649Z TRACE:: WeightedWorkScheduler(): will use 32 workers and MaxWorkWeight is 400
+2026-07-07T11:38:45.9522873Z TRACE:: BaseSetupHandler.SetupCurrencyConversions():
+Account Type: Margin
+
+Symbol      Quantity    Conversion = Value in USD
+USD: $      100000.00 @       1.00 = $100000
+-------------------------------------------------
+CashBook Total Value:                $100000
+
+2026-07-07T11:38:45.9544508Z TRACE:: Total margin information: TotalMarginUsed: 0.00, MarginRemaining: 100000.00
+2026-07-07T11:38:45.9548194Z TRACE:: SetUp Backtesting: User: 123456 ProjectId: -169685342 AlgoId: f613fe7a-4e4b-45a8-94f3-e653529566c2
+2026-07-07T11:38:45.9568142Z TRACE:: Dates: Start: 01/01/2020 End: 12/30/2024 Cash: ¤100,000.00 MaximumRuntime: 100.00:00:00 MaxOrders: 2147483647
+2026-07-07T11:38:45.9609421Z TRACE:: BacktestingResultHandler(): Sample Period Set: 657.36
+2026-07-07T11:38:45.9613148Z TRACE:: JOB HANDLERS:
+         DataFeed:             QuantConnect.Lean.Engine.DataFeeds.FileSystemDataFeed
+         Setup:                QuantConnect.Lean.Engine.Setup.ConsoleSetupHandler
+         RealTime:             QuantConnect.Lean.Engine.RealTime.BacktestingRealTimeHandler
+         Results:              QuantConnect.Lean.Engine.Results.BacktestingResultHandler
+         Transactions:         QuantConnect.Lean.Engine.TransactionHandlers.BacktestingTransactionHandler
+         Object Store:         QuantConnect.Lean.Engine.Storage.LocalObjectStore
+         History Provider:     QuantConnect.Lean.Engine.HistoricalData.HistoryProviderManager
+         Brokerage:            QuantConnect.Brokerages.Backtesting.BacktestingBrokerage
+         Data Provider:        QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider
+
+2026-07-07T11:38:45.9716317Z TRACE:: Event Name "Daily Sampling", scheduled to run.
+2026-07-07T11:38:45.9729646Z TRACE:: AlgorithmManager.Run(): Begin DataStream - Start: 1/1/2020 12:00:00 AM Stop: 12/30/2024 11:59:59 PM Time: 11/25/2019 12:00:00 AM Warmup: True
+2026-07-07T11:38:45.9972665Z TRACE:: Debug: 2019-11-25 00:00:00 Launching analysis for f613fe7a-4e4b-45a8-94f3-e653529566c2 with LEAN Engine v2.5.0.0
+2026-07-07T11:38:46.0401033Z TRACE:: UniverseSelection.AddPendingInternalDataFeeds(): Adding internal benchmark data feed SPY,#0,SPY,Hour,TradeBar,Trade,Adjusted,OpenInterest,Internal
+2026-07-07T11:38:46.0788032Z TRACE:: AlgorithmManager.Stream(): Subscriptions count before warm up: 1
+2026-07-07T11:38:46.1224555Z TRACE:: AlgorithmManager.Run(): 12/20/2019 12:00:00 AM: Skip Dividend during warmup: Dividend: SPY: 1.57 | 320.9
+2026-07-07T11:38:46.1316690Z TRACE:: AlgorithmManager.Stream(): Subscriptions count after warm up: 1
+2026-07-07T11:38:46.1475546Z TRACE:: Debug: 2019-11-25 00:00:00 Algorithm starting warm up...
+2026-07-07T11:38:46.1476601Z TRACE:: Log: 2020-01-01 00:00:00 动量策略初始化: Lookback=15, ADX=14
+2026-07-07T11:38:46.1476673Z TRACE:: Debug: 2020-01-01 00:00:00 Algorithm finished warming up.
+2026-07-07T11:38:46.1981531Z TRACE:: Log: 2020-04-06 16:00:00 买入(动量): 价格=239.01, 高点=239.01, ADX=33.1
+2026-07-07T11:38:46.1981907Z TRACE:: Log: 2020-04-07 16:00:00 订单执行: SPY Buy 417.0 @ 247.45
+2026-07-07T11:38:46.2500022Z TRACE:: Debug: 2020-05-13 16:00:00 Warning: market orders submitted while the market is closed are automatically converted into MarketOnOpen orders to fill at the next market open.
+2026-07-07T11:38:46.2500361Z TRACE:: Log: 2020-05-13 16:00:00 跌破低点退出: 价格=254.12, 低点=251.84
+2026-07-07T11:38:46.2500425Z TRACE:: Log: 2020-05-14 16:00:00 订单执行: SPY Sell -417.0 @ 251.73
+2026-07-07T11:38:46.2500485Z TRACE:: Log: 2020-06-05 16:00:00 买入(动量): 价格=288.17, 高点=288.17, ADX=20.3
+2026-07-07T11:38:46.2500544Z TRACE:: Log: 2020-06-08 16:00:00 订单执行: SPY Buy 352.0 @ 288.97
+2026-07-07T11:38:46.2500768Z TRACE:: Log: 2020-06-26 16:00:00 跌破低点退出: 价格=273.16, 低点=271.27
+2026-07-07T11:38:46.2500883Z TRACE:: Log: 2020-06-29 16:00:00 订单执行: SPY Sell -352.0 @ 274.39
+2026-07-07T11:38:46.2500938Z TRACE:: Log: 2020-08-06 16:00:00 买入(动量): 价格=304.36, 高点=304.36, ADX=20.3
+2026-07-07T11:38:46.2500988Z TRACE:: Log: 2020-08-07 16:00:00 订单执行: SPY Buy 316.0 @ 303.41
+2026-07-07T11:38:46.2501037Z TRACE:: Log: 2020-09-08 16:00:00 跌破低点退出: 价格=303.34, 低点=303.34
+2026-07-07T11:38:46.2501084Z TRACE:: Log: 2020-09-09 16:00:00 订单执行: SPY Sell -316.0 @ 307.29
+2026-07-07T11:38:46.2501132Z TRACE:: Log: 2020-10-01 16:00:00 买入(动量): 价格=309.29, 高点=309.68, ADX=21.6
+2026-07-07T11:38:46.2501181Z TRACE:: Log: 2020-10-02 16:00:00 订单执行: SPY Buy 315.0 @ 304.39
+2026-07-07T11:38:46.2501230Z TRACE:: Log: 2020-10-27 16:00:00 跌破低点退出: 价格=310.37, 低点=310.37
+2026-07-07T11:38:46.2501278Z TRACE:: Log: 2020-10-28 16:00:00 订单执行: SPY Sell -315.0 @ 304.76
+2026-07-07T11:38:46.2501328Z TRACE:: Log: 2020-12-04 16:00:00 买入(动量): 价格=339.40, 高点=339.40, ADX=20.5
+2026-07-07T11:38:46.2501378Z TRACE:: Log: 2020-12-07 16:00:00 订单执行: SPY Buy 287.0 @ 338.64
+2026-07-07T11:38:46.2501526Z TRACE:: Log: 2021-01-27 16:00:00 跌破低点退出: 价格=346.52, 低点=345.72
+2026-07-07T11:38:46.2501573Z TRACE:: Log: 2021-01-28 16:00:00 订单执行: SPY Sell -287.0 @ 348.33
+2026-07-07T11:38:46.2501620Z TRACE:: Log: 2021-02-04 16:00:00 买入(动量): 价格=357.42, 高点=357.42, ADX=25.3
+2026-07-07T11:38:46.2501669Z TRACE:: Log: 2021-02-05 16:00:00 订单执行: SPY Buy 281.0 @ 359.28
+2026-07-07T11:38:46.2501719Z TRACE:: Log: 2021-02-25 16:00:00 跌破低点退出: 价格=353.85, 低点=353.85
+2026-07-07T11:38:46.2501766Z TRACE:: Log: 2021-02-26 16:00:00 订单执行: SPY Sell -281.0 @ 355.72
+2026-07-07T11:38:46.2501814Z TRACE:: Log: 2021-04-13 16:00:00 买入(动量): 价格=384.61, 高点=384.61, ADX=21.2
+2026-07-07T11:38:46.2501861Z TRACE:: Log: 2021-04-14 16:00:00 订单执行: SPY Buy 258.0 @ 384.59
+2026-07-07T11:38:46.2501909Z TRACE:: Log: 2021-05-05 16:00:00 跌破低点退出: 价格=387.31, 低点=383.97
+2026-07-07T11:38:46.2501959Z TRACE:: Log: 2021-05-06 16:00:00 订单执行: SPY Sell -258.0 @ 387.38
+2026-07-07T11:38:46.2502005Z TRACE:: Log: 2021-05-06 16:00:00 买入(动量): 价格=390.40, 高点=391.32, ADX=28.1
+2026-07-07T11:38:46.2502050Z TRACE:: Log: 2021-05-07 16:00:00 订单执行: SPY Buy 256.0 @ 391.16
+2026-07-07T11:38:46.2502150Z TRACE:: Log: 2021-05-11 16:00:00 跌破低点退出: 价格=385.87, 低点=384.06
+2026-07-07T11:38:46.2502196Z TRACE:: Log: 2021-05-12 16:00:00 订单执行: SPY Sell -256.0 @ 383.09
+2026-07-07T11:38:46.3010133Z TRACE:: Log: 2021-07-07 16:00:00 买入(动量): 价格=406.06, 高点=406.06, ADX=21.2
+2026-07-07T11:38:46.3010397Z TRACE:: Log: 2021-07-08 16:00:00 订单执行: SPY Buy 241.0 @ 400.75
+2026-07-07T11:38:46.3010459Z TRACE:: Log: 2021-07-19 16:00:00 跌破低点退出: 价格=397.19, 低点=397.19
+2026-07-07T11:38:46.3010518Z TRACE:: Log: 2021-07-20 16:00:00 订单执行: SPY Sell -241.0 @ 397.85
+2026-07-07T11:38:46.3010571Z TRACE:: Log: 2021-07-22 16:00:00 买入(动量): 价格=406.99, 高点=408.51, ADX=20.2
+2026-07-07T11:38:46.3010622Z TRACE:: Log: 2021-07-23 16:00:00 订单执行: SPY Buy 239.0 @ 408.92
+2026-07-07T11:38:46.3010680Z TRACE:: Log: 2021-08-18 16:00:00 跌破低点退出: 价格=410.47, 低点=408.99
+2026-07-07T11:38:46.3010732Z TRACE:: Log: 2021-08-19 16:00:00 订单执行: SPY Sell -239.0 @ 407.75
+2026-07-07T11:38:46.3010784Z TRACE:: Log: 2021-10-14 16:00:00 买入(动量): 价格=414.90, 高点=416.22, ADX=27.8
+2026-07-07T11:38:46.3010923Z TRACE:: Log: 2021-10-15 16:00:00 订单执行: SPY Buy 234.0 @ 417.01
+2026-07-07T11:38:46.3010979Z TRACE:: Log: 2021-11-23 16:00:00 跌破低点退出: 价格=438.99, 低点=434.70
+2026-07-07T11:38:46.3011027Z TRACE:: Log: 2021-11-24 16:00:00 订单执行: SPY Sell -234.0 @ 436.99
+2026-07-07T11:38:46.3011079Z TRACE:: Log: 2021-11-24 16:00:00 买入(动量): 价格=440.16, 高点=440.43, ADX=31.2
+2026-07-07T11:38:46.3011134Z TRACE:: Log: 2021-11-26 13:00:00 订单执行: SPY Buy 231.0 @ 433.50
+2026-07-07T11:38:46.3011184Z TRACE:: Log: 2021-11-26 13:00:00 跌破低点退出: 价格=430.34, 低点=430.34
+2026-07-07T11:38:46.3011238Z TRACE:: Log: 2021-11-29 16:00:00 订单执行: SPY Sell -231.0 @ 435.12
+2026-07-07T11:38:46.3011290Z TRACE:: Log: 2021-12-07 16:00:00 买入(动量): 价格=439.07, 高点=440.43, ADX=25.0
+2026-07-07T11:38:46.3011341Z TRACE:: Log: 2021-12-08 16:00:00 订单执行: SPY Buy 232.0 @ 439.46
+2026-07-07T11:38:46.3011393Z TRACE:: Log: 2022-01-13 16:00:00 跌破低点退出: 价格=437.09, 低点=437.09
+2026-07-07T11:38:46.3011442Z TRACE:: Log: 2022-01-14 16:00:00 订单执行: SPY Sell -232.0 @ 433.94
+2026-07-07T11:38:46.3011496Z TRACE:: Log: 2022-02-09 16:00:00 买入(动量): 价格=430.51, 高点=430.51, ADX=26.9
+2026-07-07T11:38:46.3011594Z TRACE:: Log: 2022-02-10 16:00:00 订单执行: SPY Buy 234.0 @ 424.67
+2026-07-07T11:38:46.3011646Z TRACE:: Log: 2022-02-17 16:00:00 跌破低点退出: 价格=411.24, 低点=411.24
+2026-07-07T11:38:46.3011695Z TRACE:: Log: 2022-02-18 16:00:00 订单执行: SPY Sell -234.0 @ 411.49
+2026-07-07T11:38:46.3011745Z TRACE:: Log: 2022-03-17 16:00:00 买入(动量): 价格=415.01, 高点=415.01, ADX=33.0
+2026-07-07T11:38:46.3011792Z TRACE:: Log: 2022-03-18 16:00:00 订单执行: SPY Buy 235.0 @ 413.40
+2026-07-07T11:38:46.3011838Z TRACE:: Log: 2022-04-08 16:00:00 跌破低点退出: 价格=422.44, 低点=418.88
+2026-07-07T11:38:46.3011884Z TRACE:: Log: 2022-04-11 16:00:00 订单执行: SPY Sell -235.0 @ 419.17
+2026-07-07T11:38:46.3513025Z TRACE:: Log: 2022-05-27 16:00:00 买入(动量): 价格=391.94, 高点=391.94, ADX=27.7
+2026-07-07T11:38:46.3513254Z TRACE:: Log: 2022-05-31 16:00:00 订单执行: SPY Buy 253.0 @ 390.33
+2026-07-07T11:38:46.3513369Z TRACE:: Log: 2022-06-10 16:00:00 跌破低点退出: 价格=367.91, 低点=367.75
+2026-07-07T11:38:46.3513412Z TRACE:: Log: 2022-06-13 16:00:00 订单执行: SPY Sell -253.0 @ 358.52
+2026-07-07T11:38:46.3513451Z TRACE:: Log: 2022-07-07 16:00:00 买入(动量): 价格=368.73, 高点=369.76, ADX=22.0
+2026-07-07T11:38:46.3513592Z TRACE:: Log: 2022-07-08 16:00:00 订单执行: SPY Buy 247.0 @ 367.10
+2026-07-07T11:38:46.3513632Z TRACE:: Log: 2022-07-14 16:00:00 跌破低点退出: 价格=358.23, 低点=357.60
+2026-07-07T11:38:46.3513669Z TRACE:: Log: 2022-07-15 16:00:00 订单执行: SPY Sell -247.0 @ 362.63
+2026-07-07T11:38:46.3513706Z TRACE:: Log: 2022-08-03 16:00:00 买入(动量): 价格=392.87, 高点=392.87, ADX=20.9
+2026-07-07T11:38:46.3513760Z TRACE:: Log: 2022-08-04 16:00:00 订单执行: SPY Buy 229.0 @ 392.79
+2026-07-07T11:38:46.3513814Z TRACE:: Log: 2022-08-23 16:00:00 跌破低点退出: 价格=390.87, 低点=389.93
+2026-07-07T11:38:46.3513913Z TRACE:: Log: 2022-08-24 16:00:00 订单执行: SPY Sell -229.0 @ 390.65
+2026-07-07T11:38:46.3513965Z TRACE:: Log: 2022-10-24 16:00:00 买入(动量): 价格=360.61, 高点=360.61, ADX=27.2
+2026-07-07T11:38:46.3514020Z TRACE:: Log: 2022-10-25 16:00:00 订单执行: SPY Buy 248.0 @ 360.54
+2026-07-07T11:38:46.3514074Z TRACE:: Log: 2022-12-06 16:00:00 跌破低点退出: 价格=374.85, 低点=374.85
+2026-07-07T11:38:46.3514128Z TRACE:: Log: 2022-12-07 16:00:00 订单执行: SPY Sell -248.0 @ 374.01
+2026-07-07T11:38:46.3514183Z TRACE:: Log: 2023-02-02 16:00:00 买入(动量): 价格=398.52, 高点=398.52, ADX=20.4
+2026-07-07T11:38:46.3514305Z TRACE:: Log: 2023-02-03 16:00:00 订单执行: SPY Buy 233.0 @ 393.56
+2026-07-07T11:38:46.3514366Z TRACE:: Log: 2023-02-21 16:00:00 跌破低点退出: 价格=381.60, 低点=381.60
+2026-07-07T11:38:46.3514423Z TRACE:: Log: 2023-02-22 16:00:00 订单执行: SPY Sell -233.0 @ 382.01
+2026-07-07T11:38:46.3514679Z TRACE:: Log: 2023-06-05 16:00:00 买入(动量): 价格=409.94, 高点=410.73, ADX=21.4
+2026-07-07T11:38:46.3514888Z TRACE:: Log: 2023-06-06 16:00:00 订单执行: SPY Buy 220.0 @ 409.53
+2026-07-07T11:38:46.4016248Z TRACE:: Log: 2023-08-02 16:00:00 跌破低点退出: 价格=433.65, 低点=432.84
+2026-07-07T11:38:46.4016578Z TRACE:: Log: 2023-08-03 16:00:00 订单执行: SPY Sell -220.0 @ 431.64
+2026-07-07T11:38:46.4016648Z TRACE:: Log: 2023-10-11 16:00:00 买入(动量): 价格=421.83, 高点=421.83, ADX=22.6
+2026-07-07T11:38:46.4016709Z TRACE:: Log: 2023-10-12 16:00:00 订单执行: SPY Buy 225.0 @ 422.44
+2026-07-07T11:38:46.4016765Z TRACE:: Log: 2023-10-20 16:00:00 跌破低点退出: 价格=407.21, 低点=407.21
+2026-07-07T11:38:46.4016818Z TRACE:: Log: 2023-10-23 16:00:00 订单执行: SPY Sell -225.0 @ 405.68
+2026-07-07T11:38:46.4016873Z TRACE:: Log: 2023-11-03 16:00:00 买入(动量): 价格=420.26, 高点=421.56, ADX=28.1
+2026-07-07T11:38:46.4017053Z TRACE:: Log: 2023-11-06 16:00:00 订单执行: SPY Buy 217.0 @ 421.01
+2026-07-07T11:38:46.4017106Z TRACE:: Log: 2024-01-04 16:00:00 跌破低点退出: 价格=453.60, 低点=453.60
+2026-07-07T11:38:46.4017159Z TRACE:: Log: 2024-01-05 16:00:00 订单执行: SPY Sell -217.0 @ 453.80
+2026-07-07T11:38:46.4017209Z TRACE:: Log: 2024-01-08 16:00:00 买入(动量): 价格=460.70, 高点=462.73, ADX=40.1
+2026-07-07T11:38:46.4017266Z TRACE:: Log: 2024-01-09 16:00:00 订单执行: SPY Buy 213.0 @ 458.05
+2026-07-07T11:38:46.4017317Z TRACE:: Log: 2024-04-04 16:00:00 跌破低点退出: 价格=499.59, 低点=496.44
+2026-07-07T11:38:46.4017366Z TRACE:: Log: 2024-04-05 16:00:00 订单执行: SPY Sell -213.0 @ 500.95
+2026-07-07T11:38:46.4017415Z TRACE:: Log: 2024-05-03 16:00:00 买入(动量): 价格=497.86, 高点=497.86, ADX=22.5
+2026-07-07T11:38:46.4017465Z TRACE:: Log: 2024-05-06 16:00:00 订单执行: SPY Buy 215.0 @ 500.26
+2026-07-07T11:38:46.4017515Z TRACE:: Log: 2024-05-30 16:00:00 跌破低点退出: 价格=508.88, 低点=506.51
+2026-07-07T11:38:46.4017565Z TRACE:: Log: 2024-05-31 16:00:00 订单执行: SPY Sell -215.0 @ 509.84
+2026-07-07T11:38:46.4017619Z TRACE:: Log: 2024-06-14 16:00:00 买入(动量): 价格=528.52, 高点=528.52, ADX=20.9
+2026-07-07T11:38:46.4017706Z TRACE:: Log: 2024-06-17 16:00:00 订单执行: SPY Buy 207.0 @ 527.84
+2026-07-07T11:38:46.4017758Z TRACE:: Log: 2024-07-19 16:00:00 跌破低点退出: 价格=536.29, 低点=531.63
+2026-07-07T11:38:46.4017811Z TRACE:: Log: 2024-07-22 16:00:00 订单执行: SPY Sell -207.0 @ 540.21
+2026-07-07T11:38:46.4017863Z TRACE:: Log: 2024-08-15 16:00:00 买入(动量): 价格=540.28, 高点=540.28, ADX=32.1
+2026-07-07T11:38:46.4017911Z TRACE:: Log: 2024-08-16 16:00:00 订单执行: SPY Buy 207.0 @ 538.67
+2026-07-07T11:38:46.4017962Z TRACE:: Log: 2024-09-05 16:00:00 跌破低点退出: 价格=536.90, 低点=536.90
+2026-07-07T11:38:46.4018011Z TRACE:: Log: 2024-09-06 16:00:00 订单执行: SPY Sell -207.0 @ 537.22
+2026-07-07T11:38:46.4018059Z TRACE:: Log: 2024-09-24 16:00:00 买入(动量): 价格=559.80, 高点=559.80, ADX=20.0
+2026-07-07T11:38:46.4018184Z TRACE:: Log: 2024-09-25 16:00:00 订单执行: SPY Buy 199.0 @ 559.64
+2026-07-07T11:38:46.4297664Z TRACE:: Synchronizer.GetEnumerator(): Exited thread.
+2026-07-07T11:38:46.4302066Z TRACE:: AlgorithmManager.Run(): Firing On End Of Algorithm...
+2026-07-07T11:38:46.4306984Z TRACE:: Engine.Run(): Exiting Algorithm Manager
+2026-07-07T11:38:46.4350495Z TRACE:: StopSafely(): Waiting for 'Isolator Thread' thread to stop...
+2026-07-07T11:38:46.4352942Z TRACE:: FileSystemDataFeed.Exit(): Start. Setting cancellation token...
+2026-07-07T11:38:46.4364858Z TRACE:: FileSystemDataFeed.Exit(): Exit Finished.
+2026-07-07T11:38:46.4366702Z TRACE:: BacktestingResultHandler.Exit(): starting...
+2026-07-07T11:38:46.4367797Z TRACE:: BacktestingResultHandler.Exit(): Saving logs...
+2026-07-07T11:38:46.4376254Z TRACE:: Log: 2024-10-29 16:00:00 跌破低点退出: 价格=570.06, 低点=564.53
+2026-07-07T11:38:46.4376301Z TRACE:: StopSafely(): Waiting for 'Result Thread' thread to stop...
+2026-07-07T11:38:46.4376582Z TRACE:: Log: 2024-10-30 16:00:00 订单执行: SPY Sell -199.0 @ 569.59
+2026-07-07T11:38:46.4376706Z TRACE:: Log: 2024-11-06 16:00:00 买入(动量): 价格=579.14, 高点=579.14, ADX=23.8
+2026-07-07T11:38:46.4376952Z TRACE:: Log: 2024-11-07 16:00:00 订单执行: SPY Buy 196.0 @ 581.14
+2026-07-07T11:38:46.4376998Z TRACE:: Log: 2024-12-17 16:00:00 跌破低点退出: 价格=592.13, 低点=586.78
+2026-07-07T11:38:46.4377040Z TRACE:: Log: 2024-12-18 16:00:00 订单执行: SPY Sell -196.0 @ 591.82
+2026-07-07T11:38:46.4377085Z TRACE:: Log: 2024-12-30 16:00:00 策略结束: 最终权益=116167.18
+2026-07-07T11:38:46.4377134Z TRACE:: Debug: 2024-12-30 16:00:00 Algorithm Id:(f613fe7a-4e4b-45a8-94f3-e653529566c2) completed in 0.47 seconds at 3k data points per second. Processing total of 1,264 data points.
+2026-07-07T11:38:46.4377177Z TRACE:: Debug: 2024-12-30 16:00:00 Your log was successfully created and can be retrieved from: /Results/f613fe7a-4e4b-45a8-94f3-e653529566c2/f613fe7a-4e4b-45a8-94f3-e653529566c2-log.txt
+2026-07-07T11:38:46.4377218Z TRACE:: BacktestingResultHandler.Run(): Ending Thread...
+2026-07-07T11:38:46.5080631Z ERROR:: InterestRateProvider.FromCsvFile(): no interest rates were loaded, please make sure the file is present '/Lean/Data/alternative/interest-rate/usa/interest-rate.csv'
+2026-07-07T11:38:47.2528979Z TRACE:: 
+STATISTICS:: Total Orders 58
+STATISTICS:: Average Win 2.95%
+STATISTICS:: Average Loss -2.34%
+STATISTICS:: Compounding Annual Return 3.041%
+STATISTICS:: Drawdown 17.900%
+STATISTICS:: Expectancy 0.249
+STATISTICS:: Start Equity 100000
+STATISTICS:: End Equity 116167.18
+STATISTICS:: Net Profit 16.167%
+STATISTICS:: Sharpe Ratio 0.17
+STATISTICS:: Sortino Ratio 0.125
+STATISTICS:: Probabilistic Sharpe Ratio 1.265%
+STATISTICS:: Loss Rate 45%
+STATISTICS:: Win Rate 55%
+STATISTICS:: Profit-Loss Ratio 1.26
+STATISTICS:: Alpha 0
+STATISTICS:: Beta 0
+STATISTICS:: Annual Standard Deviation 0.087
+STATISTICS:: Annual Variance 0.008
+STATISTICS:: Information Ratio 0.284
+STATISTICS:: Tracking Error 0.087
+STATISTICS:: Treynor Ratio 0
+STATISTICS:: Total Fees $72.42
+STATISTICS:: Estimated Strategy Capacity $1900000000.00
+STATISTICS:: Lowest Capacity Asset SPY R735QTJ8XC9X
+STATISTICS:: Portfolio Turnover 3.16%
+STATISTICS:: Drawdown Recovery 1407
+STATISTICS:: OrderListHash 55ec131e10e78b00d89a989042284dc2
+2026-07-07T11:38:47.2529388Z TRACE:: BacktestingResultHandler.SendAnalysisResult(): Processed final packet
+2026-07-07T11:38:47.2532762Z TRACE:: Engine.Run(): Disconnecting from brokerage...
+2026-07-07T11:38:47.2533555Z TRACE:: Engine.Run(): Disposing of setup handler...
+2026-07-07T11:38:47.2534049Z TRACE:: Engine.Main(): Analysis Completed and Results Posted.
+2026-07-07T11:38:47.2536185Z TRACE:: DataMonitor.Exit(): start...
+2026-07-07T11:38:47.2537463Z TRACE:: StopSafely(): Waiting for '' thread to stop...
+2026-07-07T11:38:47.2549352Z TRACE:: DataMonitor.GenerateReport():
+DATA USAGE:: Total data requests 3
+DATA USAGE:: Succeeded data requests 2
+DATA USAGE:: Failed data requests 1
+DATA USAGE:: Failed data requests percentage 33%
+DATA USAGE:: Total universe data requests 0
+DATA USAGE:: Succeeded universe data requests 0
+DATA USAGE:: Failed universe data requests 0
+DATA USAGE:: Failed universe data requests percentage 0%
+2026-07-07T11:38:47.2580073Z TRACE:: DataMonitor.Exit(): end
+2026-07-07T11:38:47.2613067Z TRACE:: Engine.Main(): Packet removed from queue: f613fe7a-4e4b-45a8-94f3-e653529566c2
+2026-07-07T11:38:47.2614593Z TRACE:: LeanEngineSystemHandlers.Dispose(): start...
+2026-07-07T11:38:47.2623492Z TRACE:: LeanEngineSystemHandlers.Dispose(): Disposed of system handlers.
+2026-07-07T11:38:47.2626498Z TRACE:: LeanEngineAlgorithmHandlers.Dispose(): start...
+2026-07-07T11:38:47.2628213Z TRACE:: LocalObjectStore.Dispose(): start...
+2026-07-07T11:38:47.2630701Z TRACE:: LocalObjectStore.Dispose(): end
+2026-07-07T11:38:47.2632728Z TRACE:: LeanEngineAlgorithmHandlers.Dispose(): Disposed of algorithm handlers.
+2026-07-07T11:38:47.2633939Z TRACE:: StopSafely(): Waiting for 'CpuPerformance' thread to stop...
+2026-07-07T11:38:47.2637601Z TRACE:: PythonInitializer.Shutdown(): start
+2026-07-07T11:38:47.2637798Z TRACE:: PythonInitializer.Shutdown(): calling engine shutdown...
+2026-07-07T11:38:57.8270268Z TRACE:: Isolator.ExecuteWithTimeLimit(): Execution Security Error: Operation timed out - 0.16666666666666666 minutes max. Check for recursive loops.
+2026-07-07T11:38:57.8271231Z ERROR:: Security.ExecuteWithTimeLimit(): Execution Security Error: Operation timed out - 0.16666666666666666 minutes max. Check for recursive loops.
+2026-07-07T11:38:57.8368654Z ERROR:: Program.Exit(): Failed to shutdown python System.TimeoutException: Execution Security Error: Operation timed out - 0.16666666666666666 minutes max. Check for recursive loops.
+   at QuantConnect.Isolator.MonitorTask(Task task, TimeSpan timeSpan, Func`1 withinCustomLimits, Int64 memoryCap, Int32 sleepIntervalMillis) in Common/Isolator.cs:line 179
+   at QuantConnect.Isolator.ExecuteWithTimeLimit(TimeSpan timeSpan, Func`1 withinCustomLimits, Action codeBlock, Int64 memoryCap, Int32 sleepIntervalMillis, WorkerThread workerThread) in Common/Isolator.cs:line 69
+   at QuantConnect.Isolator.ExecuteWithTimeLimit(TimeSpan timeSpan, Action codeBlock, Int64 memoryCap, Int32 sleepIntervalMillis, WorkerThread workerThread) in Common/Isolator.cs:line 196
+   at QuantConnect.Lean.Launcher.Program.Exit(Int32 exitCode) in Launcher/Program.cs:line 145
+2026-07-07T11:38:57.8368955Z TRACE:: Program.Main(): Exiting Lean...

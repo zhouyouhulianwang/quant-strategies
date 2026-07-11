@@ -1,0 +1,1 @@
+/alternative/interest-rate/usa/interest-rate.csv
