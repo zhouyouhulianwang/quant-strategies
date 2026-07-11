@@ -2,6 +2,7 @@
 VIX Panic Signal Module - 可被主策略调用的VIX恐慌信号模块
 
 提供VIX恐慌信号检测功能，用于主策略的风险管理和择时叠加。
+使用VIX指数（而非VXX ETF）直接检测市场恐慌。
 
 使用方式:
     from vix_panic import VixPanicSignal
@@ -22,15 +23,15 @@ from collections import defaultdict
 
 class VixPanicSignal:
     """
-    VIX恐慌信号检测器
+    VIX恐慌信号检测器 - 使用VIX指数直接检测
     
-    检测VIX盘中冲高时的恐慌/超买信号，提供交易建议。
+    检测VIX盘中冲高（VIX>30）时的恐慌/超买信号，提供交易建议。
     可独立于主策略运行统计，也可作为信号源被主策略调用。
     """
     
     # 默认参数配置
     DEFAULT_CONFIG = {
-        'vix_thresh': 20.0,           # VXX代理阈值 (对应VIX≈30)
+        'vix_thresh': 30.0,            # VIX恐慌阈值（直接检测VIX>30）
         'rsi_period': 14,              # RSI计算周期
         'rsi_oversold': 30,            # RSI超卖阈值
         'rsi_overbought': 70,          # RSI超买阈值
@@ -81,7 +82,7 @@ class VixPanicSignal:
         self.last_signal = None
         self.last_signal_time = None
     
-    def initialize_symbols(self, spx='SPY', dji='DIA', ndx='QQQ', vix='VXX'):
+    def initialize_symbols(self, spx='SPY', dji='DIA', ndx='QQQ', vix=None):
         """
         初始化标的符号 (需在主策略Initialize中调用)
         
@@ -89,7 +90,7 @@ class VixPanicSignal:
             spx: 标普500 ETF，默认 'SPY'
             dji: 道琼斯 ETF，默认 'DIA'  
             ndx: 纳斯达克 ETF，默认 'QQQ'
-            vix: VIX代理，默认 'VXX'
+            vix: VIX指数Symbol，需先通过 algo.AddIndex('VIX') 添加
         """
         algo = self.algo
         self.symbols = {
@@ -97,10 +98,18 @@ class VixPanicSignal:
             'DJI': algo.AddEquity(dji, Resolution.DAILY).Symbol,
             'NDX': algo.AddEquity(ndx, Resolution.DAILY).Symbol,
         }
-        self.vix_symbol = algo.AddEquity(vix, Resolution.DAILY).Symbol
+        # 使用传入的VIX Symbol，或尝试添加VIX指数
+        if vix is not None:
+            self.vix_symbol = vix
+        else:
+            try:
+                self.vix_symbol = algo.AddIndex('VIX', Resolution.DAILY).Symbol
+            except:
+                self.vix_symbol = algo.AddEquity('VIXY', Resolution.DAILY).Symbol
+        
         self.rsi_indicator = algo.RSI(self.symbols['SPX'], self.config['rsi_period'], MovingAverageType.SIMPLE)
         
-        algo.Log(f"[VIX_PANIC] Initialized with symbols: SPX={spx}, DJI={dji}, NDX={ndx}, VIX={vix}")
+        algo.Log(f"[VIX_PANIC] VIX index threshold: {self.vix_thresh}")
         return self
     
     def use_existing_symbols(self, spx_symbol, dji_symbol, ndx_symbol, vix_symbol, rsi_indicator=None):
@@ -111,7 +120,7 @@ class VixPanicSignal:
             spx_symbol: SPX Symbol对象
             dji_symbol: DJI Symbol对象  
             ndx_symbol: NDX Symbol对象
-            vix_symbol: VIX Symbol对象
+            vix_symbol: VIX Symbol对象 (需使用self.AddIndex('VIX')添加)
             rsi_indicator: 可选，已有的RSI指标
         """
         self.symbols = {'SPX': spx_symbol, 'DJI': dji_symbol, 'NDX': ndx_symbol}
@@ -156,9 +165,9 @@ class VixPanicSignal:
         vix_high = vix_sec.High
         vix_close = vix_sec.Close
         
-        # VIX未冲高 -> 无信号
+        # VIX未冲高 (VIX <= 30) -> 无信号
         if vix_high <= self.vix_thresh:
-            self.last_signal = {'signal': 'neutral', 'vix_high': vix_high, 'reason': 'VIX not spiked'}
+            self.last_signal = {'signal': 'neutral', 'vix_high': vix_high, 'reason': 'VIX not spiked (VIX <= 30)'}
             return self.last_signal
         
         # 获取RSI
@@ -178,23 +187,23 @@ class VixPanicSignal:
             'timestamp': algo.Time,
         }
         
-        # 超卖 + VIX冲高 = 恐慌抄底信号
+        # 超卖 + VIX冲高 (VIX>30) = 恐慌抄底信号
         if rsi_group == "Oversold":
-            # A类: 满仓信号 (历史84.6%胜率, 5日+2.38%)
-            # B类: 半仓信号 (历史66.7%胜率, 5日+1.18%)
+            # A类: VIX收盘>=30，满仓信号
+            # B类: VIX仅盘中冲高，半仓信号
             weight = 1.0 if vix_type == "A" else 0.5
             signal.update({
                 'signal': 'buy_panic',
                 'target_weight': weight,
-                'reason': f'VIX{vix_type} spike + RSI oversold ({rsi_val:.1f}) -> panic buy',
+                'reason': f'VIX{vix_type} spike (>{self.vix_thresh}) + RSI oversold ({rsi_val:.1f}) -> panic buy',
             })
         
-        # 超买 + VIX冲高 = 止盈/避险信号 (83%概率下跌)
+        # 超买 + VIX冲高 = 止盈/避险信号
         elif rsi_group == "Overbought":
             signal.update({
                 'signal': 'sell_overbought',
                 'target_weight': 0.0,
-                'reason': f'VIX{vix_type} spike + RSI overbought ({rsi_val:.1f}) -> take profit/hedge',
+                'reason': f'VIX{vix_type} spike (>{self.vix_thresh}) + RSI overbought ({rsi_val:.1f}) -> take profit/hedge',
             })
         
         # 中性 = 观望
@@ -202,7 +211,7 @@ class VixPanicSignal:
             signal.update({
                 'signal': 'neutral',
                 'target_weight': 0.0,
-                'reason': f'VIX{vix_type} spike but RSI neutral ({rsi_val:.1f}) -> no action',
+                'reason': f'VIX{vix_type} spike (>{self.vix_thresh}) but RSI neutral ({rsi_val:.1f}) -> no action',
             })
         
         self.last_signal = signal
@@ -383,7 +392,7 @@ class VixPanicSignal:
 class VixPanicStrategy(QCAlgorithm):
     """
     VIX恐慌策略独立运行版本
-    可直接作为独立策略在QuantConnect上运行
+    使用VIX指数直接检测，在QuantConnect上运行
     """
     
     def Initialize(self):
@@ -394,7 +403,9 @@ class VixPanicStrategy(QCAlgorithm):
         
         # 初始化VIX信号模块
         self.vix_panic = VixPanicSignal(self)
-        self.vix_panic.initialize_symbols()
+        # 添加VIX指数并传入Symbol
+        vix_symbol = self.AddIndex('VIX', Resolution.DAILY).Symbol
+        self.vix_panic.initialize_symbols(vix=vix_symbol)
         
         self.SetWarmUp(self.vix_panic.config['rsi_period'] + 5)
     
