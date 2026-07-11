@@ -171,15 +171,8 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         self.current_put = None  # 当前持有的Put
         self.spy_option = None
         
-        # ============ 股票池配置 ============
-        self.stock_pool_source = "combined"  # 可选: "sp500", "nasdaq100", "combined", "custom"
-        self.stock_pool_file = "stock_pools.json"  # 股票池配置文件
-        self.enable_dynamic_pool = True  # 启用动态股票池更新
-        self.pool_update_freq = 30  # 每30天检查更新一次
-        self.last_pool_update = self.Time
-        
-        # ============ 股票池 ============
-        self.us_tickers = self._GetUSStockPool()
+        # ============ 股票池（从 sector_map 动态获取）============
+        self.us_tickers = list(self.sector_map.keys())
         self.safe_tickers = ["TLT", "GLD"]
         self.safe_symbols = {}
         self.symbols = {}
@@ -187,14 +180,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
         
         # ============ 初始化股票 ============
         self._InitializeSymbols()
-        
-        # 如果启用动态更新，设置定时检查
-        if self.enable_dynamic_pool:
-            self.Schedule.On(
-                self.DateRules.MonthStart("SPY"),
-                self.TimeRules.AfterMarketOpen("SPY", 30),
-                self.UpdateStockPool
-            )
         
         # ============ 初始化SPY期权（对冲用）============
         if self.hedge_enabled:
@@ -250,108 +235,32 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
 
     # ============ 辅助方法 ============
     def _BuildSectorMap(self) -> Dict[str, str]:
-        """构建行业映射表 - 优先从stock_pools.json加载，其次sector_map.json，最后硬编码fallback"""
+        """构建行业映射表 - 从 strategy_config.json 加载 sector_map 字段"""
         import json, os, inspect
         
-        # 获取算法文件所在目录
         algorithm_dir = os.path.dirname(os.path.abspath(inspect.getfile(self.__class__)))
         
-        # 方案1: 从 stock_pools.json 的 sector_map 字段读取（推荐）
-        stock_pool_paths = [
-            os.path.join(algorithm_dir, self.stock_pool_file),
-            self.stock_pool_file,
-            "/home/pc/.openclaw/workspace/quantconnect-projects/stock_pools.json",
-            "../stock_pools.json",
+        paths = [
+            os.path.join(algorithm_dir, "strategy_config.json"),
+            "strategy_config.json",
+            "/home/pc/.openclaw/workspace/quantconnect-projects/strategy_config.json",
+            "../strategy_config.json",
         ]
         
-        for path in stock_pool_paths:
+        for path in paths:
             if os.path.exists(path):
                 try:
                     with open(path, 'r') as f:
                         config = json.load(f)
                         if 'sector_map' in config:
                             sector_map = config['sector_map']
-                            self.Log(f"从 {path} 的 sector_map 加载行业映射: {len(sector_map)} 只股票")
+                            self.Log(f"从 {path} 加载行业映射: {len(sector_map)} 只股票")
                             return sector_map
-                except Exception as e:
-                    self.Log(f"从 stock_pools.json 加载 sector_map 失败: {e}")
-        
-        # 方案2: 从独立的 sector_map.json 读取（向后兼容）
-        sector_map_paths = [
-            os.path.join(algorithm_dir, "sector_map.json"),
-            "sector_map.json",
-            "/home/pc/.openclaw/workspace/quantconnect-projects/sector_map.json",
-            "../sector_map.json",
-        ]
-        
-        for path in sector_map_paths:
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r') as f:
-                        sector_map = json.load(f)
-                        self.Log(f"从 {path} 加载行业映射: {len(sector_map)} 只股票")
-                        return sector_map
                 except Exception as e:
                     self.Log(f"加载行业映射失败: {e}")
         
-        # Fallback: 硬编码（如果配置文件都不存在）
-        self.Log("WARNING: 使用硬编码行业映射")
-        return {
-            'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'GOOGL': 'Tech',
-            'META': 'Tech', 'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech',
-            'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance',
-            'JNJ': 'Healthcare', 'UNH': 'Healthcare', 'LLY': 'Healthcare',
-            'HD': 'Consumer', 'COST': 'Consumer', 'NKE': 'Consumer',
-            'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy',
-            'CAT': 'Industrial', 'HON': 'Industrial', 'UPS': 'Industrial',
-            'VZ': 'Telecom', 'T': 'Telecom', 'CMCSA': 'Telecom',
-            'PLD': 'REITs', 'AMT': 'REITs', 'EQIX': 'REITs',
-            'NEE': 'Utilities', 'SO': 'Utilities', 'DUK': 'Utilities',
-            'LIN': 'Materials', 'APD': 'Materials', 'SHW': 'Materials',
-        }
-
-    def _GetUSStockPool(self) -> List[str]:
-        """获取美国股票池 - 完全从JSON配置文件加载，禁止硬编码"""
-        # 强制从配置文件加载
-        try:
-            import json
-            import os
-            import inspect
-            
-            # 获取算法文件所在目录
-            algorithm_dir = os.path.dirname(os.path.abspath(inspect.getfile(self.__class__)))
-            
-            # 尝试多个路径（按优先级）
-            possible_paths = [
-                os.path.join(algorithm_dir, self.stock_pool_file),  # 算法所在目录
-                self.stock_pool_file,  # 当前工作目录
-                f"/home/pc/.openclaw/workspace/quantconnect-projects/{self.stock_pool_file}",
-                f"../{self.stock_pool_file}",
-            ]
-            
-            for path in possible_paths:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        pools = json.load(f)
-                        tickers = pools.get(self.stock_pool_source, [])
-                        if tickers:
-                            self.Log(f"从 {path} 加载股票池: {self.stock_pool_source}, 共{len(tickers)}只")
-                            return list(dict.fromkeys(tickers))
-                        else:
-                            self.Log(f"WARNING: {path} 中未找到股票池 '{self.stock_pool_source}'")
-            
-            # 所有路径都失败
-            self.Log(f"ERROR: 无法加载股票池配置文件，已禁用动态加载")
-            self.Log(f"搜索路径: {possible_paths}")
-            self.enable_dynamic_pool = False
-            
-        except Exception as e:
-            self.Log(f"ERROR: 加载股票池文件失败: {e}")
-            self.enable_dynamic_pool = False
-        
-        # 返回空列表（策略应处理空股票池的情况）
-        self.Log("WARNING: 股票池为空，请检查 stock_pools.json 配置文件")
-        return []
+        self.Log("ERROR: 无法加载行业映射，策略无法运行")
+        return {}
 
     def _InitializeSymbols(self):
         """初始化所有股票symbol"""
@@ -448,53 +357,6 @@ class AdaptiveMomentumStrategy(QCAlgorithm):
             if sym == symbol:
                 return name
         return str(symbol)
-
-    def UpdateStockPool(self):
-        """定期更新股票池"""
-        if not self.enable_dynamic_pool or self.IsWarmingUp:
-            return
-        
-        try:
-            # 检查是否需要更新
-            days_since_update = (self.Time - self.last_pool_update).days
-            if days_since_update < self.pool_update_freq:
-                return
-            
-            self.Log(f"检查股票池更新...")
-            
-            # 尝试重新加载股票池
-            new_tickers = self._GetUSStockPool()
-            
-            # 检查是否有新增股票
-            current_tickers = set(self.us_tickers)
-            new_additions = [t for t in new_tickers if t not in current_tickers]
-            
-            if new_additions:
-                self.Log(f"新增 {len(new_additions)} 只股票: {', '.join(new_additions[:10])}")
-                
-                # 添加新股票到symbols
-                for ticker in new_additions:
-                    try:
-                        if ticker not in self.symbols:
-                            symbol = self.AddEquity(ticker, Resolution.DAILY).Symbol
-                            self.symbols[ticker] = symbol
-                            self.ticker_list.append(ticker)
-                            
-                            if ticker not in self.safe_tickers:
-                                self.rsi_indicators[symbol] = self.RSI(symbol, self.rsi_period)
-                                self.sma_indicators[symbol] = self.SMA(symbol, self.trend_lookback)
-                    except Exception as e:
-                        self.Log(f"添加新股 {ticker} 失败: {e}")
-                
-                # 更新股票池列表
-                self.us_tickers = list(dict.fromkeys(self.us_tickers + new_additions))
-                self.last_pool_update = self.Time
-                self.Log(f"股票池更新完成，当前共 {len(self.us_tickers)} 只")
-            else:
-                self.Log("股票池无需更新")
-                
-        except Exception as e:
-            self.Log(f"股票池更新失败: {e}")
 
     # ============ 核心策略方法 ============
     def SetRebalanceSchedule(self):
