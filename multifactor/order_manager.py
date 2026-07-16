@@ -120,11 +120,13 @@ class OrderManager:
                     'order_id': order.id,
                     'symbol': order.symbol,
                     'status': order.status,
-                    'filled_qty': int(order.filled_qty) if hasattr(order, 'filled_qty') else 0,
-                    'filled_avg_price': float(order.filled_avg_price) if hasattr(order, 'filled_avg_price') else None,
+                    'filled_qty': int(order.filled_qty) if order.filled_qty is not None else 0,
+                    'filled_avg_price': float(order.filled_avg_price) if order.filled_avg_price is not None else None,
                     'side': order.side,
                     'qty': int(order.qty),
                 }
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"获取订单 {order_id} 状态网络错误: {e}")
         except Exception as e:
             logger.warning(f"获取订单 {order_id} 状态失败: {e}")
         
