@@ -32,6 +32,9 @@ Thumbs.db
 # Secrets
 .env
 
+# Old strategy backups
+AdaptiveMomentumV3_1_backup/
+
 # Lean data
 data/lean/
 **/*.db
