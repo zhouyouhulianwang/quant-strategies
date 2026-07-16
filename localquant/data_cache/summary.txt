@@ -1,0 +1,24 @@
+
+AdaptiveMomentumV3.1 | 50 Symbols | Optimal Params
+============================================================
+Total Return:     +16.15%
+CAGR:             +5.14%
+Sharpe Ratio:     0.60
+Sortino Ratio:    0.79
+Max Drawdown:     -6.07%
+Calmar Ratio:     0.85
+Volatility:       5.26%
+============================================================
+Total Trades:     106
+Win Rate:         27.36%
+Profit Factor:    2.17
+Avg Trade PnL:    $153.55
+Total Commission: $890.21
+============================================================
+Parameters:
+  max_position_pct: 0.10
+  rebalance_freq:   10 days
+  max_stocks:       10
+  stop_loss_pct:    8%
+  trailing_stop:    10%
+============================================================

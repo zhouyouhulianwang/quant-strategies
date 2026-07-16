@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalQuant - 登录</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 400px;
+        }
+        .logo { text-align: center; margin-bottom: 30px; }
+        .logo h1 { font-size: 28px; color: #333; margin-bottom: 8px; }
+        .logo p { color: #666; font-size: 14px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #333; font-weight: 500; font-size: 14px; }
+        .form-group input {
+            width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0;
+            border-radius: 8px; font-size: 14px; transition: border-color 0.3s;
+        }
+        .form-group input:focus { outline: none; border-color: #667eea; }
+        .login-btn {
+            width: 100%; padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; border: none; border-radius: 8px;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+        }
+        .login-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102,126,234,0.4); }
+        .error-message { color: #e74c3c; font-size: 14px; margin-top: 12px; text-align: center; display: none; }
+        .error-message.show { display: block; }
+        .info-section { margin-top: 24px; padding-top: 24px; border-top: 1px solid #e0e0e0; }
+        .info-section h3 { font-size: 14px; color: #666; margin-bottom: 12px; }
+        .test-accounts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .account-tag {
+            background: #f5f5f5; padding: 8px 12px; border-radius: 6px;
+            font-size: 12px; color: #666; cursor: pointer;
+        }
+        .account-tag:hover { background: #e8e8e8; }
+        .account-tag .role { font-weight: 600; color: #667eea; }
+        .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #999; }
+        .version-badge { display: inline-block; background: #667eea; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <h1>⚡ LocalQuant</h1>
+            <p>量化交易平台</p>
+        </div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <input type="text" id="username" placeholder="请输入用户名" required>
+            </div>
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" placeholder="请输入密码" required>
+            </div>
+            <button type="submit" class="login-btn">登录</button>
+            <div class="error-message" id="errorMessage"></div>
+        </form>
+        <div class="info-section">
+            <h3>测试账号 (点击自动填充)</h3>
+            <div class="test-accounts">
+                <div class="account-tag" onclick="fillAccount('admin', 'admin123')">
+                    <span class="role">admin</span><br>admin123
+                </div>
+                <div class="account-tag" onclick="fillAccount('trader1', 'trader123')">
+                    <span class="role">trader</span><br>trader123
+                </div>
+                <div class="account-tag" onclick="fillAccount('researcher1', 'research123')">
+                    <span class="role">researcher</span><br>research123
+                </div>
+                <div class="account-tag" onclick="fillAccount('viewer1', 'viewer123')">
+                    <span class="role">viewer</span><br>viewer123
+                </div>
+            </div>
+        </div>
+        <div class="footer">
+            <span class="version-badge">v3.305</span>
+            <p style="margin-top: 8px;">LocalQuant Quantitative Trading Platform</p>
+        </div>
+    </div>
+    <script>
+        const API_BASE = window.location.origin;
+        function fillAccount(username, password) {
+            document.getElementById('username').value = username;
+            document.getElementById('password').value = password;
+        }
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.classList.remove('show');
+            try {
+                const response = await fetch(`${API_BASE}/api/v2/auth/login`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    localStorage.setItem('localquant_token', data.data.token);
+                    localStorage.setItem('localquant_user', data.data.user);
+                    localStorage.setItem('localquant_role', data.data.role);
+                    const redirect = new URLSearchParams(window.location.search).get('redirect');
+                    window.location.href = redirect || '/dashboard';
+                } else {
+                    errorMessage.textContent = data.message || '登录失败';
+                    errorMessage.classList.add('show');
+                }
+            } catch (error) {
+                errorMessage.textContent = '网络错误，请重试';
+                errorMessage.classList.add('show');
+            }
+        });
+    </script>
+</body>
+</html>

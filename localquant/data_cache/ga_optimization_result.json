@@ -1,0 +1,23 @@
+{
+  "best_params": {
+    "max_position_pct": 0.1679573019616729,
+    "rebalance_freq": 7,
+    "max_stocks": 3,
+    "stop_loss_pct": 0.10930140552262367,
+    "trailing_stop_pct": 0.10501576780901399,
+    "use_trend_filter": true,
+    "sector_rotation_enabled": true
+  },
+  "best_sharpe": 0.7842038860638955,
+  "elapsed_time": 186.9709529876709,
+  "fitness_history": [
+    0.6125010872485556,
+    0.720322726084025,
+    0.7827310347819745,
+    0.7827310347819745,
+    0.7842038860638955,
+    0.7842038860638955,
+    0.7842038860638955,
+    0.7842038860638955
+  ]
+}

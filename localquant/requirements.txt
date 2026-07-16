@@ -1,0 +1,44 @@
+# LocalQuant 生产依赖
+
+# 核心数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+polars>=0.20.0
+
+# 数据存储
+pyarrow>=12.0.0
+
+# 数据获取
+yfinance>=0.2.0
+ccxt>=4.0.0
+akshare>=1.18.0
+
+# Web框架
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# 任务调度
+apscheduler>=3.10.0
+
+# CLI工具
+click>=8.1.0
+
+# 可视化
+plotly>=5.15.0
+streamlit>=1.25.0
+kaleido>=1.3.0
+
+# 测试
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# 类型检查
+mypy>=1.0.0
+
+# 代码质量
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+
+# 性能优化
+numba>=0.58.0
