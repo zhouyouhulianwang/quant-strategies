@@ -21,3 +21,17 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Strategy runtime data
+**/data_cache/
+**/charts/
+**/alerts/
+**/orders/
+**/optimization/
+
+# Secrets
+.env
+
+# Lean data
+data/lean/
+**/*.db

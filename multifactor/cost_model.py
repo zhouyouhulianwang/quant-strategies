@@ -1,0 +1,245 @@
+"""
+交易成本模型 - 佣金、滑点、冲击成本计算
+"""
+
+import logging
+
+logger = logging.getLogger('cost_model')
+
+
+class TradingCostModel:
+    """
+    交易成本模型
+    
+    Alpaca Paper Trading 费用:
+    - 美股: $0.005/股 (最低 $1, 最高交易额 1%)
+    - 无平台费
+    - 无数据费
+    """
+    
+    def __init__(self,
+                 commission_per_share=0.005,
+                 min_commission=1.0,
+                 max_commission_pct=0.01,
+                 slippage_bps=10,  # 10 bps = 0.1%
+                 market_impact_bps=5):  # 大额交易冲击成本
+        """
+        初始化成本模型
+        
+        参数:
+            commission_per_share: 每股佣金
+            min_commission: 最低佣金
+            max_commission_pct: 佣金上限（占交易额比例）
+            slippage_bps: 滑点（基点）
+            market_impact_bps: 市场冲击成本（基点）
+        """
+        self.commission_per_share = commission_per_share
+        self.min_commission = min_commission
+        self.max_commission_pct = max_commission_pct
+        self.slippage_pct = slippage_bps / 10000  # 转换为百分比
+        self.market_impact_pct = market_impact_bps / 10000
+        
+        logger.info(f"✅ 成本模型已初始化")
+        logger.info(f"   佣金: ${commission_per_share}/股 (最低 ${min_commission})")
+        logger.info(f"   滑点: {slippage_bps} bps")
+    
+    def calculate_cost(self, symbol, qty, price, side='buy', 
+                       order_type='market') -> dict:
+        """
+        计算单笔交易成本
+        
+        参数:
+            symbol: str
+            qty: int, 数量
+            price: float, 价格
+            side: str, 'buy' 或 'sell'
+            order_type: str, 'market' 或 'limit'
+        
+        返回:
+            dict: 成本明细
+        """
+        # 交易额
+        trade_value = qty * price
+        
+        # 1. 佣金
+        commission = qty * self.commission_per_share
+        commission = max(commission, self.min_commission)
+        commission = min(commission, trade_value * self.max_commission_pct)
+        
+        # 2. 滑点 (市价单才有)
+        slippage = 0
+        if order_type == 'market':
+            # 买入时价格上升，卖出时价格下降
+            slippage = trade_value * self.slippage_pct
+        
+        # 3. 市场冲击 (大额交易)
+        impact = 0
+        if trade_value > 100000:  # 超过10万
+            impact = trade_value * self.market_impact_pct
+        
+        # 总成本
+        total_cost = commission + slippage + impact
+        cost_pct = total_cost / trade_value if trade_value > 0 else 0
+        
+        result = {
+            'symbol': symbol,
+            'qty': qty,
+            'price': price,
+            'trade_value': trade_value,
+            'commission': commission,
+            'slippage': slippage,
+            'market_impact': impact,
+            'total_cost': total_cost,
+            'cost_pct': cost_pct,
+            'side': side,
+            'order_type': order_type,
+        }
+        
+        return result
+    
+    def estimate_portfolio_cost(self, target_positions: dict, 
+                                current_positions: dict = None) -> dict:
+        """
+        估算组合调仓总成本
+        
+        参数:
+            target_positions: dict, {symbol: target_value}
+            current_positions: dict, {symbol: {'qty': int, 'price': float}}
+        
+        返回:
+            dict: 总成本估算
+        """
+        if current_positions is None:
+            current_positions = {}
+        
+        total_commission = 0
+        total_slippage = 0
+        total_trades = 0
+        trade_details = []
+        
+        # 计算需要交易的标的
+        all_symbols = set(list(target_positions.keys()) + list(current_positions.keys()))
+        
+        for symbol in all_symbols:
+            target_value = target_positions.get(symbol, 0)
+            current = current_positions.get(symbol, {'qty': 0, 'price': 0})
+            current_qty = current.get('qty', 0)
+            current_price = current.get('price', 100)
+            
+            # 目标数量
+            if target_value > 0:
+                target_qty = int(target_value / current_price)
+            else:
+                target_qty = 0
+            
+            diff = target_qty - current_qty
+            
+            if diff != 0:
+                side = 'buy' if diff > 0 else 'sell'
+                qty = abs(diff)
+                
+                cost = self.calculate_cost(symbol, qty, current_price, side)
+                
+                total_commission += cost['commission']
+                total_slippage += cost['slippage']
+                total_trades += 1
+                trade_details.append(cost)
+        
+        total_cost = total_commission + total_slippage
+        
+        return {
+            'total_commission': total_commission,
+            'total_slippage': total_slippage,
+            'total_cost': total_cost,
+            'total_trades': total_trades,
+            'trade_details': trade_details,
+        }
+    
+    def apply_cost_to_nav(self, nav, turnover=0.5):
+        """
+        简化版：按换手率估算成本对 NAV 的影响
+        
+        参数:
+            nav: float, 当前 NAV
+            turnover: float, 月度换手率 (0-1)
+        
+        返回:
+            float: 扣除成本后的 NAV
+        """
+        # 假设每次调仓平均成本 0.2%
+        avg_cost_per_trade = 0.002
+        
+        # 月度成本
+        monthly_cost = turnover * avg_cost_per_trade
+        
+        # 应用到 NAV
+        adjusted_nav = nav * (1 - monthly_cost)
+        
+        return adjusted_nav
+
+
+# 全局成本模型实例
+cost_model = TradingCostModel()
+
+
+def apply_costs_to_backtest(result_df, cost_model_instance=None):
+    """
+    将交易成本应用到回测结果
+    
+    参数:
+        result_df: DataFrame, 回测结果
+        cost_model_instance: TradingCostModel
+    
+    返回:
+        DataFrame: 扣除成本后的结果
+    """
+    if cost_model_instance is None:
+        cost_model_instance = cost_model
+    
+    result = result_df.copy()
+    
+    # 简化处理：假设每次调仓成本 0.2%
+    trade_cost = 0.002
+    
+    # 调整月度收益
+    result['nav_after_cost'] = result['nav'] * (1 - trade_cost)
+    
+    # 重新计算累计收益
+    for i in range(1, len(result)):
+        result.loc[result.index[i], 'nav_after_cost'] = (
+            result.iloc[i-1]['nav_after_cost'] * 
+            (1 + result.iloc[i]['mr'] - trade_cost)
+        )
+    
+    return result
+
+
+# ============================================================
+# 使用示例
+# ============================================================
+
+if __name__ == '__main__':
+    model = TradingCostModel()
+    
+    # 单笔交易
+    cost = model.calculate_cost('AAPL', 100, 150.0)
+    print(f"\n单笔交易成本:")
+    print(f"  交易额: ${cost['trade_value']:,.2f}")
+    print(f"  佣金: ${cost['commission']:.2f}")
+    print(f"  滑点: ${cost['slippage']:.2f}")
+    print(f"  总成本: ${cost['total_cost']:.2f}")
+    print(f"  成本率: {cost['cost_pct']:.4%}")
+    
+    # 组合估算
+    targets = {'AAPL': 20000, 'MSFT': 20000, 'NVDA': 20000}
+    current = {
+        'AAPL': {'qty': 50, 'price': 150},
+        'GOOGL': {'qty': 20, 'price': 140},
+    }
+    
+    portfolio_cost = model.estimate_portfolio_cost(targets, current)
+    print(f"\n组合调仓成本:")
+    print(f"  交易笔数: {portfolio_cost['total_trades']}")
+    print(f"  总佣金: ${portfolio_cost['total_commission']:.2f}")
+    print(f"  总滑点: ${portfolio_cost['total_slippage']:.2f}")
+    print(f"  总成本: ${portfolio_cost['total_cost']:.2f}")
