@@ -7,8 +7,11 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
+import logging
 from datetime import datetime
 import os
+
+logger = logging.getLogger('visualization')
 
 # 设置中文字体支持
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
@@ -211,6 +214,17 @@ def plot_vix_position_scatter(result_df, save_path=None):
         result_df: DataFrame, 回测结果 (含 vix, sc 列)
         save_path: str, 保存路径
     """
+    # 检查必要的列是否存在
+    if 'vix' not in result_df.columns:
+        logger.warning("⚠️ 缺少 vix 列，跳过 VIX-仓位散点图")
+        return None
+    
+    # 如果没有 sc 列，使用默认值 100
+    if 'sc' not in result_df.columns:
+        logger.warning("⚠️ 缺少 sc 列，使用默认值 100%")
+        result_df = result_df.copy()
+        result_df['sc'] = 100.0
+    
     fig, ax = plt.subplots(figsize=(10, 6))
     
     scatter = ax.scatter(result_df['vix'], result_df['sc'], 

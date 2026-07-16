@@ -171,21 +171,58 @@ class V14Strategy:
         
         # 获取数据
         if self.use_real_data:
+            price_df, market_df = None, None
+            
+            # 1. 尝试 QuantConnect
             if QC_DATA_AVAILABLE:
-                price_df, market_df = prepare_backtest_data_qc(
-                    TICKERS, start_date, end_date, resolution='daily'
-                )
-            elif YAHOO_DATA_AVAILABLE:
-                price_df, market_df = prepare_backtest_data(
-                    TICKERS, start_date, end_date, use_cache
-                )
-            else:
+                try:
+                    price_df, market_df = prepare_backtest_data_qc(
+                        TICKERS, start_date, end_date, resolution='daily'
+                    )
+                    if price_df is not None and len(price_df) > 0:
+                        logger.info(f"📊 数据源: QuantConnect (Lean)")
+                    else:
+                        logger.warning("⚠️ QuantConnect 数据为空，回退到 Yahoo Finance")
+                        price_df, market_df = None, None
+                except Exception as e:
+                    logger.warning(f"⚠️ QuantConnect 获取失败: {e}，回退到 Yahoo Finance")
+                    price_df, market_df = None, None
+            
+            # 2. 回退到 Yahoo Finance
+            if (price_df is None or len(price_df) == 0) and YAHOO_DATA_AVAILABLE:
+                try:
+                    logger.info("📊 数据源: Yahoo Finance (QuantConnect 不可用)")
+                    price_df, market_df = prepare_backtest_data(
+                        TICKERS, start_date, end_date, use_cache
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Yahoo Finance 获取失败: {e}")
+                    price_df, market_df = None, None
+            
+            # 3. 最终回退: 模拟数据
+            if price_df is None or len(price_df) == 0:
+                logger.warning("⚠️ 无可用真实数据，使用模拟数据")
                 price_df, market_df = self._generate_mock_data(start_date, end_date)
         else:
+            # 使用模拟数据
             price_df, market_df = self._generate_mock_data(start_date, end_date)
+        
+        # 检查数据有效性
+        if price_df is None or len(price_df) == 0:
+            logger.error("❌ 无法获取任何数据，回测失败")
+            return pd.DataFrame()
+        
+        if market_df is None or len(market_df) == 0:
+            logger.warning("⚠️ 市场数据为空，使用模拟 VIX")
+            market_df = pd.DataFrame({'VIX': [20.0] * len(price_df)}, index=price_df.index)
         
         # 使用统一的信号生成逻辑进行回测
         result = self._run_backtest_unified(price_df, market_df)
+        
+        # 空数据保护
+        if result is None or len(result) == 0:
+            logger.error("❌ 回测失败，无结果数据")
+            return pd.DataFrame()
         
         # 应用交易成本
         if COST_AVAILABLE:
@@ -209,17 +246,63 @@ class V14Strategy:
         统一回测引擎 - 使用与实盘相同的 generate_signals 逻辑
         
         参数:
-            price_df: DataFrame, 价格数据
-            market_df: DataFrame, 市场数据
+            price_df: DataFrame, 价格数据 (必须有 DatetimeIndex)
+            market_df: DataFrame, 市场数据 (必须有 VIX 列)
         
         返回:
             DataFrame: 回测结果
         """
         import numpy as np
         
+        # 空数据保护
+        if price_df is None or len(price_df) == 0:
+            logger.error("❌ price_df 为空，无法回测")
+            return pd.DataFrame()
+        
+        # 确保索引为 DatetimeIndex
+        if not isinstance(price_df.index, pd.DatetimeIndex):
+            logger.info(f"🔄 转换索引为 DatetimeIndex: {type(price_df.index).__name__}")
+            try:
+                price_df.index = pd.to_datetime(price_df.index)
+            except Exception as e:
+                logger.error(f"❌ 无法转换索引: {e}")
+                return pd.DataFrame()
+        
+        # 确保 market_df 有 DatetimeIndex 和 VIX 列
+        if market_df is None or len(market_df) == 0:
+            logger.warning("⚠️ market_df 为空，使用默认 VIX=20")
+            market_df = pd.DataFrame({'VIX': [20.0] * len(price_df)}, index=price_df.index)
+        elif 'VIX' not in market_df.columns:
+            logger.warning("⚠️ market_df 缺少 VIX 列，使用默认 VIX=20")
+            market_df['VIX'] = 20.0
+        
+        if not isinstance(market_df.index, pd.DatetimeIndex):
+            try:
+                market_df.index = pd.to_datetime(market_df.index)
+            except Exception as e:
+                logger.error(f"❌ 无法转换 market_df 索引: {e}")
+                return pd.DataFrame()
+        
+        # 确保两个 DataFrame 日期对齐
+        common_dates = price_df.index.intersection(market_df.index)
+        if len(common_dates) == 0:
+            logger.error("❌ price_df 和 market_df 没有共同日期")
+            return pd.DataFrame()
+        
+        price_df = price_df.loc[common_dates]
+        market_df = market_df.loc[common_dates]
+        
         # 月末调仓日
+        if len(price_df) < 252:
+            logger.warning(f"⚠️ 数据不足 252 日 ({len(price_df)} 日)，无法预热")
+            return pd.DataFrame()
+        
         monthly = price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
         monthly = monthly[monthly >= price_df.index[252]]  # 252日预热
+        
+        if len(monthly) < 2:
+            logger.warning("⚠️ 调仓日不足 2 个，无法回测")
+            return pd.DataFrame()
         
         nav = 1.0
         prev_holdings = []
@@ -227,7 +310,12 @@ class V14Strategy:
         
         for i in range(1, len(monthly)):
             prev_d, curr_d = monthly[i-1], monthly[i]
-            vix_v = market_df.loc[prev_d, 'VIX']
+            
+            # 安全获取 VIX
+            try:
+                vix_v = float(market_df.loc[prev_d, 'VIX'])
+            except (KeyError, TypeError, ValueError):
+                vix_v = 20.0  # 默认值
             
             # 使用与实盘相同的信号生成逻辑
             price_slice = price_df.loc[:prev_d].iloc[-252:]
@@ -237,10 +325,15 @@ class V14Strategy:
             
             # 收益计算
             if prev_holdings:
-                p_start = price_df.loc[prev_d, prev_holdings].values
-                p_end = price_df.loc[curr_d, prev_holdings].values
-                sc = v14_scale(vix_v)
-                mr = np.mean(p_end / p_start - 1) * (sc / 100)
+                try:
+                    p_start = price_df.loc[prev_d, prev_holdings].values
+                    p_end = price_df.loc[curr_d, prev_holdings].values
+                    from main import v14_scale
+                    sc = v14_scale(vix_v)
+                    mr = np.mean(p_end / p_start - 1) * (sc / 100)
+                except Exception as e:
+                    logger.warning(f"⚠️ 收益计算错误: {e}, 使用 0")
+                    mr = 0
             else:
                 mr = 0
             
