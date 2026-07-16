@@ -34,6 +34,7 @@ Thumbs.db
 
 # Old strategy backups
 AdaptiveMomentumV3_1_backup/
+adaptive_momentum_backup/
 
 # Lean data
 data/lean/
