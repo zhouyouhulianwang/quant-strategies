@@ -23,6 +23,12 @@ try:
 except ImportError:
     WEIGHT_ALLOC_NORM_AVAILABLE = False
 
+try:
+    from json_logger import log_trade_event, log_risk_event, log_portfolio_snapshot
+    JSON_LOGGER_AVAILABLE = True
+except ImportError:
+    JSON_LOGGER_AVAILABLE = False
+
 
 class OrderManager:
     """订单管理器 - 跟踪订单状态，处理成交确认"""
@@ -42,7 +48,8 @@ class OrderManager:
         self.orders_log = []
     
     def submit_and_wait(self, symbol, qty, side, order_type='market', 
-                        time_in_force='day', limit_price=None) -> Dict:
+                        time_in_force='day', limit_price=None, max_wait_sec=None,
+                        poll_interval=None) -> Dict:
         """
         提交订单并等待成交确认
         
@@ -53,10 +60,15 @@ class OrderManager:
             order_type: str
             time_in_force: str
             limit_price: float
+            max_wait_sec: int, 覆盖默认最大等待时间
+            poll_interval: int, 覆盖默认轮询间隔
         
         返回:
             dict: 最终订单状态
         """
+        max_wait = max_wait_sec if max_wait_sec is not None else self.max_wait_sec
+        poll_int = poll_interval if poll_interval is not None else self.poll_interval
+        
         # 1. 提交订单
         order = self.executor.submit_order(
             symbol=symbol, qty=qty, side=side,
@@ -76,7 +88,7 @@ class OrderManager:
         start_time = time.time()
         final_status = None
         
-        while time.time() - start_time < self.max_wait_sec:
+        while time.time() - start_time < max_wait:
             # 获取订单状态
             status = self._get_order_status(order_id)
             
@@ -88,14 +100,21 @@ class OrderManager:
                     final_status = status
                     break
             
-            time.sleep(self.poll_interval)
+            time.sleep(poll_int)
         
         # 3. 处理结果
         if final_status:
+            filled_qty = int(final_status.get('filled_qty', 0))
             if final_status['status'] == 'filled':
-                logger.info(f"✅ 订单成交: {symbol} {final_status.get('filled_qty', qty)} 股 @ ${final_status.get('filled_avg_price', 'N/A')}")
+                logger.info(f"✅ 订单成交: {symbol} {filled_qty} 股 @ ${final_status.get('filled_avg_price', 'N/A')}")
+                # 记录 PDT 成交
+                if hasattr(self.executor, 'record_fill') and filled_qty > 0:
+                    self.executor.record_fill(symbol, side, filled_qty)
             elif final_status['status'] == 'partially_filled':
-                logger.warning(f"⚠️ 部分成交: {symbol} {final_status.get('filled_qty', 0)}/{qty}")
+                logger.warning(f"⚠️ 部分成交: {symbol} {filled_qty}/{qty}")
+                # 部分成交也记录
+                if hasattr(self.executor, 'record_fill') and filled_qty > 0:
+                    self.executor.record_fill(symbol, side, filled_qty)
             elif final_status['status'] == 'rejected':
                 logger.error(f"❌ 订单被拒: {symbol} - {final_status.get('reason', 'Unknown')}")
             else:
@@ -105,8 +124,14 @@ class OrderManager:
             self._log_order(final_status)
             return final_status
         else:
-            # 超时
-            logger.error(f"⏱️ 订单超时: {symbol} (等待 {self.max_wait_sec} 秒)")
+            # 超时：尝试撤销订单
+            logger.error(f"⏱️ 订单超时: {symbol} (等待 {max_wait} 秒)，尝试撤销...")
+            if hasattr(self.executor, 'cancel_order'):
+                try:
+                    self.executor.cancel_order(order_id)
+                    logger.info(f"✅ 已撤销超时订单: {order_id}")
+                except Exception as e:
+                    logger.error(f"撤销超时订单 {order_id} 失败: {e}")
             self._log_order({
                 'order_id': order_id,
                 'symbol': symbol,
@@ -117,29 +142,35 @@ class OrderManager:
             return {'status': 'TIMEOUT', 'order_id': order_id, 'symbol': symbol}
     
     def _get_order_status(self, order_id):
-        """获取订单状态"""
+        """获取订单状态（使用新版 alpaca-py API）"""
         try:
-            # 通过 API 获取
+            # 优先使用 executor 的 get_order_by_id 方法（兼容新 SDK）
+            if hasattr(self.executor, 'get_order_by_id'):
+                order = self.executor.get_order_by_id(order_id)
+                if order:
+                    return order
+
+            # 兼容旧代码：直接调用底层 API
             if self.executor.api:
-                order = self.executor.api.get_order(order_id)
+                order = self.executor.api.get_order_by_id(order_id)
                 return {
                     'order_id': order.id,
                     'symbol': order.symbol,
                     'status': order.status,
-                    'filled_qty': int(order.filled_qty) if order.filled_qty is not None else 0,
+                    'filled_qty': int(float(order.filled_qty)) if order.filled_qty is not None else 0,
                     'filled_avg_price': float(order.filled_avg_price) if order.filled_avg_price is not None else None,
                     'side': order.side,
-                    'qty': int(order.qty),
+                    'qty': int(float(order.qty)) if order.qty is not None else 0,
                 }
         except (ConnectionError, TimeoutError) as e:
             logger.warning(f"获取订单 {order_id} 状态网络错误: {e}")
         except Exception as e:
             logger.warning(f"获取订单 {order_id} 状态失败: {e}")
-        
+
         return None
     
     def _log_order(self, order_info):
-        """记录订单到 CSV"""
+        """记录订单到 CSV 和结构化日志"""
         self.orders_log.append({
             'timestamp': datetime.now().isoformat(),
             **order_info
@@ -163,6 +194,22 @@ class OrderManager:
             row = {k: v for k, v in order_info.items() if k in fieldnames}
             row['timestamp'] = datetime.now().isoformat()
             writer.writerow(row)
+        
+        # P2 修复：结构化日志
+        if JSON_LOGGER_AVAILABLE:
+            try:
+                filled_qty = int(order_info.get('filled_qty', 0))
+                filled_price = float(order_info.get('filled_avg_price', 0)) if order_info.get('filled_avg_price') else 0.0
+                log_trade_event(
+                    symbol=order_info.get('symbol', ''),
+                    side=order_info.get('side', ''),
+                    qty=filled_qty or int(order_info.get('qty', 0)),
+                    price=filled_price,
+                    status=order_info.get('status', ''),
+                    order_id=order_info.get('order_id', order_info.get('id'))
+                )
+            except (ValueError, TypeError) as e:
+                logger.debug(f"结构化日志记录失败: {e}")
     
     def get_order_history(self, date=None):
         """获取订单历史"""
@@ -191,7 +238,9 @@ class RebalanceManager:
                   max_position_pct=0.20,
                   confirm_fills=True,
                   enable_rollback=True,
-                  min_buy_fill_ratio=1.0) -> List[Dict]:
+                  min_buy_fill_ratio=1.0,
+                  max_wait_sec=300,
+                  poll_interval=5) -> List[Dict]:
         """
         执行再平衡，带成交确认和回滚机制
         
@@ -201,6 +250,8 @@ class RebalanceManager:
             confirm_fills: bool, 是否等待成交确认
             enable_rollback: bool, 失败时是否回滚（撤销已成交订单）
             min_buy_fill_ratio: float, 买入最小成交比例，低于此值触发回滚（1.0=完全成交）
+            max_wait_sec: int, 订单等待成交超时时间
+            poll_interval: int, 订单轮询间隔
         
         返回:
             list: 所有订单结果
@@ -240,7 +291,8 @@ class RebalanceManager:
             try:
                 if confirm_fills:
                     result = self.order_manager.submit_and_wait(
-                        order['symbol'], order['qty'], order['side']
+                        order['symbol'], order['qty'], order['side'],
+                        max_wait_sec=max_wait_sec, poll_interval=poll_interval
                     )
                 else:
                     result = self.executor.submit_order(
@@ -280,7 +332,8 @@ class RebalanceManager:
             try:
                 if confirm_fills:
                     result = self.order_manager.submit_and_wait(
-                        order['symbol'], order['qty'], order['side']
+                        order['symbol'], order['qty'], order['side'],
+                        max_wait_sec=max_wait_sec, poll_interval=poll_interval
                     )
                 else:
                     result = self.executor.submit_order(
@@ -327,6 +380,21 @@ class RebalanceManager:
                         logger.error(f"回滚失败 {symbol}: {e}")
         
         logger.info(f"✅ 再平衡完成，共 {len(results)} 笔订单")
+        
+        # P2 修复：结构化日志记录组合快照
+        if JSON_LOGGER_AVAILABLE:
+            try:
+                account = self.executor.get_account()
+                if account:
+                    positions = self.executor.get_positions()
+                    log_portfolio_snapshot(
+                        cash=account.get('cash', 0.0),
+                        portfolio_value=account.get('portfolio_value', 0.0),
+                        positions_count=len(positions)
+                    )
+            except Exception as e:
+                logger.debug(f"组合快照日志失败: {e}")
+        
         return results
     
     def _calculate_qty(self, target_value, current_price):

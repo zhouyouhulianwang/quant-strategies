@@ -380,7 +380,7 @@ class TestExecutor:
         """测试模拟模式（无 API）"""
         from alpaca_executor import AlpacaPaperExecutor
         
-        executor = AlpacaPaperExecutor()
+        executor = AlpacaPaperExecutor(mock=True)
         account = executor.get_account()
         
         assert account is not None, "模拟模式应返回账户"
@@ -467,6 +467,241 @@ class TestUnifiedBacktest:
         result = strategy._run_backtest_unified(empty_df, pd.DataFrame())
         
         assert len(result) == 0, "空数据应返回空结果"
+
+
+
+# ============================================================
+# 9. PDT 追踪器测试（填充驱动）
+# ============================================================
+
+class TestPDTTracker:
+    """测试 PDT 追踪器（按成交记录、按账户分文件）"""
+    
+    def test_pdt_records_on_fill(self, tmp_path):
+        """PDT 应在成交时记录，而非下单时"""
+        from pdt_tracker import PDTTracker
+        import tempfile, os
+        
+        state_file = os.path.join(tmp_path, 'pdt_test.json')
+        tracker = PDTTracker(state_file=state_file, paper=True, account_id='test_paper', enabled=True)
+        
+        # 模拟买入后卖出（同日内）
+        tracker.record_fill('AAPL', 'buy', 10)
+        tracker.record_fill('AAPL', 'sell', 10)
+        
+        status = tracker.get_status()
+        assert status['day_trades_used'] == 1, f"应记录 1 次 day trade，实际 {status['day_trades_used']}"
+        assert status['day_trades_left'] == 2
+    
+    def test_pdt_blocks_after_three_day_trades(self, tmp_path):
+        """5 日内 3 次 day trade 后应阻止开仓"""
+        from pdt_tracker import PDTTracker
+        import os
+        
+        state_file = os.path.join(tmp_path, 'pdt_test.json')
+        tracker = PDTTracker(state_file=state_file, paper=True, account_id='test_paper', enabled=True)
+        
+        for symbol in ['A', 'B', 'C']:
+            tracker.record_fill(symbol, 'buy', 10)
+            tracker.record_fill(symbol, 'sell', 10)
+        
+        check = tracker.can_open_position('D', 'buy', account_type='MARGIN', equity=20000)
+        assert check['allowed'] == False, "3 次 day trade 后应阻止开仓"
+        assert check['day_trades_left'] == 0
+    
+    def test_pdt_cash_account_not_restricted(self, tmp_path):
+        """现金账户不受 PDT 限制"""
+        from pdt_tracker import PDTTracker
+        import os
+        
+        state_file = os.path.join(tmp_path, 'pdt_test.json')
+        tracker = PDTTracker(state_file=state_file, paper=True, account_id='test_paper', enabled=True)
+        
+        for _ in range(5):
+            tracker.record_fill('AAPL', 'buy', 10)
+            tracker.record_fill('AAPL', 'sell', 10)
+        
+        check = tracker.can_open_position('AAPL', 'buy', account_type='CASH', equity=20000)
+        assert check['allowed'] == True, "现金账户不应受 PDT 限制"
+    
+    def test_pdt_state_file_separate_by_account(self, tmp_path):
+        """PDT 状态文件按账户分离"""
+        from pdt_tracker import PDTTracker
+        import os
+        
+        paper_file = os.path.join(tmp_path, 'pdt_paper.json')
+        live_file = os.path.join(tmp_path, 'pdt_live.json')
+        
+        paper_tracker = PDTTracker(state_file=paper_file, paper=True, account_id='paper', enabled=True)
+        live_tracker = PDTTracker(state_file=live_file, paper=False, account_id='live', enabled=True)
+        
+        paper_tracker.record_fill('AAPL', 'buy', 10)
+        paper_tracker.record_fill('AAPL', 'sell', 10)
+        
+        assert paper_tracker.get_status()['day_trades_used'] == 1
+        assert live_tracker.get_status()['day_trades_used'] == 0, "live 账户不应受 paper 账户影响"
+
+
+# ============================================================
+# 10. 订单管理器测试
+# ============================================================
+
+class TestOrderManager:
+    """测试订单管理器超时撤单、成交记录"""
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_timeout_cancel(self):
+        """订单超时时应尝试撤单"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=1, poll_interval=0.1)
+        
+        # mock 模式下 submit_order 返回固定订单
+        original_submit = executor.submit_order
+        executor.submit_order = lambda **kwargs: {
+            'id': 'test-order-123',
+            'symbol': kwargs.get('symbol', 'AAPL'),
+            'status': 'new',
+            'qty': kwargs.get('qty', 1),
+            'side': kwargs.get('side', 'buy'),
+        }
+        
+        # get_order_by_id 永远返回 pending
+        executor.get_order_by_id = lambda order_id: {
+            'id': order_id,
+            'symbol': 'AAPL',
+            'status': 'new',
+            'qty': 1,
+            'side': 'buy',
+            'filled_qty': 0,
+            'filled_avg_price': None,
+        }
+        
+        # cancel_order 标记已调用
+        cancel_called = []
+        executor.cancel_order = lambda order_id: cancel_called.append(order_id) or True
+        
+        result = manager.submit_and_wait('AAPL', 1, 'buy')
+        assert result['status'] == 'TIMEOUT', "应返回 TIMEOUT"
+        assert 'test-order-123' in cancel_called, "超时应调用 cancel_order"
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_records_fill(self):
+        """订单成交时应记录 PDT"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+        import tempfile, os, shutil
+        
+        # 使用临时目录隔离 PDT 状态
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(tmp_dir, 'data'), exist_ok=True)
+            executor = AlpacaPaperExecutor(
+                mock=True,
+                enable_pdt=True,
+                pdt_min_equity=25000.0,
+            )
+            # 强制指定 PDT 状态文件到临时目录
+            if executor.pdt_tracker:
+                executor.pdt_tracker.state_file = os.path.join(tmp_dir, 'data', 'pdt_fill_test.json')
+                executor.pdt_tracker.positions = {}
+                executor.pdt_tracker.day_trade_history = []
+            manager = OrderManager(executor, max_wait_sec=1, poll_interval=0.1)
+            
+            executor.submit_order = lambda **kwargs: {
+                'id': 'fill-order-123',
+                'symbol': kwargs.get('symbol', 'AAPL'),
+                'status': 'new',
+                'qty': kwargs.get('qty', 10),
+                'side': kwargs.get('side', 'buy'),
+            }
+            
+            executor.get_order_by_id = lambda order_id: {
+                'id': order_id,
+                'symbol': 'AAPL',
+                'status': 'filled',
+                'qty': 10,
+                'side': 'buy',
+                'filled_qty': 10,
+                'filled_avg_price': 150.0,
+            }
+            
+            result = manager.submit_and_wait('AAPL', 10, 'buy')
+            assert result['status'] == 'filled'
+            assert executor.pdt_tracker is None or executor.pdt_tracker.get_status()['day_trades_used'] == 0, "买入成交不构成 day trade"
+            
+            # 同日内卖出应记录 day trade
+            executor.get_order_by_id = lambda order_id: {
+                'id': order_id,
+                'symbol': 'AAPL',
+                'status': 'filled',
+                'qty': 10,
+                'side': 'sell',
+                'filled_qty': 10,
+                'filled_avg_price': 151.0,
+            }
+            result = manager.submit_and_wait('AAPL', 10, 'sell')
+            assert result['status'] == 'filled'
+            if executor.pdt_tracker:
+                assert executor.pdt_tracker.get_status()['day_trades_used'] == 1, "同日内先买后卖应构成 day trade"
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+
+# ============================================================
+# 11. 对账测试
+# ============================================================
+
+class TestReconciliation:
+    """测试持仓/现金对账"""
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_reconcile_consistent(self):
+        """对账一致"""
+        from alpaca_executor import AlpacaPaperExecutor
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        # mock 模式初始持仓
+        report = executor.reconcile(expected_cash=1000000.0)
+        assert report['ok'] == True, f"对账应一致: {report}"
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_reconcile_cash_mismatch(self):
+        """现金差异应检测"""
+        from alpaca_executor import AlpacaPaperExecutor
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        report = executor.reconcile(expected_cash=999000.0)
+        assert report['ok'] == False, "现金差异应报告不一致"
+        assert report['cash']['diff'] > 0
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_reconcile_position_mismatch(self):
+        """持仓差异应检测"""
+        from alpaca_executor import AlpacaPaperExecutor
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        report = executor.reconcile(expected_positions={'AAPL': 100, 'TSLA': 50})
+        assert report['ok'] == False, "持仓差异应报告不一致"
+        assert len(report['positions']['missing_local']) + len(report['positions']['missing_broker']) > 0
 
 
 # ============================================================

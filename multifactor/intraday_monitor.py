@@ -11,6 +11,12 @@ from typing import Callable, Optional
 
 logger = logging.getLogger('intraday_monitor')
 
+try:
+    from json_logger import log_risk_event
+    JSON_LOGGER_AVAILABLE = True
+except ImportError:
+    JSON_LOGGER_AVAILABLE = False
+
 
 class IntradayMonitor:
     """

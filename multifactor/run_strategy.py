@@ -83,6 +83,13 @@ except ImportError:
     WEIGHT_ALLOC_AVAILABLE = False
     logger.warning("weight_allocation 模块不可用")
 
+try:
+    from config import V14StrategyConfig, get_config
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    logger.warning("config 模块不可用")
+
 # 导入策略核心
 from main import (
     TICKERS, INDUSTRY, NDX_SET,
@@ -98,7 +105,8 @@ class V14Strategy:
                  use_paper_trading=False,
                  enable_risk_monitor=True,
                  enable_intraday_monitor=False,
-                 weight_method='equal'):
+                 weight_method='equal',
+                 config=None):
         """
         初始化策略
         
@@ -108,7 +116,11 @@ class V14Strategy:
             enable_risk_monitor: bool, 启用风险监控
             enable_intraday_monitor: bool, 启用盘中监控
             weight_method: str, 权重分配方法 ('equal' | 'risk_parity' | 'momentum_weighted')
+            config: V14StrategyConfig, 配置对象（默认从 config.get_config() 获取）
         """
+        # 加载统一配置
+        self.config = config or (get_config() if CONFIG_AVAILABLE else None)
+        
         # 检查数据源可用性
         has_real_data = QC_DATA_AVAILABLE or YAHOO_DATA_AVAILABLE
         
@@ -135,7 +147,23 @@ class V14Strategy:
         self.backtest_result = None
         
         if self.use_paper_trading:
-            self.executor = V14AlpacaExecutor()
+            # 从配置读取 PDT / 限价单 / 订单超时参数传给执行器
+            executor_kwargs = {}
+            if self.config:
+                executor_kwargs = {
+                    'enable_pdt': self.config.trading.enable_pdt_check,
+                    'pdt_min_equity': self.config.trading.pdt_min_equity,
+                    'use_limit_orders': self.config.trading.use_limit_orders,
+                    'limit_order_offset_pct': self.config.trading.limit_order_offset_pct,
+                }
+                logger.info(f"💰 限价单: {self.config.trading.use_limit_orders}, "
+                           f"offset={self.config.trading.limit_order_offset_pct:.2%}")
+                logger.info(f"🛡️ PDT 检查: {self.config.trading.enable_pdt_check}, "
+                           f"min_equity=${self.config.trading.pdt_min_equity:,.0f}")
+                logger.info(f"⏱️ 订单超时: {self.config.trading.max_wait_sec}秒, "
+                           f"轮询间隔: {self.config.trading.poll_interval}秒")
+            
+            self.executor = V14AlpacaExecutor(**executor_kwargs)
             logger.info("✅ Alpaca Paper Trading 已启用")
         
         if self.enable_risk_monitor:
@@ -144,12 +172,19 @@ class V14Strategy:
         
         # 盘中监控
         if enable_intraday_monitor and INTRADAY_AVAILABLE and self.executor and self.risk_monitor:
+            check_interval = 60
+            vix_emergency_level = 35.0
+            max_total_drawdown = 0.15
+            if self.config:
+                check_interval = self.config.trading.check_interval
+                vix_emergency_level = self.config.risk.vix_panic_threshold
+            
             self.intraday_monitor = IntradayMonitor(
                 executor=self.executor,
                 risk_monitor=self.risk_monitor,
-                check_interval=60,
-                vix_emergency_level=35.0,
-                max_total_drawdown=0.15
+                check_interval=check_interval,
+                vix_emergency_level=vix_emergency_level,
+                max_total_drawdown=max_total_drawdown
             )
             self.intraday_monitor.start()
             logger.info("✅ 盘中监控已启用")

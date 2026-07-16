@@ -4,7 +4,7 @@
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class RiskConfig(BaseModel):
@@ -14,7 +14,7 @@ class RiskConfig(BaseModel):
     max_intraday_dd: float = Field(0.10, gt=0.0, le=0.5)
     single_stock_limit: float = Field(0.05, gt=0.0, le=0.5)
     
-    @validator('vix_panic_threshold')
+    @field_validator('vix_panic_threshold')
     def vix_must_be_reasonable(cls, v):
         if v < 20:
             raise ValueError('VIX 恐慌阈值应 >= 20')
@@ -27,13 +27,27 @@ class TradingConfig(BaseModel):
     enable_risk_monitor: bool = True
     enable_intraday_monitor: bool = True
     check_interval: int = Field(60, ge=10, le=3600)
-    max_wait_sec: int = Field(300, ge=30, le=1800)
+    max_wait_sec: int = Field(1800, ge=30, le=1800)
     poll_interval: int = Field(5, ge=1, le=60)
     
-    @validator('check_interval')
+    # PDT 检查配置
+    enable_pdt_check: bool = True
+    pdt_min_equity: float = Field(25000.0, ge=0)
+    
+    # 限价单配置
+    use_limit_orders: bool = False
+    limit_order_offset_pct: float = Field(0.001, ge=0.0001, le=0.05)
+    
+    @field_validator('check_interval')
     def check_interval_not_too_fast(cls, v):
         if v < 10:
             raise ValueError('检查间隔不应 < 10秒，避免 CPU 100%')
+        return v
+    
+    @field_validator('limit_order_offset_pct')
+    def limit_offset_reasonable(cls, v):
+        if v > 0.05:
+            raise ValueError('限价单偏移比例不应 > 5%')
         return v
 
 
@@ -46,15 +60,14 @@ class WeightConfig(BaseModel):
 
 class V14StrategyConfig(BaseModel):
     """V14 策略总配置"""
+    model_config = ConfigDict(validate_assignment=True)
+    
     risk: RiskConfig = RiskConfig()
     trading: TradingConfig = TradingConfig()
     weight: WeightConfig = WeightConfig()
     
     # Alpaca 配置（从环境变量读取，不硬编码）
     alpaca_base_url: str = 'https://paper-api.alpaca.markets'
-    
-    class Config:
-        validate_assignment = True  # 赋值时自动验证
 
 
 # 全局配置实例
