@@ -27,7 +27,8 @@ class IntradayMonitor:
                  check_interval=60,  # 检查间隔（秒）
                  vix_emergency_level=35.0,
                  max_intraday_dd=0.10,
-                 single_stock_limit=0.05):
+                 single_stock_limit=0.05,
+                 max_total_drawdown=0.15):
         """
         初始化盘中监控
         
@@ -38,6 +39,7 @@ class IntradayMonitor:
             vix_emergency_level: float, VIX 紧急平仓阈值
             max_intraday_dd: float, 最大日内回撤
             single_stock_limit: float, 单只股票跌幅限制
+            max_total_drawdown: float, 最大累计回撤（P1 修复）
         """
         self.executor = executor
         self.risk_monitor = risk_monitor
@@ -45,6 +47,7 @@ class IntradayMonitor:
         self.vix_emergency_level = vix_emergency_level
         self.max_intraday_dd = max_intraday_dd
         self.single_stock_limit = single_stock_limit
+        self.max_total_drawdown = max_total_drawdown
         
         # 线程锁（防止和主交易线程竞态）
         self._halt_lock = threading.Lock()
@@ -57,6 +60,9 @@ class IntradayMonitor:
         self.last_check_time = None
         self._current_date = None  # 用于每日重置日内高点
         
+        # P1 修复：累计回撤跟踪
+        self.peak_nav = None
+        
         # 回调
         self.on_vix_spike: Optional[Callable] = None
         self.on_drawdown: Optional[Callable] = None
@@ -65,6 +71,7 @@ class IntradayMonitor:
         logger.info("✅ 盘中监控器已初始化")
         logger.info(f"   VIX 紧急阈值: {vix_emergency_level}")
         logger.info(f"   日内回撤限制: {max_intraday_dd:.1%}")
+        logger.info(f"   累计回撤限制: {max_total_drawdown:.1%}")
     
     @property
     def trading_halted(self):
@@ -128,7 +135,10 @@ class IntradayMonitor:
         # 2. 检查日内回撤
         self._check_intraday_drawdown()
         
-        # 3. 检查单只股票
+        # 3. 检查累计回撤（P1 修复）
+        self._check_total_drawdown()
+        
+        # 4. 检查单只股票
         self._check_single_stocks()
     
     def _check_vix(self):
@@ -200,6 +210,40 @@ class IntradayMonitor:
         except Exception as e:
             logger.error(f"回撤检查失败: {e}")
     
+    def _check_total_drawdown(self):
+        """检查累计回撤（P1 修复）"""
+        try:
+            account = self.executor.get_account()
+            if not account:
+                return
+            
+            current_nav = account['portfolio_value']
+            
+            # 初始化/更新累计高点
+            if self.peak_nav is None or current_nav > self.peak_nav:
+                self.peak_nav = current_nav
+            
+            if self.peak_nav > 0:
+                drawdown = (current_nav - self.peak_nav) / self.peak_nav
+                
+                logger.debug(f"累计回撤: {drawdown:.2%}")
+                
+                if drawdown <= -self.max_total_drawdown:
+                    logger.critical(
+                        f"🚨 累计回撤超限: {drawdown:.2%} "
+                        f"(限制: {-self.max_total_drawdown:.1%})"
+                    )
+                    
+                    self._emergency_liquidation(f"累计回撤 {drawdown:.2%}")
+                    
+                    if self.on_drawdown:
+                        self.on_drawdown(drawdown)
+                        
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"累计回撤检查网络错误: {e}")
+        except Exception as e:
+            logger.error(f"累计回撤检查失败: {e}")
+
     def _check_single_stocks(self):
         """检查单只股票跌幅"""
         try:
@@ -353,8 +397,10 @@ class IntradayMonitor:
             'monitoring': self.monitoring,
             'last_check': self.last_check_time.isoformat() if self.last_check_time else None,
             'daily_high_nav': self.daily_high_nav,
+            'peak_nav': self.peak_nav,
             'vix_threshold': self.vix_emergency_level,
             'drawdown_limit': self.max_intraday_dd,
+            'total_drawdown_limit': self.max_total_drawdown,
         }
 
 

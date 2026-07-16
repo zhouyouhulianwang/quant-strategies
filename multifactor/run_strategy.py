@@ -77,7 +77,7 @@ except ImportError:
     logger.warning("intraday_monitor 模块不可用")
 
 try:
-    from weight_allocation import WeightAllocator
+    from weight_allocation import WeightAllocator, normalize_target_positions
     WEIGHT_ALLOC_AVAILABLE = True
 except ImportError:
     WEIGHT_ALLOC_AVAILABLE = False
@@ -148,7 +148,8 @@ class V14Strategy:
                 executor=self.executor,
                 risk_monitor=self.risk_monitor,
                 check_interval=60,
-                vix_emergency_level=35.0
+                vix_emergency_level=35.0,
+                max_total_drawdown=0.15
             )
             self.intraday_monitor.start()
             logger.info("✅ 盘中监控已启用")
@@ -475,6 +476,11 @@ class V14Strategy:
             # 等权分配
             target_value = (portfolio_value * sc / 100) / len(selected)
             target_positions = {s: target_value for s in selected}
+
+        # P1 修复：确保目标持仓总金额不超过组合价值 * 仓位比例
+        max_total_value = portfolio_value * sc / 100
+        target_positions = normalize_target_positions(target_positions, max_total_value)
+        logger.info(f"📊 目标持仓总额: ${sum(target_positions.values()):,.0f} (上限: ${max_total_value:,.0f})")
         
         # 打印分配结果
         for s, v in sorted(target_positions.items(), key=lambda x: x[1], reverse=True)[:10]:

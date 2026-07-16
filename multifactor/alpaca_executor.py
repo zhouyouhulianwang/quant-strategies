@@ -12,6 +12,13 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import logging
 
+# 导入权重归一化工具
+try:
+    from weight_allocation import normalize_target_positions
+    WEIGHT_ALLOC_NORM_AVAILABLE = True
+except ImportError:
+    WEIGHT_ALLOC_NORM_AVAILABLE = False
+
 # 设置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('alpaca_executor')
@@ -55,8 +62,15 @@ class AlpacaPaperExecutor:
         
         # 初始化 API
         if ALPACA_AVAILABLE:
-            self.api = REST(self.api_key, self.api_secret, self.base_url)
-            logger.info(f"✅ Alpaca API 已连接: {self.base_url}")
+            raw_api = REST(self.api_key, self.api_secret, self.base_url)
+            # P1 修复：速率限制包装
+            try:
+                from rate_limiter import RateLimitedAPI
+                self.api = RateLimitedAPI(raw_api, rate_per_min=200)
+                logger.info("✅ Alpaca API 已连接并启用速率限制 (200/min)")
+            except ImportError:
+                self.api = raw_api
+                logger.info(f"✅ Alpaca API 已连接: {self.base_url}")
         else:
             self.api = None
             logger.warning("⚠️ 使用模拟模式（无实际交易）")
@@ -364,13 +378,20 @@ class V14AlpacaExecutor:
         
         portfolio_value = account['portfolio_value']
         current_positions = {p['symbol']: p for p in self.executor.get_positions()}
-        
+
         logger.info(f"\n{'='*60}")
         logger.info(f"组合再平衡")
         logger.info(f"{'='*60}")
         logger.info(f"组合价值: ${portfolio_value:,.2f}")
         logger.info(f"目标持仓: {len(target_positions)} 只")
-        
+
+        # P1 修复：确保目标持仓总金额不超过组合价值
+        if WEIGHT_ALLOC_NORM_AVAILABLE:
+            original_total = sum(target_positions.values())
+            target_positions = normalize_target_positions(target_positions, portfolio_value)
+            if abs(original_total - sum(target_positions.values())) > 1:
+                logger.info(f"📊 目标持仓已归一化: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
+
         # === Atomic 预检查 ===
         if atomic_check:
             precheck = self._atomic_precheck(

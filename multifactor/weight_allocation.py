@@ -174,6 +174,38 @@ class WeightAllocator:
         return result
 
 
+def normalize_target_positions(target_positions, max_total_value, min_position_value=0):
+    """
+    归一化目标持仓，确保总金额不超过 max_total_value
+
+    参数:
+        target_positions: dict, {symbol: target_value}
+        max_total_value: float, 最大总目标金额
+        min_position_value: float, 最小持仓金额（归一化后保留）
+
+    返回:
+        dict: 归一化后的目标持仓
+    """
+    if not target_positions:
+        return {}
+
+    total = sum(target_positions.values())
+    if total <= max_total_value:
+        return target_positions
+
+    # 按比例缩放
+    scale = max_total_value / total
+    scaled = {s: v * scale for s, v in target_positions.items()}
+
+    # 如果缩放后低于最小持仓，则剔除并重新归一化
+    if min_position_value > 0:
+        filtered = {s: v for s, v in scaled.items() if v >= min_position_value}
+        if filtered and sum(filtered.values()) > 0:
+            return normalize_target_positions(filtered, max_total_value, 0)
+
+    return scaled
+
+
 def apply_weight_constraints(weights, min_weight=0.0, max_weight=0.20):
     """
     应用权重约束
@@ -238,3 +270,11 @@ if __name__ == '__main__':
     print("\n动量加权:")
     for s, v in weights.items():
         print(f"  {s}: ${v:,.0f}")
+    
+    # 归一化示例
+    targets = {'AAPL': 60000, 'MSFT': 60000}
+    normalized = normalize_target_positions(targets, 100000)
+    print("\n归一化目标持仓:")
+    for s, v in normalized.items():
+        print(f"  {s}: ${v:,.0f}")
+    print(f"  总计: ${sum(normalized.values()):,.0f}")

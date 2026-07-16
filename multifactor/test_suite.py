@@ -308,6 +308,22 @@ class TestWeightAllocation:
         # 单仓不应超过 20%
         max_weight = max(weights.values())
         assert max_weight <= 100000 * 0.20 + 1, f"单仓权重 {max_weight} 超过 20% 限制"
+    
+    def test_normalize_target_positions(self):
+        """测试目标持仓归一化（P1 修复）"""
+        from weight_allocation import normalize_target_positions
+        
+        targets = {'AAPL': 60000, 'MSFT': 60000, 'NVDA': 60000}
+        normalized = normalize_target_positions(targets, 100000)
+        
+        assert sum(normalized.values()) <= 100000, "归一化后总额不应超过上限"
+        assert abs(sum(normalized.values()) - 100000) < 1, "归一化后总额应接近上限"
+        assert abs(normalized['AAPL'] - 33333) < 1, "应按比例缩放"
+        
+        # 未超过上限时不应改变
+        targets2 = {'AAPL': 30000, 'MSFT': 30000}
+        normalized2 = normalize_target_positions(targets2, 100000)
+        assert normalized2 == targets2, "未超过上限时保持不变"
 
 
 # ============================================================
@@ -395,6 +411,22 @@ class TestExecutor:
         order = v14.submit_order('AAPL', 5, 'buy')
         assert order is not None, "V14 包装器应能提交订单"
         assert order['symbol'] == 'AAPL', "订单股票代码应正确"
+    
+    def test_rate_limiter(self):
+        """测试 Token Bucket 速率限制器（P1 修复）"""
+        from rate_limiter import TokenBucket
+        import time
+        
+        # 创建低限速器便于测试: 每秒 10 请求，容量 2
+        bucket = TokenBucket(rate=10.0, capacity=2.0)
+        
+        start = time.time()
+        for _ in range(3):
+            bucket.acquire()
+        elapsed = time.time() - start
+        
+        # 前 2 个立即消耗，第 3 个需要等待约 0.1 秒
+        assert elapsed >= 0.08, "速率限制器应限制过快请求"
 
 # ============================================================
 # 8. 回测统一引擎测试

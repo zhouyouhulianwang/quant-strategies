@@ -17,6 +17,12 @@ logger = logging.getLogger('order_manager')
 ORDERS_DIR = os.path.join(os.path.dirname(__file__), 'orders')
 os.makedirs(ORDERS_DIR, exist_ok=True)
 
+try:
+    from weight_allocation import normalize_target_positions
+    WEIGHT_ALLOC_NORM_AVAILABLE = True
+except ImportError:
+    WEIGHT_ALLOC_NORM_AVAILABLE = False
+
 
 class OrderManager:
     """订单管理器 - 跟踪订单状态，处理成交确认"""
@@ -184,7 +190,8 @@ class RebalanceManager:
     def rebalance(self, target_positions: Dict[str, float], 
                   max_position_pct=0.20,
                   confirm_fills=True,
-                  enable_rollback=True) -> List[Dict]:
+                  enable_rollback=True,
+                  min_buy_fill_ratio=1.0) -> List[Dict]:
         """
         执行再平衡，带成交确认和回滚机制
         
@@ -193,6 +200,7 @@ class RebalanceManager:
             max_position_pct: float
             confirm_fills: bool, 是否等待成交确认
             enable_rollback: bool, 失败时是否回滚（撤销已成交订单）
+            min_buy_fill_ratio: float, 买入最小成交比例，低于此值触发回滚（1.0=完全成交）
         
         返回:
             list: 所有订单结果
@@ -203,6 +211,14 @@ class RebalanceManager:
             return []
         
         portfolio_value = account['portfolio_value']
+        
+        # P1 修复：确保目标持仓总金额不超过组合价值
+        if WEIGHT_ALLOC_NORM_AVAILABLE:
+            original_total = sum(target_positions.values())
+            target_positions = normalize_target_positions(target_positions, portfolio_value)
+            if abs(original_total - sum(target_positions.values())) > 1:
+                logger.info(f"📊 目标持仓已归一化: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
+        
         current_positions = {p['symbol']: p for p in self.executor.get_positions()}
         
         results = []
@@ -273,11 +289,21 @@ class RebalanceManager:
                 
                 results.append(result)
                 
-                # 如果买入失败且启用了回滚，撤销已执行的卖出
-                if enable_rollback and result and result.get('status') in ['rejected', 'TIMEOUT', 'ERROR']:
-                    if order['side'] == 'buy':
+                # P1 修复：更完善的买入失败判断
+                # 包括 rejected/TIMEOUT/ERROR，以及部分成交未达最小比例
+                if result and order['side'] == 'buy':
+                    filled_qty = int(result.get('filled_qty', 0))
+                    ordered_qty = order['qty']
+                    fill_ratio = filled_qty / ordered_qty if ordered_qty > 0 else 1.0
+                    
+                    status = result.get('status', '')
+                    is_failed = status in ['rejected', 'TIMEOUT', 'ERROR']
+                    is_insufficient_fill = status == 'partially_filled' and fill_ratio < min_buy_fill_ratio
+                    
+                    if is_failed or is_insufficient_fill:
                         failed_buy = True
-                        logger.error(f"❌ 买入失败 {order['symbol']}，触发回滚...")
+                        reason = status if is_failed else f"partially_filled ({fill_ratio:.1%} < {min_buy_fill_ratio:.0%})"
+                        logger.error(f"❌ 买入失败 {order['symbol']} (原因: {reason})，触发回滚...")
                         break
                         
             except Exception as e:
