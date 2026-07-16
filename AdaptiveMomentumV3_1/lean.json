@@ -1,0 +1,11 @@
+{
+    "algorithm-language": "Python",
+    "parameters": {},
+    "description": "Adaptive Momentum Strategy V3.1",
+    "local-id": 654113127,
+    "organization-id": "901244e2dd37ba36d87232576c651225",
+    "python-venv": 1,
+    "name": "AdaptiveMomentumV3_1",
+    "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+    "id": "Local"
+}
