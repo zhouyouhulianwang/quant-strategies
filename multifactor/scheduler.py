@@ -1,15 +1,25 @@
 """
 调度模块 - 定时执行月度调仓
 支持月末最后一个交易日自动执行
+使用 exchange_calendars 处理交易日历
 """
 
 import logging
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-import calendar
 import os
 
 logger = logging.getLogger('scheduler')
+
+# 尝试导入 exchange_calendars（美国NYSE日历）
+try:
+    import exchange_calendars as xcals
+    XCALS_AVAILABLE = True
+    XNYS = xcals.get_calendar('XNYS')  # NYSE
+except ImportError:
+    XCALS_AVAILABLE = False
+    XNYS = None
+    logger.warning("exchange_calendars 未安装，使用简化周末逻辑（不识别节假日）")
 
 
 class RebalanceScheduler:
@@ -56,12 +66,32 @@ class RebalanceScheduler:
         return False
     
     def _get_last_trading_day_of_month(self, year, month):
-        """获取某月最后一个交易日"""
-        # 获取月末日期
+        """
+        获取某月最后一个交易日
+        使用 exchange_calendars (XNYS - NYSE) 识别所有节假日
+        """
+        if XCALS_AVAILABLE and XNYS is not None:
+            # 使用 NYSE 交易日历
+            start = f"{year}-{month:02d}-01"
+            # 下月1日
+            if month == 12:
+                next_month_start = f"{year+1}-01-01"
+            else:
+                next_month_start = f"{year}-{month+1:02d}-01"
+            
+            # 获取该月所有交易日
+            schedule = XNYS.sessions_in_range(start, next_month_start)
+            # 过滤出该月的交易日
+            month_sessions = [s for s in schedule if s.year == year and s.month == month]
+            
+            if month_sessions:
+                return month_sessions[-1].date()
+        
+        # 回退: 简化逻辑（只跳过周末）
+        import calendar
         last_day = calendar.monthrange(year, month)[1]
         last_date = datetime(year, month, last_day).date()
         
-        # 回退到周五（如果周末）
         while last_date.weekday() >= 5:  # 5=周六, 6=周日
             last_date -= timedelta(days=1)
         

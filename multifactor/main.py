@@ -404,7 +404,7 @@ if __name__ == '__main__':
             prices[i, j] = prices[i-1, j] * (1 + ret)
     
     price_df = pd.DataFrame(prices, index=dates, columns=TICKERS)
-    price_df = price_df.replace(0, np.nan).fillna(method='ffill')
+    price_df = price_df.replace(0, np.nan).ffill()
     
     # VIX模拟
     vix = np.clip(15 + np.cumsum(np.random.normal(0, 0.5, n_days)) * 0.08, 9, 55)

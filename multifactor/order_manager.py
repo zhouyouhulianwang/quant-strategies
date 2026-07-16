@@ -1,9 +1,11 @@
 """
 订单管理模块 - 订单状态跟踪、成交确认、重试机制
+新增: 回滚机制、Decimal 精度
 """
 
 import time
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import csv
@@ -171,7 +173,7 @@ class OrderManager:
 
 
 class RebalanceManager:
-    """再平衡管理器 - 带订单跟踪的组合再平衡"""
+    """再平衡管理器 - 带订单跟踪、成交确认、回滚机制的组合再平衡"""
     
     def __init__(self, executor):
         self.executor = executor
@@ -179,14 +181,16 @@ class RebalanceManager:
     
     def rebalance(self, target_positions: Dict[str, float], 
                   max_position_pct=0.20,
-                  confirm_fills=True) -> List[Dict]:
+                  confirm_fills=True,
+                  enable_rollback=True) -> List[Dict]:
         """
-        执行再平衡，带成交确认
+        执行再平衡，带成交确认和回滚机制
         
         参数:
             target_positions: dict, {symbol: target_value}
             max_position_pct: float
             confirm_fills: bool, 是否等待成交确认
+            enable_rollback: bool, 失败时是否回滚（撤销已成交订单）
         
         返回:
             list: 所有订单结果
@@ -200,6 +204,7 @@ class RebalanceManager:
         current_positions = {p['symbol']: p for p in self.executor.get_positions()}
         
         results = []
+        executed_sell_orders = []  # 记录已执行的卖出订单（用于回滚）
         
         logger.info(f"\n{'='*60}")
         logger.info(f"组合再平衡")
@@ -210,22 +215,35 @@ class RebalanceManager:
         sell_orders = []
         for symbol, pos in current_positions.items():
             if symbol not in target_positions:
+                sell_orders.append({'symbol': symbol, 'qty': pos['qty'], 'side': 'sell'})
+        
+        # 执行卖出
+        for order in sell_orders:
+            try:
                 if confirm_fills:
                     result = self.order_manager.submit_and_wait(
-                        symbol, pos['qty'], 'sell'
+                        order['symbol'], order['qty'], order['side']
                     )
-                    results.append(result)
                 else:
-                    result = self.executor.submit_order(symbol, pos['qty'], 'sell')
-                    results.append(result)
+                    result = self.executor.submit_order(
+                        order['symbol'], order['qty'], order['side']
+                    )
+                
+                if result and result.get('status') in ['filled', 'partially_filled']:
+                    executed_sell_orders.append(result)
+                
+                results.append(result)
+            except Exception as e:
+                logger.error(f"卖出异常 {order['symbol']}: {e}")
+                results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
         
         # 2. 买入/调整目标持仓
+        buy_orders = []
         for symbol, target_value in target_positions.items():
+            # Decimal 精度计算
             target_value = min(target_value, portfolio_value * max_position_pct)
-            
-            # 获取当前价格
             current_price = self._get_current_price(symbol)
-            target_qty = int(target_value / current_price)
+            target_qty = self._calculate_qty(target_value, current_price)
             
             current_qty = current_positions.get(symbol, {}).get('qty', 0)
             diff = target_qty - current_qty
@@ -233,18 +251,65 @@ class RebalanceManager:
             if abs(diff) > 0:
                 side = 'buy' if diff > 0 else 'sell'
                 qty = abs(diff)
-                
-                logger.info(f"🔄 {side.upper()}: {symbol} x {qty} (目标: ${target_value:,.0f})")
-                
+                buy_orders.append({
+                    'symbol': symbol, 'qty': qty, 'side': side,
+                    'target_value': target_value, 'current_price': current_price
+                })
+        
+        # 执行买入/调整（逐个执行，失败时回滚）
+        failed_buy = False
+        for order in buy_orders:
+            try:
                 if confirm_fills:
-                    result = self.order_manager.submit_and_wait(symbol, qty, side)
+                    result = self.order_manager.submit_and_wait(
+                        order['symbol'], order['qty'], order['side']
+                    )
                 else:
-                    result = self.executor.submit_order(symbol, qty, side)
+                    result = self.executor.submit_order(
+                        order['symbol'], order['qty'], order['side']
+                    )
                 
                 results.append(result)
+                
+                # 如果买入失败且启用了回滚，撤销已执行的卖出
+                if enable_rollback and result and result.get('status') in ['rejected', 'TIMEOUT', 'ERROR']:
+                    if order['side'] == 'buy':
+                        failed_buy = True
+                        logger.error(f"❌ 买入失败 {order['symbol']}，触发回滚...")
+                        break
+                        
+            except Exception as e:
+                logger.error(f"买入异常 {order['symbol']}: {e}")
+                results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
+                if order['side'] == 'buy':
+                    failed_buy = True
+                    break
+        
+        # 回滚：如果买入失败，撤销已执行的卖出（重新买回）
+        if failed_buy and enable_rollback and executed_sell_orders:
+            logger.warning(f"🔄 执行回滚: {len(executed_sell_orders)} 笔卖出")
+            for sell_result in executed_sell_orders:
+                symbol = sell_result.get('symbol')
+                qty = sell_result.get('filled_qty', sell_result.get('qty', 0))
+                if qty > 0 and symbol:
+                    try:
+                        logger.info(f"🔄 回滚: 买回 {symbol} x {qty}")
+                        self.executor.submit_order(symbol, qty, 'buy')
+                    except Exception as e:
+                        logger.error(f"回滚失败 {symbol}: {e}")
         
         logger.info(f"✅ 再平衡完成，共 {len(results)} 笔订单")
         return results
+    
+    def _calculate_qty(self, target_value, current_price):
+        """使用 Decimal 精度计算股数"""
+        if current_price <= 0:
+            return 0
+        
+        value_d = Decimal(str(target_value))
+        price_d = Decimal(str(current_price))
+        qty_d = (value_d / price_d).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+        return int(qty_d)
     
     def _get_current_price(self, symbol):
         """获取当前价格（使用 executor 的方法）"""
