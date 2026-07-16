@@ -138,20 +138,25 @@ def plot_monthly_returns(result_df, save_path=None):
     im = ax.imshow(monthly_pivot.values, cmap='RdYlGn', aspect='auto', 
                    vmin=-10, vmax=10)
     
-    # 设置标签
-    ax.set_xticks(range(12))
+    # 设置标签 - 只显示实际有的月份
+    all_months = list(range(1, 13))  # 1-12
+    present_months = [m for m in all_months if m in monthly_pivot.columns]
+    col_positions = [all_months.index(m) for m in present_months]
+    
+    ax.set_xticks(col_positions)
     ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][min(col_positions):max(col_positions)+1] if col_positions else [])
     ax.set_yticks(range(len(monthly_pivot.index)))
     ax.set_yticklabels(monthly_pivot.index)
     
-    # 添加数值标注
+    # 添加数值标注 - 只遍历实际有的列
     for i in range(len(monthly_pivot.index)):
-        for j in range(12):
-            val = monthly_pivot.iloc[i, j]
+        for j_idx, j_month in enumerate(present_months):
+            col_pos = all_months.index(j_month)
+            val = monthly_pivot.iloc[i, j_idx]
             if not np.isnan(val):
                 color = 'white' if abs(val) > 5 else 'black'
-                ax.text(j, i, f'{val:.1f}%', ha='center', va='center', 
+                ax.text(col_pos, i, f'{val:.1f}%', ha='center', va='center', 
                        color=color, fontsize=8)
     
     ax.set_title('Monthly Returns Heatmap (%)', fontsize=14, fontweight='bold')
