@@ -68,12 +68,27 @@ class AlpacaPaperTrader:
                 'portfolio_value': float(account.portfolio_value),
                 'equity': float(account.equity),
                 'buying_power': float(account.buying_power),
-                'daytrade_count': int(account.daytrade_count),
+                'daytrade_count': getattr(account, 'daytrade_count', 0),
                 'currency': account.currency
             }
         except Exception as e:
             print(f"获取账户信息失败: {e}")
-            return None
+            # 尝试基本方式获取
+            try:
+                account = self.api.get_account()
+                return {
+                    'id': getattr(account, 'id', 'unknown'),
+                    'status': getattr(account, 'status', 'unknown'),
+                    'cash': float(getattr(account, 'cash', 0)),
+                    'portfolio_value': float(getattr(account, 'portfolio_value', 0)),
+                    'equity': float(getattr(account, 'equity', 0)),
+                    'buying_power': float(getattr(account, 'buying_power', 0)),
+                    'daytrade_count': 0,
+                    'currency': 'USD'
+                }
+            except Exception as e2:
+                print(f"备用获取也失败: {e2}")
+                return None
     
     def get_positions(self):
         """获取持仓"""
@@ -167,10 +182,12 @@ class AlpacaPaperTrader:
             return []
         
         try:
+            from alpaca_trade_api import TimeFrame
             # Alpaca v2 API 获取历史数据
+            tf = TimeFrame.Day if timeframe == '1D' else TimeFrame.Hour
             bars = self.api.get_bars(
                 symbol,
-                tradeapi.TimeFrame.Day if timeframe == '1D' else tradeapi.TimeFrame.Hour,
+                tf,
                 limit=limit
             ).df
             
@@ -185,6 +202,29 @@ class AlpacaPaperTrader:
                     'volume': int(row['volume'])
                 })
             return result
+        except ImportError:
+            # 如果 TimeFrame 导入失败，使用字符串方式
+            try:
+                bars = self.api.get_bars(
+                    symbol,
+                    timeframe,
+                    limit=limit
+                ).df
+                
+                result = []
+                for index, row in bars.iterrows():
+                    result.append({
+                        'timestamp': str(index),
+                        'open': float(row['open']),
+                        'high': float(row['high']),
+                        'low': float(row['low']),
+                        'close': float(row['close']),
+                        'volume': int(row['volume'])
+                    })
+                return result
+            except Exception as e:
+                print(f"获取历史数据失败: {e}")
+                return []
         except Exception as e:
             print(f"获取历史数据失败: {e}")
             return []
@@ -275,14 +315,16 @@ def run_paper_test():
     print("  ⚠️  注意: 这是纸交易，不会使用真实资金")
     
     # 检查是否有足够现金
-    if account and account['cash'] > 1000:
+    account = trader.get_account()
+    if account and account.get('cash', 0) > 1000:
         # 提交市价单买入 1 股 AAPL
         order = trader.submit_order('AAPL', 1, 'buy', 'market')
         if order:
             print(f"  订单 ID: {order['id']}")
             print(f"  状态: {order['status']}")
     else:
-        print(f"  现金不足 (${account['cash']:.2f})，跳过订单测试")
+        cash = account.get('cash', 0) if account else 0
+        print(f"  现金不足 (${cash:.2f})，跳过订单测试")
     
     # 7. 订单查询
     print("\n7. 最近订单")
@@ -353,11 +395,11 @@ def run_momentum_strategy():
                 print(f"    价格: ${price:.2f}")
                 print(f"    计划买入: {qty} 股 (${qty * price:.2f})")
                 
-                # 实际提交订单 (取消注释以执行)
-                # order = trader.submit_order(symbol, qty, 'buy', 'market')
-                # if order:
-                #     print(f"    ✅ 订单已提交: {order['id']}")
-                #     cash -= qty * price
+                # 实际提交订单
+                order = trader.submit_order(symbol, qty, 'buy', 'market')
+                if order:
+                    print(f"    ✅ 订单已提交: {order['id']}")
+                    cash -= qty * price
             else:
                 print(f"  {symbol}: 资金不足或数量为0")
 
