@@ -46,6 +46,10 @@ class IntradayMonitor:
         self.max_intraday_dd = max_intraday_dd
         self.single_stock_limit = single_stock_limit
         
+        # 线程锁（防止和主交易线程竞态）
+        self._halt_lock = threading.Lock()
+        self._halted = False
+        
         # 状态
         self.monitoring = False
         self.monitor_thread = None
@@ -60,6 +64,20 @@ class IntradayMonitor:
         logger.info("✅ 盘中监控器已初始化")
         logger.info(f"   VIX 紧急阈值: {vix_emergency_level}")
         logger.info(f"   日内回撤限制: {max_intraday_dd:.1%}")
+    
+    @property
+    def trading_halted(self):
+        """线程安全的 trading_halted 读取"""
+        with self._halt_lock:
+            return self._halted
+    
+    @trading_halted.setter
+    def trading_halted(self, value):
+        """线程安全的 trading_halted 设置"""
+        with self._halt_lock:
+            self._halted = value
+            if self.risk_monitor:
+                self.risk_monitor.trading_halted = value
     
     def start(self):
         """启动监控线程"""
@@ -130,6 +148,8 @@ class IntradayMonitor:
             if self.risk_monitor:
                 self.risk_monitor.check_vix_level(vix)
                 
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"VIX 检查网络错误: {e}")
         except Exception as e:
             logger.error(f"VIX 检查失败: {e}")
     
@@ -167,6 +187,8 @@ class IntradayMonitor:
                     if self.on_drawdown:
                         self.on_drawdown(drawdown)
                         
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"回撤检查网络错误: {e}")
         except Exception as e:
             logger.error(f"回撤检查失败: {e}")
     
@@ -195,6 +217,8 @@ class IntradayMonitor:
                         if self.on_single_stock_drop:
                             self.on_single_stock_drop(symbol, pnl_pct)
                             
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"个股检查网络错误: {e}")
         except Exception as e:
             logger.error(f"个股检查失败: {e}")
     
@@ -224,7 +248,7 @@ class IntradayMonitor:
     
     def _emergency_liquidation(self, reason):
         """
-        紧急平仓 - 平掉所有持仓
+        紧急平仓 - 平掉所有持仓（线程安全）
         
         参数:
             reason: str, 触发原因
@@ -235,9 +259,8 @@ class IntradayMonitor:
         logger.critical(f"{'='*60}")
         
         try:
-            # 1. 暂停交易
-            if self.risk_monitor:
-                self.risk_monitor.trading_halted = True
+            # 1. 暂停交易（线程安全）
+            self.trading_halted = True
             
             # 2. 平掉所有持仓
             count = self.executor.liquidate_all()
@@ -248,7 +271,10 @@ class IntradayMonitor:
             # 3. 发送告警（如果配置了）
             self._send_emergency_alert(reason)
             
+        except ConnectionError as e:
+            logger.critical(f"❌ 紧急平仓网络错误: {e}")
         except Exception as e:
+            logger.critical(f"❌ 紧急平仓失败: {e}")
             logger.critical(f"❌ 紧急平仓失败: {e}")
     
     def _liquidate_symbol(self, symbol, reason):

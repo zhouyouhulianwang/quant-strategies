@@ -5,6 +5,7 @@ Alpaca Paper Trading 执行模块
 
 import os
 import json
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
@@ -57,6 +58,15 @@ class AlpacaPaperExecutor:
         else:
             self.api = None
             logger.warning("⚠️ 使用模拟模式（无实际交易）")
+        
+        # 当前调仓会话 ID（用于订单幂等性）
+        self.rebalance_session = None
+    
+    def start_rebalance_session(self):
+        """开始新的调仓会话，生成唯一 ID"""
+        self.rebalance_session = uuid.uuid4().hex[:8]
+        logger.info(f"🔄 开始调仓会话: {self.rebalance_session}")
+        return self.rebalance_session
     
     def get_account(self):
         """获取账户信息"""
@@ -73,6 +83,9 @@ class AlpacaPaperExecutor:
                 'buying_power': float(account.buying_power),
                 'status': account.status,
             }
+        except ConnectionError as e:
+            logger.error(f"网络错误，获取账户信息失败: {e}")
+            return None
         except Exception as e:
             logger.error(f"获取账户信息失败: {e}")
             return None
@@ -96,13 +109,16 @@ class AlpacaPaperExecutor:
                 }
                 for p in positions
             ]
+        except ConnectionError as e:
+            logger.error(f"网络错误，获取持仓失败: {e}")
+            return []
         except Exception as e:
             logger.error(f"获取持仓失败: {e}")
             return []
     
     def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None):
         """
-        提交订单
+        提交订单（支持幂等性）
         
         参数:
             symbol: str, 股票代码
@@ -118,6 +134,15 @@ class AlpacaPaperExecutor:
         if not self.api:
             return self._mock_order(symbol, qty, side)
         
+        # 检查是否已有同会话的未完成订单（幂等性）
+        session_prefix = self.rebalance_session or 'manual'
+        client_order_id = f"v14-{session_prefix}-{symbol}-{side}"
+        
+        existing = self._find_order_by_client_id(client_order_id)
+        if existing:
+            logger.info(f"🔄 发现同会话订单，跳过重复提交: {client_order_id}")
+            return existing
+        
         try:
             order = self.api.submit_order(
                 symbol=symbol,
@@ -125,12 +150,14 @@ class AlpacaPaperExecutor:
                 side=side,
                 type=order_type,
                 time_in_force=time_in_force,
-                limit_price=limit_price
+                limit_price=limit_price,
+                client_order_id=client_order_id
             )
             
-            logger.info(f"✅ 订单已提交: {side.upper()} {qty} {symbol}")
+            logger.info(f"✅ 订单已提交: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
             return {
                 'id': order.id,
+                'client_order_id': client_order_id,
                 'symbol': order.symbol,
                 'qty': int(order.qty),
                 'side': order.side,
@@ -138,9 +165,34 @@ class AlpacaPaperExecutor:
                 'status': order.status,
                 'submitted_at': order.submitted_at,
             }
+        except ConnectionError as e:
+            logger.error(f"网络错误，提交订单失败: {e}")
+            return None
         except Exception as e:
             logger.error(f"提交订单失败: {e}")
             return None
+    
+    def _find_order_by_client_id(self, client_order_id):
+        """通过 client_order_id 查找已存在的订单"""
+        if not self.api:
+            return None
+        
+        try:
+            orders = self.api.list_orders(status='all', limit=100)
+            for o in orders:
+                if hasattr(o, 'client_order_id') and o.client_order_id == client_order_id:
+                    return {
+                        'id': o.id,
+                        'client_order_id': client_order_id,
+                        'symbol': o.symbol,
+                        'qty': int(o.qty),
+                        'side': o.side,
+                        'status': o.status,
+                    }
+        except Exception:
+            pass
+        
+        return None
     
     def cancel_all_orders(self):
         """取消所有未成交订单"""
@@ -151,6 +203,9 @@ class AlpacaPaperExecutor:
             self.api.cancel_all_orders()
             logger.info("✅ 所有订单已取消")
             return True
+        except ConnectionError as e:
+            logger.error(f"网络错误，取消订单失败: {e}")
+            return False
         except Exception as e:
             logger.error(f"取消订单失败: {e}")
             return False
@@ -175,6 +230,9 @@ class AlpacaPaperExecutor:
                 }
                 for o in orders
             ]
+        except ConnectionError as e:
+            logger.error(f"网络错误，获取订单失败: {e}")
+            return []
         except Exception as e:
             logger.error(f"获取订单失败: {e}")
             return []
@@ -187,6 +245,9 @@ class AlpacaPaperExecutor:
         try:
             clock = self.api.get_clock()
             return clock.is_open
+        except ConnectionError as e:
+            logger.error(f"网络错误，获取市场状态失败: {e}")
+            return False
         except Exception as e:
             logger.error(f"获取市场状态失败: {e}")
             return False

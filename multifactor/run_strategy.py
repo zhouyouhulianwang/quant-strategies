@@ -148,7 +148,7 @@ class V14Strategy:
     
     def run_backtest(self, start_date=None, end_date=None, use_cache=True):
         """
-        运行回测
+        运行回测 - 使用与实盘相同的信号生成逻辑
         
         参数:
             start_date: str, 'YYYY-MM-DD'
@@ -164,33 +164,28 @@ class V14Strategy:
             end_date = datetime.now().strftime('%Y-%m-%d')
         
         logger.info(f"\n{'='*60}")
-        logger.info(f"V14 策略回测")
+        logger.info(f"V14 策略回测（统一信号逻辑）")
         logger.info(f"{'='*60}")
         logger.info(f"期间: {start_date} ~ {end_date}")
         logger.info(f"数据模式: {'真实数据' if self.use_real_data else '模拟数据'}")
         
+        # 获取数据
         if self.use_real_data:
-            # 优先使用 QuantConnect 数据
             if QC_DATA_AVAILABLE:
-                logger.info("📊 数据源: QuantConnect (Lean)")
                 price_df, market_df = prepare_backtest_data_qc(
                     TICKERS, start_date, end_date, resolution='daily'
                 )
             elif YAHOO_DATA_AVAILABLE:
-                # 回退到 Yahoo Finance
-                logger.info("📊 数据源: Yahoo Finance (QuantConnect 不可用)")
                 price_df, market_df = prepare_backtest_data(
                     TICKERS, start_date, end_date, use_cache
                 )
             else:
-                logger.error("无可用数据源，使用模拟数据")
                 price_df, market_df = self._generate_mock_data(start_date, end_date)
         else:
-            # 使用模拟数据
             price_df, market_df = self._generate_mock_data(start_date, end_date)
         
-        # 运行回测
-        result = run_v14(price_df, market_df, NDX_SET)
+        # 使用统一的信号生成逻辑进行回测
+        result = self._run_backtest_unified(price_df, market_df)
         
         # 应用交易成本
         if COST_AVAILABLE:
@@ -208,6 +203,60 @@ class V14Strategy:
             generate_full_report(result)
         
         return result
+    
+    def _run_backtest_unified(self, price_df, market_df):
+        """
+        统一回测引擎 - 使用与实盘相同的 generate_signals 逻辑
+        
+        参数:
+            price_df: DataFrame, 价格数据
+            market_df: DataFrame, 市场数据
+        
+        返回:
+            DataFrame: 回测结果
+        """
+        import numpy as np
+        
+        # 月末调仓日
+        monthly = price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
+        monthly = monthly[monthly >= price_df.index[252]]  # 252日预热
+        
+        nav = 1.0
+        prev_holdings = []
+        records = []
+        
+        for i in range(1, len(monthly)):
+            prev_d, curr_d = monthly[i-1], monthly[i]
+            vix_v = market_df.loc[prev_d, 'VIX']
+            
+            # 使用与实盘相同的信号生成逻辑
+            price_slice = price_df.loc[:prev_d].iloc[-252:]
+            target_positions = self.generate_signals(price_slice, vix_v)
+            
+            selected = list(target_positions.keys()) if target_positions else []
+            
+            # 收益计算
+            if prev_holdings:
+                p_start = price_df.loc[prev_d, prev_holdings].values
+                p_end = price_df.loc[curr_d, prev_holdings].values
+                sc = v14_scale(vix_v)
+                mr = np.mean(p_end / p_start - 1) * (sc / 100)
+            else:
+                mr = 0
+            
+            nav *= (1 + mr)
+            
+            records.append({
+                'date': curr_d,
+                'nav': nav,
+                'mr': mr,
+                'vix': vix_v,
+                'n': len(selected),
+                'holdings': selected,
+            })
+            prev_holdings = selected
+        
+        return pd.DataFrame(records)
     
     def generate_signals(self, price_df=None, vix=None):
         """
@@ -289,12 +338,15 @@ class V14Strategy:
         logger.info(f"选中股票: {', '.join(selected[:10])}{'...' if len(selected) > 10 else ''}")
         
         # 等权分配目标金额
-        # 如果启用了 executor，获取账户价值
+        # 如果启用了 executor，获取账户价值；否则使用默认 $1M
         if self.executor:
-            account = self.executor.get_account()
-            portfolio_value = account['portfolio_value'] if account else 100000
+            try:
+                account = self.executor.get_account()
+                portfolio_value = account['portfolio_value'] if account else 1000000
+            except Exception:
+                portfolio_value = 1000000
         else:
-            portfolio_value = 100000  # 默认
+            portfolio_value = 1000000  # 回测默认
         
         # 权重分配（如果配置了 allocator）
         if self.weight_allocator and len(selected) > 0:
@@ -319,14 +371,18 @@ class V14Strategy:
     def run_live_rebalance(self):
         """
         运行实盘再平衡 - 全自动流程:
-        1. 获取最新数据
-        2. 计算信号
-        3. 风控检查
-        4. 执行再平衡
+        1. 开始调仓会话（幂等性保障）
+        2. 获取最新数据
+        3. 计算信号
+        4. 风控检查
+        5. 执行再平衡
         """
         if not self.executor:
             logger.error("未启用 Alpaca Paper Trading")
             return
+        
+        # 0. 开始新会话（幂等性保障）
+        self.executor.start_rebalance_session()
         
         # 1. 获取数据并生成信号
         target_positions = self.generate_signals()
@@ -360,8 +416,10 @@ class V14Strategy:
                 vix = source.get_vix()
                 if vix:
                     return vix
-            except Exception:
-                pass
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"QuantConnect 获取 VIX 网络错误: {e}")
+            except Exception as e:
+                logger.warning(f"QuantConnect 获取 VIX 失败: {e}")
         
         # 2. 回退到 Yahoo Finance
         if YAHOO_DATA_AVAILABLE:
@@ -372,8 +430,10 @@ class V14Strategy:
                 vix_series = fetch_vix_data(start, end)
                 if vix_series is not None and len(vix_series) > 0:
                     return float(vix_series.iloc[-1])
-            except Exception:
-                pass
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"Yahoo 获取 VIX 网络错误: {e}")
+            except Exception as e:
+                logger.warning(f"Yahoo 获取 VIX 失败: {e}")
         
         # 3. 最终回退: 直接请求
         try:
@@ -381,8 +441,10 @@ class V14Strategy:
             vix_data = yf.Ticker('^VIX').history(period='5d')
             if len(vix_data) > 0:
                 return float(vix_data['Close'].iloc[-1])
-        except Exception:
-            pass
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"yfinance 获取 VIX 网络错误: {e}")
+        except Exception as e:
+            logger.warning(f"yfinance 获取 VIX 失败: {e}")
         
         return None
     
