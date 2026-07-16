@@ -365,14 +365,15 @@ class V14Strategy:
         
         return pd.DataFrame(records)
     
-    def generate_signals(self, price_df=None, vix=None):
+    def generate_signals(self, price_df=None, vix=None, live_mode=False):
         """
         生成交易信号 - 桥接回测逻辑到实盘
-        
+
         参数:
             price_df: DataFrame, 价格数据 (默认获取最新252日)
             vix: float, 当前VIX (默认从数据获取)
-        
+            live_mode: bool, 实盘模式标记（用于日志提示）
+
         返回:
             dict: {symbol: target_value} 目标持仓
         """
@@ -409,6 +410,12 @@ class V14Strategy:
         logger.info(f"{'='*60}")
         logger.info(f"当前 VIX: {vix:.2f}")
         logger.info(f"数据日期: {price_df.index[-1]}")
+
+        # P0 修复：明确信号基于 EOD 收盘价
+        if price_df is None or live_mode:
+            logger.info("📌 信号基于历史 EOD 收盘价计算（V14 为月末再平衡策略）")
+            if self.use_paper_trading:
+                logger.info("📌 实盘执行时将使用当前实时价格计算股数")
         
         # 计算因子 (复用回测逻辑)
         price_slice = price_df.iloc[-252:]  # 最近252日
@@ -478,40 +485,47 @@ class V14Strategy:
     def run_live_rebalance(self):
         """
         运行实盘再平衡 - 全自动流程:
-        1. 开始调仓会话（幂等性保障）
-        2. 获取最新数据
-        3. 计算信号
-        4. 风控检查
-        5. 执行再平衡
+        1. 检查市场开盘时间
+        2. 开始调仓会话（幂等性保障）
+        3. 获取最新数据
+        4. 计算信号
+        5. 风控检查
+        6. 执行再平衡
         """
         if not self.executor:
             logger.error("未启用 Alpaca Paper Trading")
             return
-        
-        # 0. 开始新会话（幂等性保障）
+
+        # 0. 市场开盘检查 - P0 修复
+        if not self.executor.market_is_open():
+            logger.warning("⚠️ 市场未开盘，跳过本次实盘调仓")
+            logger.warning("   V14 是月末 EOD 策略，建议在开盘后执行")
+            return
+
+        # 1. 开始新会话（幂等性保障）
         self.executor.start_rebalance_session()
-        
-        # 1. 获取数据并生成信号
-        target_positions = self.generate_signals()
-        
+
+        # 2. 获取数据并生成信号
+        target_positions = self.generate_signals(live_mode=True)
+
         if not target_positions:
             logger.error("信号生成失败，跳过交易")
             return
-        
-        # 2. 风控检查
+
+        # 3. 风控检查
         if self.risk_monitor:
             # 获取当前 VIX
             vix = self._get_latest_vix()
             if vix:
                 self.risk_monitor.check_vix_level(vix)
-            
+
             if self.risk_monitor.trading_halted:
                 logger.warning("⚠️ 交易已暂停（风险监控触发）")
                 return
-        
-        # 3. 执行交易
+
+        # 4. 执行交易
         self.live_trade(target_positions)
-        
+
         logger.info("✅ 实盘再平衡完成")
     
     def _get_latest_vix(self):

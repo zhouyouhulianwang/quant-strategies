@@ -374,17 +374,27 @@ class TestExecutor:
         'ALPACA_API_KEY': 'PK_TEST123',
         'ALPACA_API_SECRET': 'SK_TEST456'
     })
-    def test_mock_order(self):
-        """测试模拟订单"""
-        from alpaca_executor import AlpacaPaperExecutor
-        
-        executor = AlpacaPaperExecutor()
-        order = executor.submit_order('AAPL', 10, 'buy')
-        
-        assert order is not None, "模拟订单应成功"
-        assert order['status'] == 'filled', "模拟订单应立即成交"
-        assert order['symbol'] == 'AAPL'
+    @patch('alpaca_executor.ALPACA_AVAILABLE', False)
+    def test_v14_executor_wrappers(self):
+        """测试 V14AlpacaExecutor 包装方法（P0 修复）"""
+        from alpaca_executor import V14AlpacaExecutor
 
+        v14 = V14AlpacaExecutor()
+
+        # 包装方法应正确透传到底层 executor
+        assert hasattr(v14, 'market_is_open'), "V14AlpacaExecutor 应有 market_is_open 方法"
+        assert hasattr(v14, 'liquidate_all'), "V14AlpacaExecutor 应有 liquidate_all 方法"
+        assert hasattr(v14, 'submit_order'), "V14AlpacaExecutor 应有 submit_order 方法"
+        assert hasattr(v14, 'get_account'), "V14AlpacaExecutor 应有 get_account 方法"
+        assert hasattr(v14, 'get_positions'), "V14AlpacaExecutor 应有 get_positions 方法"
+
+        # mock 模式下 market_is_open 应返回 True
+        assert v14.market_is_open() == True, "mock 模式下市场应视为开盘"
+
+        # 测试提交订单
+        order = v14.submit_order('AAPL', 5, 'buy')
+        assert order is not None, "V14 包装器应能提交订单"
+        assert order['symbol'] == 'AAPL', "订单股票代码应正确"
 
 # ============================================================
 # 8. 回测统一引擎测试

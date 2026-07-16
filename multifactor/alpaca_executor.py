@@ -308,6 +308,43 @@ class V14AlpacaExecutor:
     def __init__(self, api_key=None, api_secret=None):
         self.executor = AlpacaPaperExecutor(api_key, api_secret)
         self.positions_history = []
+
+    def market_is_open(self):
+        """检查市场是否开盘"""
+        return self.executor.market_is_open()
+
+    def liquidate_all(self):
+        """平掉所有持仓"""
+        return self.executor.liquidate_all()
+
+    def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None):
+        """提交订单（透传到底层执行器）"""
+        return self.executor.submit_order(symbol, qty, side, order_type, time_in_force, limit_price)
+
+    def get_account(self):
+        """获取账户信息"""
+        return self.executor.get_account()
+
+    def get_positions(self):
+        """获取当前持仓"""
+        return self.executor.get_positions()
+
+    def cancel_all_orders(self):
+        """取消所有未成交订单"""
+        return self.executor.cancel_all_orders()
+
+    def get_orders(self, status='open'):
+        """获取订单列表"""
+        return self.executor.get_orders(status)
+
+    def start_rebalance_session(self):
+        """开始新的调仓会话"""
+        return self.executor.start_rebalance_session()
+
+    def get_portfolio_summary(self):
+        """获取组合摘要"""
+        return self.executor.get_portfolio_summary()
+
     
     def rebalance_portfolio(self, target_positions, max_position_pct=0.20,
                            atomic_check=True, min_liquidity_ratio=2.0):

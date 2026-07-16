@@ -55,6 +55,7 @@ class IntradayMonitor:
         self.monitor_thread = None
         self.daily_high_nav = None
         self.last_check_time = None
+        self._current_date = None  # 用于每日重置日内高点
         
         # 回调
         self.on_vix_spike: Optional[Callable] = None
@@ -103,10 +104,17 @@ class IntradayMonitor:
         """监控循环"""
         while self.monitoring:
             try:
+                # P0 修复：每日开盘时重置日内高点
+                today = datetime.now().date()
+                if self._current_date != today:
+                    self._current_date = today
+                    self.reset_daily_high()
+                    logger.info(f"📅 新的一天，日内高点已重置: {today}")
+
                 self._check_all()
             except Exception as e:
                 logger.error(f"监控循环错误: {e}")
-            
+
             time.sleep(self.check_interval)
     
     def _check_all(self):
@@ -257,15 +265,30 @@ class IntradayMonitor:
         logger.critical(f"🚨 紧急平仓触发")
         logger.critical(f"原因: {reason}")
         logger.critical(f"{'='*60}")
-        
+
         try:
+            # P0 修复：检查市场是否开盘
+            try:
+                market_open = self.executor.market_is_open()
+            except AttributeError:
+                market_open = True  # 无 market_is_open 时放行（兼容模式）
+
+            if not market_open:
+                logger.critical("❌ 市场未开盘，紧急平仓订单将在开盘后执行")
+                logger.critical("   已暂停交易，请在开盘后检查账户状态")
+
             # 1. 暂停交易（线程安全）
             self.trading_halted = True
-            
-            # 2. 平掉所有持仓
-            count = self.executor.liquidate_all()
-            
-            logger.critical(f"✅ 已平掉 {count} 个持仓")
+
+            # 2. 平掉所有持仓（如果市场开盘则立即执行）
+            if market_open:
+                count = self.executor.liquidate_all()
+                logger.critical(f"✅ 已平掉 {count} 个持仓")
+            else:
+                # 市场关闭时提交订单将在次日开盘执行，记录待处理
+                count = self.executor.liquidate_all()
+                logger.critical(f"⏳ 市场已收盘，已提交 {count} 个平仓订单，将在下次开盘执行")
+
             logger.critical("⚠️ 交易已暂停，请手动检查并恢复")
             
             # 3. 发送告警（如果配置了）
@@ -288,11 +311,20 @@ class IntradayMonitor:
         logger.critical(f"🚨 平仓 {symbol}: {reason}")
         
         try:
+            # P0 修复：市场关闭时记录告警
+            try:
+                market_open = self.executor.market_is_open()
+            except AttributeError:
+                market_open = True
+
+            if not market_open:
+                logger.critical(f"⏳ 市场未开盘，{symbol} 平仓订单将在开盘后执行")
+
             positions = self.executor.get_positions()
             for pos in positions:
                 if pos['symbol'] == symbol:
                     self.executor.submit_order(symbol, pos['qty'], 'sell')
-                    logger.critical(f"✅ 已平仓 {symbol} x {pos['qty']}")
+                    logger.critical(f"✅ 已提交平仓 {symbol} x {pos['qty']}")
                     break
         except Exception as e:
             logger.error(f"平仓 {symbol} 失败: {e}")
