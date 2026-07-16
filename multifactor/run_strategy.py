@@ -103,15 +103,29 @@ class V14Strategy:
         初始化策略
         
         参数:
-            use_real_data: bool, 使用真实数据
+            use_real_data: bool, 使用真实数据（默认True）
             use_paper_trading: bool, 使用 Alpaca Paper Trading
             enable_risk_monitor: bool, 启用风险监控
             enable_intraday_monitor: bool, 启用盘中监控
             weight_method: str, 权重分配方法 ('equal' | 'risk_parity' | 'momentum_weighted')
         """
-        self.use_real_data = use_real_data and (QC_DATA_AVAILABLE or YAHOO_DATA_AVAILABLE)
+        # 检查数据源可用性
+        has_real_data = QC_DATA_AVAILABLE or YAHOO_DATA_AVAILABLE
+        
+        if use_real_data and not has_real_data:
+            logger.error("❌ 真实数据源不可用 (QuantConnect/Yahoo Finance)")
+            logger.error("   请安装: pip install yfinance")
+            logger.error("   或配置 QuantConnect Lean CLI")
+            self.use_real_data = False
+        else:
+            self.use_real_data = use_real_data and has_real_data
+        
         self.use_paper_trading = use_paper_trading and ALPACA_AVAILABLE
         self.enable_risk_monitor = enable_risk_monitor and RISK_AVAILABLE
+        
+        if not self.use_real_data:
+            logger.warning("⚠️ 当前使用模拟数据，回测结果仅供测试参考")
+            logger.warning("   生产环境请确保真实数据源可用")
         
         # 初始化各模块
         self.executor = None
@@ -730,20 +744,36 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    # 初始化策略
+    # 初始化策略 - 默认使用真实数据，回测模式
     strategy = V14Strategy(
-        use_real_data=args.real_data,
+        use_real_data=True,  # 强制使用真实数据
         use_paper_trading=args.paper,
         enable_risk_monitor=True,
         enable_intraday_monitor=args.monitor,
         weight_method=args.weight_method
     )
     
+    # 检查数据可用性
+    if not strategy.use_real_data:
+        logger.error("❌ 真实数据不可用，请检查网络连接或数据源配置")
+        logger.error("   可选数据源: Yahoo Finance (pip install yfinance)")
+        logger.error("   回测已中止，未使用模拟数据")
+        exit(1)
+    
     if args.backtest or not args.live:
         # 运行回测
         result = strategy.run_backtest(args.start, args.end)
+        if len(result) == 0:
+            logger.error("❌ 回测失败: 无数据或数据不足")
+            exit(1)
     
     if args.live:
+        # 检查是否启用了 Paper Trading
+        if not strategy.use_paper_trading:
+            logger.error("❌ 实盘模式需要 --paper 参数启用 Paper Trading")
+            logger.error("   运行: python run_strategy.py --live --paper")
+            exit(1)
+        
         # 全自动实盘再平衡
         strategy.run_live_rebalance()
     
