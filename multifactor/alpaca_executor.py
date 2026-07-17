@@ -216,6 +216,7 @@ class AlpacaPaperExecutor:
         use_limit_orders=False,
         limit_order_offset_pct=0.001,
         alert_manager=None,
+        risk_monitor=None,
     ):
         """
         初始化 Alpaca 执行器
@@ -348,6 +349,11 @@ class AlpacaPaperExecutor:
         self.alert_manager = alert_manager
         if self.alert_manager is None and ALERT_MGR_AVAILABLE:
             self.alert_manager = AlertManager(enabled=True)
+
+        # 风控监控器引用（用于交易开关同步）
+        self.risk_monitor = risk_monitor
+        # 全局交易开关（可被风控线程/人工紧急停止触发）
+        self.trading_halted = False
 
     def _send_alert(self, method, *args, **kwargs):
         """P2修复：统一封装告警调用，避免空告警管理器时出错"""
@@ -609,6 +615,12 @@ class AlpacaPaperExecutor:
         if side.lower() not in ('buy', 'sell'):
             logger.error(f"side 必须是 buy/sell: {side}")
             self._send_alert('order_failed', symbol, side, qty, 'invalid_side')
+            return None
+
+        # 全局交易开关检查（风控/人工紧急停止）
+        if self.trading_halted or (self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False)):
+            logger.error(f"❌ 交易已暂停，拒绝提交订单: {symbol} {side}")
+            self._send_alert('order_failed', symbol, side, qty, 'trading_halted')
             return None
 
         # 检查是否已有同会话的未完成订单（幂等性）
@@ -1015,6 +1027,10 @@ class V14AlpacaExecutor:
     def __init__(self, api_key=None, api_secret=None, **kwargs):
         self.executor = AlpacaPaperExecutor(api_key, api_secret, **kwargs)
         self.positions_history = []
+
+    def set_risk_monitor(self, risk_monitor):
+        """设置风控监控器引用，实现交易开关同步。"""
+        self.executor.risk_monitor = risk_monitor
 
     # 透传方法
     def market_is_open(self):

@@ -168,6 +168,10 @@ class V14Strategy(BaseStrategy):
             self.executor = V14AlpacaExecutor(**executor_kwargs)
             logger.info("✅ Alpaca Paper Trading 已启用")
 
+            if self.risk_monitor:
+                self.executor.set_risk_monitor(self.risk_monitor)
+                logger.info("✅ 风控状态已与执行器同步")
+
         if self.enable_risk_monitor:
             self.risk_monitor = RiskMonitor()
             logger.info("✅ 风险监控已启用")
@@ -414,10 +418,48 @@ class V14Strategy(BaseStrategy):
 
         logger.info(f"📅 回测调仓频率: {rebalance_frequency} ({len(rebalance_dates)} 个调仓日)")
 
+        # 辅助函数：根据目标金额和股价计算整数股数与现金
+        INITIAL_CAPITAL = 1_000_000.0
+
+        def build_portfolio(target_positions, nav_multiple, rebalance_d):
+            portfolio_value = nav_multiple * INITIAL_CAPITAL
+            selected = list(target_positions.keys()) if target_positions else []
+            total_target = sum(target_positions.values()) if target_positions else 0.0
+            curr_weights = {}
+            curr_quantities = {}
+            curr_invested = 0.0
+            if total_target > 0 and selected:
+                # generate_signals 默认基于 $1M 组合生成目标金额，按当前组合价值缩放
+                scale = portfolio_value / 1_000_000.0
+                for s in selected:
+                    if s in price_df.columns:
+                        price = float(price_df.loc[rebalance_d, s])
+                        target_value = target_positions[s] * scale
+                        qty = int(target_value / price)
+                        if qty > 0:
+                            curr_quantities[s] = qty
+                            curr_weights[s] = target_positions[s] / total_target
+                            curr_invested += qty * price
+            curr_cash = max(0.0, portfolio_value - curr_invested)
+            return selected, curr_weights, curr_quantities, curr_invested, curr_cash
+
         nav = 1.0
-        prev_holdings = []
-        prev_weights = {}
         records = []
+
+        # 预热期后的第一个调仓日生成初始持仓，避免丢失首个持有期收益
+        first_d = rebalance_dates[0]
+        try:
+            vix_first = float(market_df.loc[first_d, 'VIX'])
+        except (KeyError, TypeError, ValueError):
+            vix_first = 20.0
+        price_slice_first = price_df.loc[:first_d].iloc[-252:]
+        target_positions_first = self.generate_signals(price_slice_first, vix_first)
+        selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
+            target_positions_first, nav, first_d
+        )
+        prev_holdings = selected
+        prev_quantities = curr_quantities
+        prev_cash = curr_cash
 
         for i in range(1, len(rebalance_dates)):
             prev_d, curr_d = rebalance_dates[i-1], rebalance_dates[i]
@@ -427,30 +469,33 @@ class V14Strategy(BaseStrategy):
             except (KeyError, TypeError, ValueError):
                 vix_v = 20.0
 
-            price_slice = price_df.loc[:prev_d].iloc[-252:]
-            target_positions = self.generate_signals(price_slice, vix_v)
-
-            selected = list(target_positions.keys()) if target_positions else []
-
-            # 记录当前目标权重（用于收益计算和成本估算）
-            total_target = sum(target_positions.values()) if target_positions else 0.0
-            curr_weights = {s: v / total_target for s, v in target_positions.items()} if total_target > 0 else {}
-
-            if prev_holdings and prev_weights:
+            # 计算上一期持仓收益（使用整数股数与现金）
+            if prev_holdings and prev_quantities:
                 try:
-                    p_start = price_df.loc[prev_d, prev_holdings].values
-                    p_end = price_df.loc[curr_d, prev_holdings].values
-                    returns = p_end / p_start - 1
-                    sc = v14_scale(vix_v)
-                    weights_arr = np.array([prev_weights.get(s, 0.0) for s in prev_holdings])
-                    mr = np.dot(weights_arr, returns) * (sc / 100)
+                    stock_value_start = 0.0
+                    stock_value_end = 0.0
+                    for s, qty in prev_quantities.items():
+                        p_start = float(price_df.loc[prev_d, s])
+                        p_end = float(price_df.loc[curr_d, s])
+                        stock_value_start += qty * p_start
+                        stock_value_end += qty * p_end
+                    portfolio_value_start = stock_value_start + prev_cash
+                    portfolio_value_end = stock_value_end + prev_cash
+                    mr = portfolio_value_end / portfolio_value_start - 1 if portfolio_value_start > 0 else 0.0
                 except (KeyError, ValueError, TypeError) as e:
                     logger.warning(f"⚠️ 收益计算错误: {e}, 使用 0")
-                    mr = 0
+                    mr = 0.0
             else:
-                mr = 0
+                mr = 0.0
 
             nav *= (1 + mr)
+
+            # 生成新的目标持仓并模拟整数截断
+            price_slice = price_df.loc[:curr_d].iloc[-252:]
+            target_positions = self.generate_signals(price_slice, vix_v)
+            selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
+                target_positions, nav, curr_d
+            )
 
             records.append({
                 'date': curr_d,
@@ -460,9 +505,13 @@ class V14Strategy(BaseStrategy):
                 'n': len(selected),
                 'holdings': selected,
                 'weights': curr_weights,
+                'quantities': curr_quantities,
+                'cash': curr_cash,
+                'invested': curr_invested,
             })
             prev_holdings = selected
-            prev_weights = curr_weights
+            prev_quantities = curr_quantities
+            prev_cash = curr_cash
 
         return pd.DataFrame(records)
 
@@ -655,6 +704,14 @@ class V14Strategy(BaseStrategy):
             return
 
         self.executor.start_rebalance_session()
+
+        # 每次调仓前同步 PDT 状态（High #8 修复）
+        if self.use_paper_trading and self.executor:
+            try:
+                self.executor.sync_positions()
+                logger.info("🔄 调仓前 PDT 状态已同步")
+            except Exception as e:
+                logger.warning(f"⚠️ 调仓前 PDT 同步失败: {e}，继续使用本地状态")
 
         target_positions = self.generate_signals(live_mode=True)
 

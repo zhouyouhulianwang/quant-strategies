@@ -118,6 +118,11 @@ class PDTTracker:
                     # P1-5 修复：持久化券商 daytrade_count
                     'broker_daytrade_count': self._broker_daytrade_count,
                 }, f, indent=2)
+            # Critical #3 修复：敏感运行时文件限制权限 600
+            try:
+                os.chmod(self.state_file, 0o600)
+            except OSError as e:
+                logger.warning(f"设置 PDT 状态文件权限失败: {e}")
         except (OSError, IOError, PermissionError) as e:
             logger.warning(f"持久化 PDT 状态失败: {e}")
 

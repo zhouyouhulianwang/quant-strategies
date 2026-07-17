@@ -368,14 +368,15 @@ class TradingCostModel:
 cost_model = TradingCostModel()
 
 
-def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnover=0.002):
+def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnover=0.002, spread_bps=5.0):
     """
     将交易成本应用到回测结果，按实际换手率（turnover）计算
 
     参数:
-        result_df: DataFrame, 回测结果（可包含 holdings 列）
+        result_df: DataFrame, 回测结果（可包含 holdings/weights 列）
         cost_model_instance: TradingCostModel
-        cost_per_turnover: float, 每单位换手率成本
+        cost_per_turnover: float, 每单位换手率成本（佣金+冲击）
+        spread_bps: float, 双边买卖 bid-ask spread 基点（默认 5 bps = 0.05%）
 
     返回:
         DataFrame: 扣除成本后的结果
@@ -425,14 +426,17 @@ def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnov
 
     result['turnover'] = turnovers
 
+    # 总交易成本 = 佣金/冲击 + bid-ask spread
+    total_cost_per_turnover = cost_per_turnover + spread_bps / 10000.0
+
     # 应用成本
     result['nav_after_cost'] = result['nav'].copy()
     if len(result) > 0:
         result.iloc[0, result.columns.get_loc('nav_after_cost')] = (
-            result.iloc[0]['nav'] * (1 - turnovers[0] * cost_per_turnover)
+            result.iloc[0]['nav'] * (1 - turnovers[0] * total_cost_per_turnover)
         )
     for i in range(1, len(result)):
-        cost_pct = result.iloc[i]['turnover'] * cost_per_turnover
+        cost_pct = result.iloc[i]['turnover'] * total_cost_per_turnover
         result.iloc[i, result.columns.get_loc('nav_after_cost')] = (
             result.iloc[i-1]['nav_after_cost'] * (1 + result.iloc[i]['mr'] - cost_pct)
         )
