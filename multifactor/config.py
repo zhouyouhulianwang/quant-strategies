@@ -183,17 +183,6 @@ class V14StrategyConfig(BaseModel):
         pattern=r'^https://(paper-)?api\.alpaca\.markets$'
     )
     
-    @field_validator('alpaca_base_url', mode='before')
-    @classmethod
-    def _load_base_url_from_env(cls, v):
-        """P1 修复：允许 ALPACA_BASE_URL 环境变量覆盖配置，未设置时使用默认值"""
-        env_url = os.environ.get('ALPACA_BASE_URL')
-        if env_url:
-            return env_url
-        if v is None or v == '':
-            return 'https://paper-api.alpaca.markets'
-        return v
-    
     @field_validator('alpaca_base_url')
     @classmethod
     def base_url_must_be_valid(cls, v):
@@ -239,6 +228,9 @@ def get_config() -> V14StrategyConfig:
             except Exception as e:
                 # 不抛异常，避免配置损坏导致服务无法启动
                 print(f"⚠️ 读取 config.json 失败，使用默认配置: {e}")
+        # 环境变量覆盖 base_url
+        if 'ALPACA_BASE_URL' in os.environ:
+            kwargs['alpaca_base_url'] = os.environ['ALPACA_BASE_URL']
         _config_instance = V14StrategyConfig(**kwargs)
     return _config_instance
 
