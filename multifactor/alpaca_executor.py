@@ -136,6 +136,32 @@ try:
 except ImportError as e:
     logger.warning(f"alpaca-py not installed: {e}, using mock mode")
     ALPACA_AVAILABLE = False
+    # Fallback enums so the rest of the codebase can still import them in mock mode
+    from enum import Enum
+
+    class OrderSide(str, Enum):
+        BUY = "buy"
+        SELL = "sell"
+
+    class OrderType(str, Enum):
+        MARKET = "market"
+        LIMIT = "limit"
+        STOP = "stop"
+        STOP_LIMIT = "stop_limit"
+        TRAILING_STOP = "trailing_stop"
+
+    class TimeInForce(str, Enum):
+        DAY = "day"
+        GTC = "gtc"
+        IOC = "ioc"
+        FOK = "fok"
+        OPG = "opg"
+        CLS = "cls"
+
+    class QueryOrderStatus(str, Enum):
+        OPEN = "open"
+        CLOSED = "closed"
+        ALL = "all"
 
 
 # ============================================================

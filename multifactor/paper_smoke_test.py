@@ -60,16 +60,16 @@ def main() -> int:
 
     executor = AlpacaExecutor(
         api_key=api_key,
-        secret_key=secret_key,
+        api_secret=secret_key,
         paper=paper,
         risk_monitor=None,  # smoke test bypasses risk monitor
     )
 
     try:
-        account = executor.trading_client.get_account()
-        print(f"  Account status: {account.status}")
-        print(f"  Account equity: {account.equity}")
-        print(f"  Buying power: {account.buying_power}")
+        account = executor.get_account()
+        print(f"  Account status: {account.get('status') if isinstance(account, dict) else account.status}")
+        print(f"  Account equity: {account.get('equity') if isinstance(account, dict) else account.equity}")
+        print(f"  Buying power: {account.get('buying_power') if isinstance(account, dict) else account.buying_power}")
     except Exception as e:
         print(f"ERROR: Failed to get account: {e}")
         return 1
