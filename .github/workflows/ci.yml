@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'multifactor/**'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'multifactor/**'
+  schedule:
+    # Daily at 07:00 UTC — catch data drift or dependency issues
+    - cron: '0 7 * * *'
+
+defaults:
+  run:
+    working-directory: multifactor
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest test_suite.py -q
+
+  backtest:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run backtest
+        run: python run_strategy.py --backtest
+
+      - name: Upload backtest charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-charts
+          path: multifactor/charts/report_*/
+
+  paper-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    # Only on scheduled runs or manual dispatch; never on PRs from forks
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    environment: alpaca-paper
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Validate paper trading config (dry-run)
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python paper_smoke_test.py --dry-run
