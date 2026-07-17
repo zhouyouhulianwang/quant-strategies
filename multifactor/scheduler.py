@@ -1,6 +1,10 @@
 """
-调度模块 - 定时执行月度调仓
-支持月末最后一个交易日自动执行
+调度模块 - 定时执行调仓
+支持 monthly / bimonthly / quarterly / weekly / daily 频率
+参考 QuantConnect SetRebalanceSchedule 设计：
+  - monthly/bimonthly/quarterly：在允许月份的首个交易日，开盘后 30 分钟执行
+  - weekly：每周一开盘后 30 分钟执行
+  - daily：每个交易日收盘后 16:30 ET 执行（EOD 数据可用后）
 使用 exchange_calendars 处理交易日历
 """
 
@@ -18,8 +22,13 @@ logger = logging.getLogger('scheduler')
 
 # 美东时区（交易时间以美东为准）
 NY_TZ = ZoneInfo('America/New_York')
-# P1/P2修复: 重命名并加说明。美股收盘时间为 16:00 ET，
-# 此处 16:30 是“收盘后数据已可用的截止判断时间”，不是收盘时间本身。
+
+# 美股开盘 09:30 ET，参考 QC AfterMarketOpen(..., 30) 设定调仓触发时间
+MARKET_OPEN_TIME = time(9, 30)
+REBALANCE_AFTER_OPEN_MINUTES = 30
+REBALANCE_OPEN_TIME = time(10, 0)
+
+# P1/P2修复: 美股收盘时间为 16:00 ET，此处 16:30 是“收盘后数据已可用的截止判断时间”
 MARKET_CLOSE_CUTOFF_TIME = time(16, 30)
 
 # 为了兼容旧代码，保留旧名称别名（ deprecated ）
@@ -48,7 +57,7 @@ class RebalanceScheduler:
 
         参数:
             strategy: V14Strategy 实例
-            rebalance_frequency: str, 'monthly' 或 'daily'
+            rebalance_frequency: str, 'monthly' / 'bimonthly' / 'quarterly' / 'weekly' / 'daily'
         """
         self.strategy = strategy
         self.rebalance_frequency = rebalance_frequency
@@ -88,9 +97,10 @@ class RebalanceScheduler:
         """
         检查是否该调仓
 
-        规则：
-            - monthly（默认）：每月最后一个交易日，且当前时间已过收盘截止判断时间（16:30 ET）
-            - daily：每个交易日，且当前时间已过收盘截止判断时间（16:30 ET）
+        规则（统一在开盘后 30 分钟，即 10:00 ET 触发）：
+            - daily：每个交易日 10:00 ET 后
+            - weekly：每周一 10:00 ET 后
+            - monthly / bimonthly / quarterly：允许月份的首个交易日 10:00 ET 后
 
         参数:
             now: datetime, 当前时间（默认美东时间）
@@ -106,8 +116,8 @@ class RebalanceScheduler:
 
         today = now.date()
 
-        # 必须已过收盘后截止判断时间（16:30 ET），当日 EOD 数据才可用
-        if now.time() < MARKET_CLOSE_CUTOFF_TIME:
+        # 必须已过开盘后 30 分钟（10:00 ET）
+        if now.time() < REBALANCE_OPEN_TIME:
             return False
 
         # 如果今天已经执行过，跳过
@@ -119,10 +129,43 @@ class RebalanceScheduler:
         if self.rebalance_frequency == 'daily':
             # 每个交易日都调仓
             return self._is_trading_day(today)
+
+        if self.rebalance_frequency == 'weekly':
+            # 每周一
+            return today.weekday() == 0 and self._is_trading_day(today)
+
+        # monthly / bimonthly / quarterly
+        allowed_months = self._get_allowed_months()
+        if today.month not in allowed_months:
+            return False
+
+        first_trading_day = self._get_first_trading_day_of_month(today.year, today.month)
+        return today == first_trading_day
+
+    def _get_allowed_months(self):
+        """根据调仓频率返回允许调仓的月份列表（参考 QC SetRebalanceSchedule）"""
+        freq = self.rebalance_frequency
+        if freq == 'monthly':
+            return list(range(1, 13))
+        elif freq == 'bimonthly':
+            return [1, 3, 5, 7, 9, 11]
+        elif freq == 'quarterly':
+            return [1, 4, 7, 10]
+        elif freq == 'weekly' or freq == 'daily':
+            return list(range(1, 13))
         else:
-            # 默认每月最后一个交易日
-            last_trading_day = self._get_last_trading_day_of_month(now.year, now.month)
-            return today == last_trading_day
+            raise ValueError(f"Invalid rebalance frequency: {freq}")
+
+    def _get_first_trading_day_of_month(self, year, month):
+        """获取某月首个交易日（基于 XNYS 日历，回退到跳过周末）"""
+        first_day = datetime(year, month, 1).date()
+        if self._is_trading_day(first_day):
+            return first_day
+
+        next_day = first_day + timedelta(days=1)
+        while not self._is_trading_day(next_day):
+            next_day += timedelta(days=1)
+        return next_day
 
     def _is_trading_day(self, date):
         """判断某天是否为交易日（基于 XNYS 日历）"""
@@ -223,20 +266,39 @@ class RebalanceScheduler:
         today = now.date()
 
         if self.rebalance_frequency == 'daily':
-            # 如果今天还是交易日且未过 cutoff，下次可能是今天；否则下一个交易日
-            if self._is_trading_day(today) and now.time() < MARKET_CLOSE_CUTOFF_TIME:
+            # 如果今天还是交易日且未过 10:00 ET，下次可能是今天；否则下一个交易日
+            if self._is_trading_day(today) and now.time() < REBALANCE_OPEN_TIME:
                 return today
             return self._get_next_trading_day(today)
-        else:
-            # 本月最后一个交易日
-            this_month = self._get_last_trading_day_of_month(now.year, now.month)
 
-            if today <= this_month:
-                return this_month
-            else:
-                # 下月
-                next_month = now + relativedelta(months=1)
-                return self._get_last_trading_day_of_month(next_month.year, next_month.month)
+        if self.rebalance_frequency == 'weekly':
+            # 找到下周一
+            days_until_monday = (7 - today.weekday()) % 7
+            if days_until_monday == 0 and now.time() >= REBALANCE_OPEN_TIME:
+                days_until_monday = 7
+            next_monday = today + timedelta(days=days_until_monday)
+            while not self._is_trading_day(next_monday):
+                next_monday += timedelta(days=1)
+            return next_monday
+
+        # monthly / bimonthly / quarterly：找到下一个允许月份的首个交易日
+        allowed_months = self._get_allowed_months()
+        current_month_idx = today.month
+
+        # 同月内是否还有机会？
+        if current_month_idx in allowed_months:
+            first_day = self._get_first_trading_day_of_month(today.year, today.month)
+            if today < first_day or (today == first_day and now.time() < REBALANCE_OPEN_TIME):
+                return first_day
+
+        # 往后找下一个允许月份
+        for offset in range(1, 25):
+            next_month_date = today + relativedelta(months=offset)
+            if next_month_date.month in allowed_months:
+                return self._get_first_trading_day_of_month(next_month_date.year, next_month_date.month)
+
+        # 不应该执行到这里
+        raise RuntimeError("无法找到下次调仓日期")
 
     def get_run_history(self):
         """获取执行历史"""

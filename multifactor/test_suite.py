@@ -368,6 +368,97 @@ class TestScheduler:
         
         # 同一天不应再调仓
         assert scheduler.should_rebalance(datetime.now()) == False, "同一天不应重复调仓"
+    
+    def test_allowed_months(self):
+        """测试不同频率对应的允许调仓月份（参考 QC SetRebalanceSchedule）"""
+        from scheduler import RebalanceScheduler
+        from unittest.mock import MagicMock
+        
+        assert RebalanceScheduler(MagicMock(), 'monthly')._get_allowed_months() == list(range(1, 13))
+        assert RebalanceScheduler(MagicMock(), 'bimonthly')._get_allowed_months() == [1, 3, 5, 7, 9, 11]
+        assert RebalanceScheduler(MagicMock(), 'quarterly')._get_allowed_months() == [1, 4, 7, 10]
+        assert RebalanceScheduler(MagicMock(), 'weekly')._get_allowed_months() == list(range(1, 13))
+        assert RebalanceScheduler(MagicMock(), 'daily')._get_allowed_months() == list(range(1, 13))
+    
+    def test_first_trading_day_of_month(self):
+        """测试首交易日计算"""
+        from scheduler import RebalanceScheduler
+        from unittest.mock import MagicMock
+        
+        scheduler = RebalanceScheduler(MagicMock())
+        
+        # 2024-01-01 是周一但也是 New Year's Day 假日，所以首日应为 2024-01-02
+        assert scheduler._get_first_trading_day_of_month(2024, 1) == datetime(2024, 1, 2).date()
+        
+        # 2024-04-01 是周一且为交易日，应为首日
+        assert scheduler._get_first_trading_day_of_month(2024, 4) == datetime(2024, 4, 1).date()
+        
+        # 2024-03-01 是周五，受周末影响首日为 2024-03-04（周一）
+        assert scheduler._get_first_trading_day_of_month(2024, 3) == datetime(2024, 3, 1).date()
+    
+    def test_weekly_rebalance(self):
+        """测试每周一调仓"""
+        from scheduler import RebalanceScheduler, NY_TZ
+        from unittest.mock import MagicMock
+        
+        scheduler = RebalanceScheduler(MagicMock(), rebalance_frequency='weekly')
+        
+        # 2024-01-08 是周一，10:00 ET 应触发
+        monday_open = datetime(2024, 1, 8, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(monday_open) == True, "周一 10:00 ET 应触发周频调仓"
+        
+        # 开盘前不触发
+        monday_early = datetime(2024, 1, 8, 9, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(monday_early) == False, "开盘前不应触发"
+        
+        # 周二不触发
+        tuesday = datetime(2024, 1, 9, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(tuesday) == False, "周二不应触发周频调仓"
+    
+    def test_bimonthly_rebalance(self):
+        """测试双月调仓：只在奇数月份首日触发"""
+        from scheduler import RebalanceScheduler, NY_TZ
+        from unittest.mock import MagicMock
+        
+        scheduler = RebalanceScheduler(MagicMock(), rebalance_frequency='bimonthly')
+        
+        # 2024-01-02 是 1 月首个交易日，应触发
+        jan_first = datetime(2024, 1, 2, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(jan_first) == True, "双月频应在 1 月首日触发"
+        
+        # 2024-02-01 不在允许月份
+        feb_first = datetime(2024, 2, 1, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(feb_first) == False, "2 月不应触发双月频调仓"
+    
+    def test_quarterly_rebalance(self):
+        """测试季度调仓：只在 1/4/7/10 月首日触发"""
+        from scheduler import RebalanceScheduler, NY_TZ
+        from unittest.mock import MagicMock
+        
+        scheduler = RebalanceScheduler(MagicMock(), rebalance_frequency='quarterly')
+        
+        # 2024-04-01 是 4 月首个交易日，应触发
+        apr_first = datetime(2024, 4, 1, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(apr_first) == True, "季度频应在 4 月首日触发"
+        
+        # 2024-05-01 不在允许月份
+        may_first = datetime(2024, 5, 1, 10, 0, tzinfo=NY_TZ)
+        assert scheduler.should_rebalance(may_first) == False, "5 月不应触发季度频调仓"
+    
+    def test_next_rebalance_date(self):
+        """测试下次调仓日期计算"""
+        from scheduler import RebalanceScheduler
+        from unittest.mock import MagicMock
+        
+        # 周频：下次是周一
+        weekly = RebalanceScheduler(MagicMock(), 'weekly')
+        next_weekly = weekly.get_next_rebalance_date()
+        assert next_weekly.weekday() == 0, "周频下次调仓应为周一"
+        
+        # 季度频：下次应在 1/4/7/10 月
+        quarterly = RebalanceScheduler(MagicMock(), 'quarterly')
+        next_quarter = quarterly.get_next_rebalance_date()
+        assert next_quarter.month in [1, 4, 7, 10], "季度频下次调仓月份应为 1/4/7/10"
 
 
 # ============================================================
@@ -441,7 +532,7 @@ class TestUnifiedBacktest:
     
     def test_generate_signals_mock(self):
         """测试信号生成（模拟数据）"""
-        from run_strategy import V14Strategy
+        from strategies.v14 import V14Strategy
         
         strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
         
@@ -462,7 +553,7 @@ class TestUnifiedBacktest:
     
     def test_backtest_empty_data(self):
         """测试空数据保护"""
-        from run_strategy import V14Strategy
+        from strategies.v14 import V14Strategy
         
         strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
         
@@ -1126,6 +1217,105 @@ class TestVersion:
         with pytest.raises(SystemExit) as exc_info:
             parse_args(['--version'])
         assert exc_info.value.code == 0
+
+
+# ============================================================
+# 16. 最小示例策略测试（验证 BaseStrategy 可复用性）
+# ============================================================
+
+class TestMinimalExampleStrategy:
+    """测试最小示例策略，验证新策略可复用 BaseStrategy 接口"""
+
+    def test_import_and_subclass(self):
+        """测试最小策略可导入并继承 BaseStrategy"""
+        from strategies import MinimalExampleStrategy, BaseStrategy
+        assert issubclass(MinimalExampleStrategy, BaseStrategy)
+
+    def test_init_default_symbols(self):
+        """测试默认标的列表"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        assert strategy.symbols == MinimalExampleStrategy.DEFAULT_SYMBOLS
+        assert strategy.config is None
+
+    def test_generate_signals_equal_weight(self):
+        """测试生成等权重信号"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        signals = strategy.generate_signals()
+        assert len(signals) == len(strategy.symbols)
+        assert abs(sum(signals.values()) - 1.0) < 1e-6
+        for sym in strategy.symbols:
+            assert sym in signals
+
+    def test_run_backtest(self):
+        """测试最小回测流程"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        result = strategy.run_backtest(start_date='2023-01-01', end_date='2023-12-31')
+        assert result['status'] == 'ok'
+        assert result['start_date'] == '2023-01-01'
+        assert result['end_date'] == '2023-12-31'
+        assert set(result['target_weights'].keys()) == set(strategy.symbols)
+        assert strategy.get_backtest_result() is result
+
+    def test_run_live_rebalance(self):
+        """测试最小 live rebalance 流程"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        strategy.run_live_rebalance()
+        assert strategy._status['rebalances'] == 1
+        assert strategy._status['live_trades'] == 1
+        assert strategy._last_signals == strategy.generate_signals()
+
+    def test_check_risk(self):
+        """测试风控检查通过"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        strategy.check_risk()  # 不应抛出异常
+
+    def test_get_status(self):
+        """测试状态快照"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        status = strategy.get_status()
+        assert status['strategy'] == 'MinimalExampleStrategy'
+        assert status['symbols'] == strategy.symbols
+        assert 'rebalances' in status
+        assert 'live_trades' in status
+
+    def test_get_signals_date_independence(self):
+        """测试 get_signals 对任意日期返回一致信号"""
+        from strategies import MinimalExampleStrategy
+        from datetime import datetime
+        strategy = MinimalExampleStrategy()
+        s1 = strategy.get_signals(datetime(2023, 1, 1))
+        s2 = strategy.get_signals(datetime(2024, 6, 15))
+        assert s1 == s2
+
+    def test_custom_symbols(self):
+        """测试可配置自定义标的"""
+        from strategies import MinimalExampleStrategy
+        custom = ['AAPL', 'TSLA']
+        strategy = MinimalExampleStrategy(symbols=custom)
+        assert strategy.symbols == custom
+        signals = strategy.generate_signals()
+        assert set(signals.keys()) == set(custom)
+        assert abs(sum(signals.values()) - 1.0) < 1e-6
+
+    def test_config_pass_through(self):
+        """测试 config 可透传"""
+        from strategies import MinimalExampleStrategy
+        config = {'trading': {'rebalance_frequency': 'daily'}}
+        strategy = MinimalExampleStrategy(config=config)
+        assert strategy.config == config
+
+    def test_repr(self):
+        """测试 repr"""
+        from strategies import MinimalExampleStrategy
+        strategy = MinimalExampleStrategy()
+        assert 'MinimalExampleStrategy' in repr(strategy)
+
 
 
 # ============================================================

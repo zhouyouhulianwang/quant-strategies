@@ -43,14 +43,16 @@ class TradingConfig(BaseModel):
     limit_order_offset_pct: float = Field(0.001, ge=0.0001, le=0.05)
     
     # 调仓频率（通过项目下的 config.json 配置，不依赖环境变量）
-    rebalance_frequency: str = Field('monthly', pattern='^(monthly|daily)$')
+    # monthly/bimonthly/quarterly/weekly 参考 QC 风格：在允许月份的首个交易日开盘后 30 分钟执行
+    # daily 为每个交易日收盘后执行
+    rebalance_frequency: str = Field('monthly', pattern='^(monthly|bimonthly|quarterly|weekly|daily)$')
     
     @field_validator('rebalance_frequency')
     @classmethod
     def rebalance_frequency_must_be_valid(cls, v):
-        """调仓频率必须是 monthly 或 daily"""
-        if v not in ('monthly', 'daily'):
-            raise ValueError("rebalance_frequency 必须是 'monthly' 或 'daily'")
+        """调仓频率必须是 monthly / bimonthly / quarterly / weekly / daily 之一"""
+        if v not in ('monthly', 'bimonthly', 'quarterly', 'weekly', 'daily'):
+            raise ValueError("rebalance_frequency 必须是 'monthly' / 'bimonthly' / 'quarterly' / 'weekly' / 'daily'")
         return v
     
     @field_validator('market_close_cutoff_minutes')
