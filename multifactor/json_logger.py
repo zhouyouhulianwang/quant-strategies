@@ -25,10 +25,20 @@ class StructuredLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
 
-        # 清除现有处理器，避免重复
-        self.logger.handlers.clear()
+        # 幂等添加 JSON handler：仅当不存在 JSON 格式 handler 时才添加，
+        # 避免清空共享配置（如 logging_config.setup_logging 已设置的 handler）。
+        self._ensure_json_handler()
 
-        # 添加 JSON 处理器
+    def _has_json_handler(self) -> bool:
+        """检查 logger 是否已有 JSON 格式输出 handler"""
+        for handler in self.logger.handlers:
+            if isinstance(handler.formatter, JSONFormatter):
+                return True
+        return False
+
+    def _ensure_json_handler(self) -> None:
+        if self._has_json_handler():
+            return
         handler = logging.StreamHandler()
         handler.setFormatter(JSONFormatter())
         self.logger.addHandler(handler)

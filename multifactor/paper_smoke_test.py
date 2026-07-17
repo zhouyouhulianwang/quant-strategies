@@ -74,6 +74,7 @@ def main(argv=None) -> int:
         api_key=api_key,
         api_secret=secret_key,
         paper=paper,
+        base_url=base_url,
         risk_monitor=None,  # smoke test bypasses risk monitor
     )
 

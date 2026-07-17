@@ -16,6 +16,7 @@ from logging_config import setup_logging
 from runtime_cleanup import cleanup_old_files
 from strategies.v14 import V14Strategy
 from alpaca_executor import ALPACA_AVAILABLE
+from config import get_config, reload_config
 
 # 向后兼容：保留顶层导入
 __all__ = ['V14Strategy']
@@ -48,8 +49,6 @@ def main(argv=None):
     参数:
         argv: 可选参数列表，用于测试注入；默认使用 sys.argv。
     """
-    cleanup_runtime_files()
-
     parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--backtest', action='store_true', help='Run backtest using real data')
@@ -57,6 +56,7 @@ def main(argv=None):
     group.add_argument('--live', action='store_true', help='Run Alpaca Live Trading (real money)')
     group.add_argument('--mock', action='store_true', help='Run local simulation with mock data (no real API)')
     parser.add_argument('--real-data', action='store_true', help='Use real data')
+    parser.add_argument('--no-real-data', action='store_true', help='Use mock data instead of real data')
     parser.add_argument('--start', type=str, help='Start date YYYY-MM-DD')
     parser.add_argument('--end', type=str, help='End date YYYY-MM-DD')
 
@@ -69,6 +69,9 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
+    # P2-2: 解析参数后再执行清理，避免未解析到有效参数时仍产生副作用
+    cleanup_runtime_files()
+
     # --live 必须显式确认，避免误触实盘
     if args.live and not args.confirm_live:
         parser.error('--live requires --confirm-live to avoid accidental real-money trading')
@@ -80,11 +83,34 @@ def main(argv=None):
             "Run: pip install alpaca-py"
         )
 
+    # P1-5: --paper/--live 与 config.json 中的 alpaca_base_url 冲突时 fail-fast
+    if args.paper or args.live:
+        config = reload_config()
+        expected_base_url = 'https://paper-api.alpaca.markets' if args.paper else 'https://api.alpaca.markets'
+        if config.alpaca_base_url != expected_base_url:
+            parser.error(
+                f" alpaca_base_url 与运行模式冲突: "
+                f"mode={'paper' if args.paper else 'live'}, "
+                f"config.alpaca_base_url={config.alpaca_base_url}. "
+                f"Expected {expected_base_url}."
+            )
+
     # 初始化策略：paper/live/mock 明确区分
     use_paper_trading = args.paper or args.live
     paper = args.paper  # True=paper, False=live
+
+    # P2-3: --real-data / --no-real-data 显式控制 use_real_data，--mock 默认关闭
+    if args.mock or args.no_real_data:
+        use_real_data = False
+    elif args.real_data:
+        use_real_data = True
+    elif args.backtest or args.paper or args.live:
+        use_real_data = True
+    else:
+        use_real_data = False
+
     strategy_kwargs = {
-        'use_real_data': True,
+        'use_real_data': use_real_data,
         'enable_risk_monitor': True,
         'enable_intraday_monitor': args.monitor,
         'weight_method': args.weight_method,
@@ -92,17 +118,14 @@ def main(argv=None):
     if use_paper_trading:
         strategy_kwargs['use_paper_trading'] = True
         strategy_kwargs['paper'] = paper
-    if args.mock:
-        # 本地模拟使用 mock 数据，不连接任何真实 API
-        strategy_kwargs['use_real_data'] = False
 
     strategy = V14Strategy(**strategy_kwargs)
 
-    # 检查数据可用性（backtest/paper/live 默认需要真实数据，mock 使用本地数据）
-    if not strategy.use_real_data and not args.mock:
-        logger.error("[ERROR] Real data unavailable, please check network connection or data source configuration")
+    # 检查数据可用性：显式要求真实数据时若不可用则失败
+    if args.real_data and not strategy.use_real_data and not args.mock:
+        logger.error("[ERROR] Real data requested but unavailable, please check network connection or data source configuration")
         logger.error("   Please configure QuantConnect Lean CLI")
-        logger.error("   Backtest aborted, mock data not used")
+        logger.error("   Backtest aborted")
         return 1
 
     if args.backtest or args.mock:

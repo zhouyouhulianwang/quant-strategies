@@ -2424,6 +2424,11 @@ class TestCLIPaperLiveMock:
         mock_strategy.run_backtest.assert_called_once()
         mock_strategy.run_live_rebalance.assert_not_called()
 
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456',
+        'ALPACA_BASE_URL': 'https://api.alpaca.markets',
+    })
     def test_run_strategy_live_with_confirm_runs_live_rebalance(self):
         """P1: --live --confirm-live 执行实盘调仓"""
         from run_strategy import main

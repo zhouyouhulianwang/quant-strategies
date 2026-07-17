@@ -19,6 +19,12 @@ import os
 from requests.exceptions import RequestException, ConnectionError, Timeout
 
 try:
+    from alpaca_executor import APIError
+except ImportError:
+    class APIError(Exception):
+        pass
+
+try:
     from matching_engine import ExecutionParameters, default_execution_params
     MATCHING_ENGINE_AVAILABLE = True
 except ImportError:
@@ -307,7 +313,7 @@ class OrderManager:
                 self._send_alert('pdt_blocked', symbol, side, qty, pdt_check.get('reason', 'unknown'))
                 return {'status': 'REJECTED', 'symbol': symbol, 'reason': pdt_check['reason']}
         
-        # 1. 提交订单（P1-1 修复：网络/API 失败时指数退避重试，明确拒绝直接失败）
+        # 1. 提交订单（P2-4 修复：仅在网络/瞬态错误时重试，明确拒绝直接失败）
         order = None
         last_error = None
         for attempt in range(3):
@@ -322,11 +328,26 @@ class OrderManager:
                 if order is not None:
                     break
                 logger.warning(f"submit_order returned None for {symbol} {side}, attempt {attempt + 1}/3")
+                last_error = Exception("submit_order returned None")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
+                # 网络/瞬态错误，指数退避重试
                 last_error = e
                 logger.warning(f"submit_order network error for {symbol} {side}, attempt {attempt + 1}/3: {e}")
                 if attempt < 2:
                     time.sleep(2 ** attempt)
+            except APIError as e:
+                # P2-4：明确业务拒绝（PDT、资金、风控等）不重试；仅瞬态 API 错误重试
+                error_message = str(e).lower()
+                transient_api = any(k in error_message for k in ('rate limit', 'gateway', 'timeout', '503', '504'))
+                if transient_api and attempt < 2:
+                    last_error = e
+                    logger.warning(f"submit_order transient API error for {symbol} {side}, attempt {attempt + 1}/3: {e}")
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.error(f"submit_order API rejection for {symbol} {side}: {e}")
+                    return {'status': 'FAILED', 'symbol': symbol, 'reason': f'api_error: {e}'}
             except ValueError as e:
                 # 明确参数错误，不重试
                 logger.error(f"submit_order parameter error for {symbol} {side}: {e}")
@@ -346,8 +367,12 @@ class OrderManager:
             return {'status': 'FAILED', 'symbol': symbol, 'reason': 'submit_failed'}
         
         order_id = order['id']
-        # P1/P2 修复：初始化订单元数据并迁移到 SUBMITTED
-        self.order_metadata[order_id] = {'symbol': symbol, 'qty': qty, 'side': side}
+        # P1/P2 修复：初始化订单元数据（含子订单追踪）并迁移到 SUBMITTED
+        self.order_metadata[order_id] = {
+            'symbol': symbol, 'qty': qty, 'side': side,
+            'child_orders': [],
+            'composite_status': None,
+        }
         self._transition(order_id, OrderState.SUBMITTED, symbol=symbol, qty=qty, reason='order_submitted', source='submit_and_wait')
         logger.info(f"[ORDER] Order submitted: {order_id} {side} {qty} {symbol}")
         
@@ -390,7 +415,7 @@ class OrderManager:
                 # 部分成交也记录
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
-                # M1 / P0-3 修复：部分成交后先撤销原订单，再对剩余数量补单
+                # M1 / P0-3 / P1-2 修复：部分成交后先撤销原订单，再对剩余数量补单
                 if remaining_qty > 0:
                     makeup = self._place_makeup_with_cancel(
                         order_id, symbol, remaining_qty, side, order_type, time_in_force, limit_price,
@@ -398,8 +423,13 @@ class OrderManager:
                     )
                     if makeup:
                         final_status = self._merge_makeup_status(final_status, makeup, qty)
+                        # P1-2：原订单已被撤销，状态保持 CANCELLED；组合订单结果写入元数据
+                        self.order_metadata[order_id].setdefault('child_orders', []).append(makeup)
+                        self.order_metadata[order_id]['composite_status'] = final_status.get('status')
+                        self.order_metadata[order_id]['composite_filled'] = final_status.get('filled_qty')
+                        self.order_metadata[order_id]['composite_remaining'] = final_status.get('remaining_qty')
                         if final_status.get('status') == 'filled':
-                            self._transition(order_id, OrderState.FILLED, symbol=symbol, qty=qty, filled=final_status.get('filled_qty', filled_qty), reason='filled_after_makeup', source='makeup')
+                            logger.info(f"[OK] Original order {order_id} cancelled; combined fill via makeup: filled={final_status.get('filled_qty')}/{qty}")
             elif final_status['status'] in ('canceled', 'expired'):
                 self._transition(order_id, OrderState.CANCELLED, symbol=symbol, qty=qty, filled=filled_qty, reason=final_status['status'], source='poll_result')
                 logger.warning(f"[WARN] Order {final_status['status']}: {symbol}")
@@ -454,10 +484,14 @@ class OrderManager:
                         timeout_result['filled_qty'] = merged['filled_qty']
                         timeout_result['remaining_qty'] = merged['remaining_qty']
                         timeout_result['makeup_order'] = merged.get('makeup_order')
+                        self.order_metadata[order_id].setdefault('child_orders', []).append(makeup)
+                        self.order_metadata[order_id]['composite_status'] = merged.get('status')
+                        self.order_metadata[order_id]['composite_filled'] = merged.get('filled_qty')
+                        self.order_metadata[order_id]['composite_remaining'] = merged.get('remaining_qty')
                         # 若补单完全成交，整体视为 filled；否则仍标记为 TIMEOUT
                         if merged['status'] == 'filled':
                             timeout_result['status'] = 'filled'
-                            self._transition(order_id, OrderState.FILLED, symbol=symbol, qty=qty, filled=timeout_result['filled_qty'], reason='filled_after_timeout_makeup', source='makeup')
+                            logger.info(f"[OK] Timed-out order {order_id} combined fill via makeup: filled={timeout_result['filled_qty']}/{qty}")
                 return timeout_result
 
             self._log_order({
@@ -586,6 +620,19 @@ class RebalanceManager:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
                 logger.debug(f"Alert send failed: {e}")
+
+    def _cancel_open_orders_for_symbol(self, symbol: str):
+        """P1-4 修复：取消同一标的尚未完结的订单，避免补单与内部 makeup 并发"""
+        try:
+            open_orders = self.executor.get_orders(status='open')
+            for o in open_orders:
+                if o.get('symbol') == symbol:
+                    order_id = o.get('id')
+                    if order_id:
+                        logger.warning(f"[TOPUP] Cancelling outstanding order {order_id} for {symbol} before top-up")
+                        self.executor.cancel_order(order_id)
+        except Exception as e:
+            logger.warning(f"Failed to cancel open orders for {symbol}: {e}")
     
     def rebalance(self, target_positions: Dict[str, float], 
                   max_position_pct=0.20,
@@ -701,9 +748,30 @@ class RebalanceManager:
         
         # 执行买入/调整（逐个执行，失败时回滚）
         failed_buy = False
+
+        # P1-7 修复：循环买入前汇总所有买入金额，与可用购买力（含卖出释放资金）比较
+        buy_only_orders = [o for o in buy_orders if o['side'] == 'buy']
+        if buy_only_orders:
+            total_buy_notional = sum(o['qty'] * o['current_price'] for o in buy_only_orders)
+            account = self.executor.get_account()
+            available_bp = account.get('buying_power', 0.0) if account else 0.0
+            if total_buy_notional > available_bp:
+                logger.error(
+                    f"[BUYING_POWER] Total buy notional ${total_buy_notional:.2f} exceeds "
+                    f"available buying power ${available_bp:.2f}; aborting buy loop and triggering rollback"
+                )
+                self._send_alert(
+                    'risk_triggered', 'INSUFFICIENT_BUYING_POWER',
+                    f"Total buy notional ${total_buy_notional:.2f} > buying power ${available_bp:.2f}",
+                    {'total_buy_notional': total_buy_notional, 'buying_power': available_bp}
+                )
+                failed_buy = True
+
         for order in buy_orders:
+            if failed_buy:
+                break
             try:
-                # P1 修复：买入前检查购买力
+                # P1 修复：买入前检查购买力（单订单兜底，保留作为二次防护）
                 if order['side'] == 'buy':
                     account = self.executor.get_account()
                     if account and order['qty'] * order['current_price'] > account.get('buying_power', 0):
@@ -741,6 +809,8 @@ class RebalanceManager:
                     is_insufficient_fill = status == 'partially_filled' and fill_ratio < min_buy_fill_ratio
                     
                     if is_insufficient_fill and topup_on_partial:
+                        # P1-4 修复：topup 前取消尚未完结的同类补单，避免同标的多个活跃订单
+                        self._cancel_open_orders_for_symbol(order['symbol'])
                         # P1-3 修复：部分成交时优先补单，避免直接全仓回滚
                         remaining_qty = ordered_qty - filled_qty
                         logger.warning(

@@ -11,6 +11,7 @@ import logging
 import json
 import os
 import threading
+import tempfile
 
 # 日志设置（P2修复：统一使用 logging_config 的格式）
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ class RiskMonitor:
         # P1: 持久化相关状态
         self.state_file = state_file or os.path.join(DATA_DIR, 'risk_state.json')
         self.kill_switch_file = kill_switch_file or os.path.join(DATA_DIR, 'kill_switch')
-        self._kill_switch_triggered = False
+        self._kill_switch_triggered_flag = False
         self.halt_reason = None
         self.halt_time = None
         self.max_dd_seen = 0.0
@@ -88,7 +89,7 @@ class RiskMonitor:
         self.position_history = []
         
         # 风险状态
-        self.risk_level = 'NORMAL'  # NORMAL, ELEVATED, HIGH, CRITICAL
+        self._risk_level = 'NORMAL'  # NORMAL, ELEVATED, HIGH, CRITICAL
         
         # 启动时加载历史状态
         self._load_state()
@@ -110,6 +111,50 @@ class RiskMonitor:
         with self._lock:
             self._trading_halted = value
     
+    @property
+    def risk_level(self):
+        """线程安全读取风险等级"""
+        with self._lock:
+            return self._risk_level
+    
+    @risk_level.setter
+    def risk_level(self, value):
+        """线程安全写入风险等级"""
+        with self._lock:
+            self._risk_level = value
+    
+    @property
+    def _kill_switch_triggered(self):
+        """线程安全读取 kill switch 状态"""
+        with self._lock:
+            return self._kill_switch_triggered_flag
+    
+    @_kill_switch_triggered.setter
+    def _kill_switch_triggered(self, value):
+        """线程安全写入 kill switch 状态"""
+        with self._lock:
+            self._kill_switch_triggered_flag = value
+    
+    def _atomic_write_json(self, filepath, data, chmod_mode=None):
+        """原子写入 JSON 文件：临时文件写入后 os.replace 替换目标文件"""
+        dirname = os.path.dirname(filepath)
+        os.makedirs(dirname, exist_ok=True)
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=dirname, suffix='.tmp')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp_path, filepath)
+            if chmod_mode is not None:
+                os.chmod(filepath, chmod_mode)
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
+    
     def _load_state(self):
         """从历史状态文件加载风控状态"""
         if not os.path.exists(self.state_file):
@@ -125,26 +170,24 @@ class RiskMonitor:
                 halt_time_str = state.get('halt_time')
                 self.halt_time = datetime.fromisoformat(halt_time_str) if halt_time_str else None
                 self.max_dd_seen = float(state.get('max_dd_seen', 0.0))
-                self._kill_switch_triggered = bool(state.get('kill_switch_triggered', False))
+                self._kill_switch_triggered_flag = bool(state.get('kill_switch_triggered', False))
             logger.info(f"[OK] Loaded risk state from {self.state_file}")
         except Exception as e:
             logger.warning(f"Failed to load risk state from {self.state_file}: {e}")
     
     def persist_state(self):
-        """将风控状态持久化到磁盘"""
+        """将风控状态持久化到磁盘（原子写入 + 0o600 权限）"""
         try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             with self._lock:
                 state = {
                     'trading_halted': self._trading_halted,
                     'halt_reason': self.halt_reason,
                     'halt_time': self.halt_time.isoformat() if self.halt_time else None,
                     'max_dd_seen': self.max_dd_seen,
-                    'kill_switch_triggered': self._kill_switch_triggered,
+                    'kill_switch_triggered': self._kill_switch_triggered_flag,
                     'persisted_at': datetime.now().isoformat(),
                 }
-            with open(self.state_file, 'w', encoding='utf-8') as f:
-                json.dump(state, f, indent=2, default=str)
+            self._atomic_write_json(self.state_file, state, chmod_mode=0o600)
         except Exception as e:
             logger.error(f"Failed to persist risk state: {e}")
     
@@ -471,8 +514,7 @@ class RiskMonitor:
 
         # 保存
         try:
-            with open(filepath, 'w') as f:
-                json.dump(alerts, f, indent=2, default=str)
+            self._atomic_write_json(filepath, alerts)
         except Exception as e:
             logger.error(f"Failed to save alert file: {e}")
     
@@ -512,8 +554,7 @@ class RiskMonitor:
         filename = f"risk_report_{datetime.now():%Y%m%d_%H%M%S}.json"
         filepath = os.path.join(ALERTS_DIR, filename)
         
-        with open(filepath, 'w') as f:
-            json.dump(report, f, indent=2, default=str)
+        self._atomic_write_json(filepath, report)
         
         logger.info(f"[OK] Risk report generated: {filepath}")
         return report

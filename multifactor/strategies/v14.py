@@ -176,6 +176,7 @@ class V14Strategy(BaseStrategy):
             executor_kwargs = {}
             if self.config:
                 executor_kwargs = {
+                    'base_url': self.config.alpaca_base_url,
                     'paper': paper,
                     'enable_pdt': self.config.trading.enable_pdt_check,
                     'pdt_min_equity': self.config.trading.pdt_min_equity,
@@ -207,9 +208,13 @@ class V14Strategy(BaseStrategy):
                 check_interval = self.config.trading.check_interval
                 vix_emergency_level = getattr(self.config.risk, 'vix_panic_threshold', 35.0)
                 max_total_drawdown = getattr(self.config.risk, 'max_drawdown_limit', 0.15)
+                max_intraday_dd = getattr(self.config.risk, 'max_intraday_dd', 0.10)
+                single_stock_limit = getattr(self.config.risk, 'single_stock_limit', 0.05)
             else:
                 vix_emergency_level = 35.0
                 max_total_drawdown = 0.15
+                max_intraday_dd = 0.10
+                single_stock_limit = 0.05
 
             class V14IntradayMonitor(IntradayMonitor):
                 def __init__(inner_self, *args, **kwargs):
@@ -246,7 +251,9 @@ class V14Strategy(BaseStrategy):
                 risk_monitor=self.risk_monitor,
                 check_interval=check_interval,
                 vix_emergency_level=vix_emergency_level,
-                max_total_drawdown=max_total_drawdown
+                max_total_drawdown=max_total_drawdown,
+                max_intraday_dd=max_intraday_dd,
+                single_stock_limit=single_stock_limit,
             )
             self.intraday_monitor.start()
             logger.info("[OK] Intraday monitor enabled")
@@ -589,17 +596,8 @@ class V14Strategy(BaseStrategy):
     # BaseStrategy implementation: live rebalance / trading
     # ------------------------------------------------------------------
 
-    def run_live_rebalance(self):
-        """运行实盘再平衡 - 全自动流程。"""
-        if not self.executor:
-            logger.error("Alpaca Paper Trading not enabled")
-            return
-
-        if not self.executor.market_is_open():
-            logger.warning("[WARN] Market not open, skipping this live rebalance")
-            logger.warning("   V14 is an end-of-month EOD strategy, recommended to run after market open")
-            return
-
+    def _check_market_close_protection(self):
+        """检查是否已过收盘保护时间，超过则返回 True 并记录警告。"""
         cutoff_minutes = 15
         if self.config and hasattr(self.config, 'trading'):
             cutoff_minutes = getattr(self.config.trading, 'market_close_cutoff_minutes', 15)
@@ -612,6 +610,22 @@ class V14Strategy(BaseStrategy):
             now = datetime.now()
         if now.hour > cutoff_hour or (now.hour == cutoff_hour and now.minute >= cutoff_minute):
             logger.warning(f"[WARN] Past market-close protection time {cutoff_hour:02d}:{cutoff_minute:02d} ET, rejecting new rebalance")
+            return True
+        return False
+
+    def run_live_rebalance(self):
+        """运行实盘再平衡 - 全自动流程。"""
+        if not self.executor:
+            logger.error("Alpaca Paper Trading not enabled")
+            return
+
+        if not self.executor.market_is_open():
+            logger.warning("[WARN] Market not open, skipping this live rebalance")
+            logger.warning("   V14 is an end-of-month EOD strategy, recommended to run after market open")
+            return
+
+        # P1-8: 进入时再检查一次收盘保护（后续 live_trade 下单前会再次检查）
+        if self._check_market_close_protection():
             return
 
         self.executor.start_rebalance_session()
@@ -666,6 +680,10 @@ class V14Strategy(BaseStrategy):
 
         if self.risk_monitor and self.risk_monitor.trading_halted:
             logger.warning("[WARN] Trading halted (risk monitor triggered)")
+            return
+
+        # P1-8: 下单前再次检查收盘保护，防止进入函数后时间流逝进入禁区
+        if self._check_market_close_protection():
             return
 
         logger.info(f"\n{'='*60}")

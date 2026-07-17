@@ -159,9 +159,8 @@ class PDTTracker:
             cutoff_str = (today - timedelta(days=7)).isoformat()
 
         recent = [dt for dt in self.day_trade_history if dt['date'] >= cutoff_str]
-        # 同一 symbol 同一天多次 day trade 合并计为一次
-        unique = {(dt['date'], dt['symbol']) for dt in recent}
-        return len(unique)
+        # P1-3 修复：按实际 day trade 记录次数累加，不再按 symbol+date 去重
+        return len(recent)
 
     def sync_positions(self, positions: List[Dict[str, Any]],
                          broker_daytrade_count: Optional[int] = None,
@@ -281,18 +280,17 @@ class PDTTracker:
         pass
 
     def _record_day_trade(self, symbol: str, qty: int):
-        """记录一次 day trade 并持久化"""
+        """记录一次 day trade 并持久化（P1-3：按实际配对记录，不合并同一天同 symbol）"""
         today_str = self._today().isoformat()
-        key = (today_str, symbol)
-        existing = {(dt['date'], dt['symbol']) for dt in self.day_trade_history}
-        if key not in existing:
-            self.day_trade_history.append({
-                'date': today_str,
-                'symbol': symbol,
-                'qty': int(qty),
-            })
-            self._persist_state()
-            logger.warning(f"⚠️ 记录 day trade: {symbol} x {qty} on {today_str} [{self.account_id}]")
+        # P1-3 修复：每次触发都单独记录，保守累加；qty 用于审计/按比例计算
+        self.day_trade_history.append({
+            'date': today_str,
+            'symbol': symbol,
+            'qty': int(qty),
+        })
+        self._persist_state()
+        logger.warning(f"⚠️ 记录 day trade: {symbol} x {qty} on {today_str} [{self.account_id}]")
+
 
     def can_open_position(
         self,

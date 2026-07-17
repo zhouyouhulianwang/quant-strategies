@@ -822,21 +822,17 @@ class AlpacaPaperExecutor:
         return 'market', None
 
     def _maybe_halt_on_rejections(self):
-        """M8 修复：连续订单被拒绝超过阈值时熔断暂停交易"""
+        """M8 / P1-6 修复：连续订单被拒绝超过阈值时，通过 RiskMonitor.halt_trading 熔断"""
         if self._consecutive_rejections >= self._max_consecutive_rejections:
-            logger.critical(
-                f"[CIRCUIT_BREAKER] {self._consecutive_rejections} consecutive order rejections, "
-                f"halting trading"
-            )
-            if self.risk_monitor is not None:
+            reason = f"{self._consecutive_rejections} consecutive order rejections"
+            logger.critical(f"[CIRCUIT_BREAKER] {reason}, halting trading")
+            if self.risk_monitor is not None and hasattr(self.risk_monitor, 'halt_trading'):
                 try:
-                    self.risk_monitor.trading_halted = True
+                    self.risk_monitor.halt_trading(reason, alert_type='CIRCUIT_BREAKER')
                 except Exception as e:
-                    logger.warning(f"Failed to set risk_monitor.trading_halted: {e}")
-            self._send_alert(
-                'risk_triggered', 'CIRCUIT_BREAKER',
-                f"{self._consecutive_rejections} consecutive order rejections"
-            )
+                    logger.warning(f"Failed to halt trading via risk_monitor.halt_trading: {e}")
+            else:
+                self._send_alert('risk_triggered', 'CIRCUIT_BREAKER', reason)
 
     def _build_order_request(
         self,
@@ -1151,10 +1147,22 @@ class AlpacaPaperExecutor:
             logger.error(f"Failed to get orders: {e}")
             return []
 
+    def _parse_submitted_at(self, value) -> Optional[datetime]:
+        """将订单 submitted_at 统一转换为 datetime，供 SDK 分页使用"""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            # 兼容 ISO 字符串与末尾 'Z'
+            return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        except Exception:
+            return None
+
     def get_all_orders(self, status='all', page_size=100, max_pages=100) -> List[Dict]:
         """
         P2 修复：循环分页获取所有历史订单，直到取完或达到 max_pages。
-        兼容 alpaca-py SDK：使用 until 按时间切片。
+        兼容 alpaca-py SDK：until 使用 datetime 类型。
         """
         if not self.trading_client:
             logger.info("[ORDERS] Mock mode: returning all mock orders")
@@ -1184,7 +1192,7 @@ class AlpacaPaperExecutor:
                 all_orders.extend(batch_dicts)
                 # 本批最旧订单的提交时间作为下一批 until（不含该时间）
                 oldest = min(batch_dicts, key=lambda o: o.get('submitted_at') or '9999')
-                submitted_at = oldest.get('submitted_at')
+                submitted_at = self._parse_submitted_at(oldest.get('submitted_at'))
                 if not submitted_at or submitted_at == current_until:
                     break
                 current_until = submitted_at

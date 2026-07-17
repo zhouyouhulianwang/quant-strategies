@@ -101,6 +101,9 @@ def _encrypt_backup_dir(backup_dir: Path, key: str) -> Path:
     with open(enc_path, "wb") as f:
         f.write(salt + encrypted)
 
+    # 加密文件权限限制为 600
+    enc_path.chmod(0o600)
+
     # 删除未加密残留
     shutil.rmtree(backup_dir)
     tar_path.unlink()
@@ -109,6 +112,7 @@ def _encrypt_backup_dir(backup_dir: Path, key: str) -> Path:
 
 def _decrypt_backup(enc_path: Path, key: str, dest: Path) -> Path:
     """解密 .enc.tar.gz 备份并解压到 dest。"""
+    dest.mkdir(parents=True, exist_ok=True)
     with open(enc_path, "rb") as f:
         data = f.read()
     salt = data[:16]

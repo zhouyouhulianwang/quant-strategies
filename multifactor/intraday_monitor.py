@@ -72,8 +72,12 @@ class IntradayMonitor:
         # 线程锁（防止和主交易线程竞态）
         # P0: 交易暂停状态统一由 RiskMonitor 持有，本模块仅做代理
         
+        # P1-4: 统一锁保护 monitoring、daily_high_nav、peak_nav、
+        # _current_date 和 _pending_liquidation_reasons 等可变状态
+        self._lock = threading.Lock()
+        
         # 状态
-        self.monitoring = False
+        self._monitoring = False
         self.monitor_thread = None
         self.daily_high_nav = None
         self.last_check_time = None
@@ -112,6 +116,18 @@ class IntradayMonitor:
         if self.risk_monitor:
             self.risk_monitor.trading_halted = value
     
+    @property
+    def monitoring(self):
+        """线程安全读取监控运行状态"""
+        with self._lock:
+            return self._monitoring
+    
+    @monitoring.setter
+    def monitoring(self, value):
+        """线程安全写入监控运行状态"""
+        with self._lock:
+            self._monitoring = value
+    
     def _load_state(self):
         """加载历史状态（如存在）"""
         if not os.path.exists(self.state_file):
@@ -121,16 +137,17 @@ class IntradayMonitor:
                 state = json.load(f)
             if not isinstance(state, dict):
                 return
-            self.daily_high_nav = state.get('daily_high_nav')
-            self.peak_nav = state.get('peak_nav')
-            current_date_str = state.get('current_date')
-            self._current_date = (
-                datetime.fromisoformat(current_date_str).date()
-                if current_date_str else None
-            )
-            self._pending_liquidation_reasons = state.get('pending_liquidation_reasons', [])
-            if not isinstance(self._pending_liquidation_reasons, list):
-                self._pending_liquidation_reasons = []
+            with self._lock:
+                self.daily_high_nav = state.get('daily_high_nav')
+                self.peak_nav = state.get('peak_nav')
+                current_date_str = state.get('current_date')
+                self._current_date = (
+                    datetime.fromisoformat(current_date_str).date()
+                    if current_date_str else None
+                )
+                self._pending_liquidation_reasons = state.get('pending_liquidation_reasons', [])
+                if not isinstance(self._pending_liquidation_reasons, list):
+                    self._pending_liquidation_reasons = []
             logger.info(f"[OK] Loaded intraday state from {self.state_file}")
         except Exception as e:
             logger.warning(f"Failed to load intraday state from {self.state_file}: {e}")
@@ -139,14 +156,15 @@ class IntradayMonitor:
         """将盘中状态持久化到磁盘"""
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            state = {
-                'daily_high_nav': self.daily_high_nav,
-                'peak_nav': self.peak_nav,
-                'current_date': self._current_date.isoformat() if self._current_date else None,
-                'pending_liquidation_reasons': self._pending_liquidation_reasons,
-                'monitoring': self.monitoring,
-                'persisted_at': datetime.now().isoformat(),
-            }
+            with self._lock:
+                state = {
+                    'daily_high_nav': self.daily_high_nav,
+                    'peak_nav': self.peak_nav,
+                    'current_date': self._current_date.isoformat() if self._current_date else None,
+                    'pending_liquidation_reasons': list(self._pending_liquidation_reasons),
+                    'monitoring': self._monitoring,
+                    'persisted_at': datetime.now().isoformat(),
+                }
             with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=2, default=str)
         except Exception as e:
@@ -158,10 +176,11 @@ class IntradayMonitor:
             'reason': reason,
             'timestamp': datetime.now().isoformat(),
         }
-        self._pending_liquidation_reasons.append(entry)
-        # 保留最近 N 条
-        while len(self._pending_liquidation_reasons) > self.max_pending_liquidations:
-            self._pending_liquidation_reasons.pop(0)
+        with self._lock:
+            self._pending_liquidation_reasons.append(entry)
+            # 保留最近 N 条
+            while len(self._pending_liquidation_reasons) > self.max_pending_liquidations:
+                self._pending_liquidation_reasons.pop(0)
         self.persist_state()
     
     def start(self, daemon=True):
@@ -205,17 +224,29 @@ class IntradayMonitor:
     
     def _monitor_loop(self):
         """监控循环"""
-        while self.monitoring:
+        while True:
+            with self._lock:
+                if not self._monitoring:
+                    break
             try:
                 # P0 修复：每日开盘时重置日内高点
                 today = datetime.now().date()
-                if self._current_date != today:
-                    self._current_date = today
+                with self._lock:
+                    if self._current_date != today:
+                        self._current_date = today
+                        reset_high = True
+                    else:
+                        reset_high = False
+                if reset_high:
                     self.reset_daily_high()
                     logger.info(f"[NEW_DAY] New day, intraday high reset: {today}")
 
                 # P1修复: 若收盘期间触发了强平但市场关闭，开盘后执行
-                while self._pending_liquidation_reasons:
+                while True:
+                    with self._lock:
+                        if not self._pending_liquidation_reasons:
+                            break
+                        reasons = [r['reason'] for r in self._pending_liquidation_reasons]
                     try:
                         market_open = self.executor.market_is_open()
                     except AttributeError:
@@ -223,7 +254,6 @@ class IntradayMonitor:
                     if market_open:
                         self._execute_pending_liquidation()
                     else:
-                        reasons = [r['reason'] for r in self._pending_liquidation_reasons]
                         logger.info(f"[PENDING] Pending liquidation reasons: {reasons}, waiting for market open...")
                         break
 
@@ -293,17 +323,17 @@ class IntradayMonitor:
             
             current_nav = account['portfolio_value']
             
-            # 初始化日内高点
-            if self.daily_high_nav is None:
-                self.daily_high_nav = current_nav
-            
-            # 更新高点
-            if current_nav > self.daily_high_nav:
-                self.daily_high_nav = current_nav
+            # 初始化/更新日内高点（P1-4 线程安全）
+            with self._lock:
+                if self.daily_high_nav is None:
+                    self.daily_high_nav = current_nav
+                if current_nav > self.daily_high_nav:
+                    self.daily_high_nav = current_nav
+                daily_high = self.daily_high_nav
             
             # 计算回撤
-            if self.daily_high_nav > 0:
-                drawdown = (current_nav - self.daily_high_nav) / self.daily_high_nav
+            if daily_high > 0:
+                drawdown = (current_nav - daily_high) / daily_high
                 
                 logger.debug(f"Intraday drawdown: {drawdown:.2%}")
                 
@@ -332,12 +362,14 @@ class IntradayMonitor:
             
             current_nav = account['portfolio_value']
             
-            # 初始化/更新累计高点
-            if self.peak_nav is None or current_nav > self.peak_nav:
-                self.peak_nav = current_nav
+            # 初始化/更新累计高点（P1-4 线程安全）
+            with self._lock:
+                if self.peak_nav is None or current_nav > self.peak_nav:
+                    self.peak_nav = current_nav
+                peak_nav = self.peak_nav
             
-            if self.peak_nav > 0:
-                drawdown = (current_nav - self.peak_nav) / self.peak_nav
+            if peak_nav > 0:
+                drawdown = (current_nav - peak_nav) / peak_nav
                 
                 logger.debug(f"Total drawdown: {drawdown:.2%}")
                 
@@ -415,9 +447,10 @@ class IntradayMonitor:
         """
         P1修复: 执行收盘期间记录下来的待处理强平，避免订单挂到次日开盘。
         """
-        if not self._pending_liquidation_reasons:
-            return
-        entry = self._pending_liquidation_reasons.pop(0)
+        with self._lock:
+            if not self._pending_liquidation_reasons:
+                return
+            entry = self._pending_liquidation_reasons.pop(0)
         reason = entry.get('reason', 'unknown')
         try:
             count = self.executor.liquidate_all()
@@ -426,7 +459,8 @@ class IntradayMonitor:
         except Exception as e:
             logger.critical(f"[ERROR] Pending liquidation execution failed: {e}")
             # 失败时重新标记待处理，下次循环再试
-            self._pending_liquidation_reasons.insert(0, entry)
+            with self._lock:
+                self._pending_liquidation_reasons.insert(0, entry)
         finally:
             self.persist_state()
 
@@ -539,21 +573,23 @@ class IntradayMonitor:
     
     def reset_daily_high(self):
         """重置日内高点（每天开盘调用）"""
-        self.daily_high_nav = None
+        with self._lock:
+            self.daily_high_nav = None
         logger.info("[RESET] Intraday high reset")
     
     def get_status(self):
         """获取监控状态"""
-        return {
-            'monitoring': self.monitoring,
-            'last_check': self.last_check_time.isoformat() if self.last_check_time else None,
-            'daily_high_nav': self.daily_high_nav,
-            'peak_nav': self.peak_nav,
-            'vix_threshold': self.vix_emergency_level,
-            'drawdown_limit': self.max_intraday_dd,
-            'total_drawdown_limit': self.max_total_drawdown,
-            'pending_liquidation_reasons': self._pending_liquidation_reasons,
-        }
+        with self._lock:
+            return {
+                'monitoring': self._monitoring,
+                'last_check': self.last_check_time.isoformat() if self.last_check_time else None,
+                'daily_high_nav': self.daily_high_nav,
+                'peak_nav': self.peak_nav,
+                'vix_threshold': self.vix_emergency_level,
+                'drawdown_limit': self.max_intraday_dd,
+                'total_drawdown_limit': self.max_total_drawdown,
+                'pending_liquidation_reasons': list(self._pending_liquidation_reasons),
+            }
 
     # ------------------------------------------------------------------
     # P0 修复：自动恢复交易已删除
@@ -564,7 +600,8 @@ class IntradayMonitor:
         """手动恢复交易，重置暂停状态。"""
         logger.warning("[RESUME] Trading manually resumed")
         self.trading_halted = False
-        self._pending_liquidation_reasons = []
+        with self._lock:
+            self._pending_liquidation_reasons = []
         self.persist_state()
         return {'status': 'RESUMED', 'trading_halted': False}
 

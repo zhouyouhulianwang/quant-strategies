@@ -24,7 +24,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from weight_allocation import WeightAllocator, integrate_with_backtest
-from cost_model import TradingCostModel
+from matching_engine import ExecutionParameters
 
 # ============================================================
 # 0. 交易日历辅助函数
@@ -447,7 +447,8 @@ def v14_scale(vix):
 # 5. 回测引擎
 # ============================================================
 
-def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital=1.0):
+def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital=1.0,
+            execution_params=None):
     """
     V14回测引擎 (与实盘路径一致)
 
@@ -457,10 +458,14 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
         ndx_set: set, NDX股票代码集合
         weight_method: str, 权重分配方法 (equal/risk_parity/min_variance/momentum_weighted)
         initial_capital: float, 初始资金 (默认1.0, 建议回测使用1e6等真实资金以产生合理交易成本)
+        execution_params: ExecutionParameters, 统一执行参数（默认从 config 构造，失败则使用默认）
 
     返回:
         DataFrame, 回测结果 (date, nav, nav_after_cost, mr, vix, sc, n, ndx_ratio, cost, holdings)
     """
+    # P1/P2修复: 使用 ExecutionParameters 统一回测与 live 的成本/执行假设
+    if execution_params is None:
+        execution_params = ExecutionParameters()
     # P1修复: 使用 XNYS 交易日历获取月末最后交易日, 与 scheduler.py 保持一致
     unique_ym = sorted(set((d.year, d.month) for d in price_df.index))
     monthly = pd.DatetimeIndex([
@@ -469,14 +474,30 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
     monthly = monthly[monthly >= price_df.index[252]]  # 252日预热
     monthly = monthly[monthly.isin(price_df.index)]  # 仅保留价格数据中存在的日期
 
-    # P0/P1修复: 维护真实组合状态 (equity, cash, positions)
+    # P0/P1/P2修复: 维护真实组合状态 (equity, cash, positions)
     cash = float(initial_capital)
     positions = {}  # {symbol: qty}
     prev_nav = float(initial_capital)
     records = []
 
-    # P0/P1修复: 接入 WeightAllocator 与 TradingCostModel
-    cost_model = TradingCostModel()
+    def _estimate_cost(target_positions, current_positions, prices):
+        """使用 ExecutionParameters 统一估算调仓成本。"""
+        total_cost = 0.0
+        all_symbols = set(target_positions.keys()) | set(current_positions.keys())
+        for s in all_symbols:
+            if s not in prices or prices[s] <= 0:
+                continue
+            current = current_positions.get(s, {'qty': 0})
+            current_qty = current.get('qty', 0) if isinstance(current, dict) else int(current)
+            target_value = target_positions.get(s, 0)
+            target_qty = execution_params.calculate_qty(target_value, prices[s], symbol=s)
+            diff = target_qty - current_qty
+            if diff == 0:
+                continue
+            side = 'buy' if diff > 0 else 'sell'
+            _, cost = execution_params.estimate_fill(prices[s], side, abs(diff))
+            total_cost += cost
+        return total_cost
 
     for signal_d in monthly:
         # P0修复: 信号在 signal_d 收盘后生成, 延至下一交易日 next_d 开盘/市价执行
@@ -554,11 +575,8 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
                     'price': float(next_prices[s]),
                 }
 
-        # 6. P0修复: 在按 next_d 价格过滤后再估算调仓成本
-        cost_summary = cost_model.estimate_portfolio_cost(
-            target_positions, current_positions, total_value=nav
-        )
-        total_cost = cost_summary['total_cost']
+        # 6. P0/P1修复: 在按 next_d 价格过滤后再估算调仓成本
+        total_cost = _estimate_cost(target_positions, current_positions, next_prices)
 
         # P1修复: 预留交易成本，避免 cash 为负
         if total_cost > 0 and target_value > 0:
@@ -583,12 +601,9 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
                         'qty': positions.get(s, 0),
                         'price': float(next_prices[s]),
                     }
-            cost_summary = cost_model.estimate_portfolio_cost(
-                target_positions, current_positions, total_value=nav
-            )
-            total_cost = cost_summary['total_cost']
+            total_cost = _estimate_cost(target_positions, current_positions, next_prices)
 
-        # 7. P0修复: 在 next_d 执行真实成交, 并更新 cash/positions
+        # 7. P0/P1/P2修复: 在 next_d 执行真实成交, 统一使用 ExecutionParameters 计算股数
         new_positions = {}
         total_buy_value = 0.0
         total_sell_value = 0.0
@@ -601,7 +616,9 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
             current_qty = positions.get(s, 0)
             target_qty = 0
             if s in target_positions:
-                target_qty = int(target_positions[s] / next_prices[s])
+                target_qty = execution_params.calculate_qty(
+                    target_positions[s], next_prices[s], symbol=s
+                )
             diff = target_qty - current_qty
             if diff > 0:
                 total_buy_value += diff * next_prices[s]

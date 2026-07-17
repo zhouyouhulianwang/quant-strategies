@@ -32,6 +32,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from version import get_version
+from logging_config import setup_logging
 
 # 复用现有模块，不引入新依赖
 from alpaca_executor import AlpacaExecutor
@@ -140,7 +141,7 @@ class RiskProcess:
             max_drawdown_limit=config.risk.max_drawdown_limit,
             max_position_pct=config.risk.max_position_pct,
             max_sector_pct=0.30,
-            daily_loss_limit=0.03,
+            daily_loss_limit=config.risk.max_intraday_dd,
             vix_pause_level=config.risk.vix_panic_threshold,
         )
         intraday_monitor = IntradayMonitor(
@@ -212,6 +213,7 @@ class RiskProcess:
 
 def main(argv=None):
     """入口函数。"""
+    setup_logging()
     args = parse_args(argv)
     process = RiskProcess(args)
     return process.run()
