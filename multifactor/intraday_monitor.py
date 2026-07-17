@@ -9,6 +9,10 @@ import threading
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
+
 logger = logging.getLogger('intraday_monitor')
 
 try:
@@ -69,7 +73,8 @@ class IntradayMonitor:
         # P1 修复：累计回撤跟踪
         self.peak_nav = None
         
-        # 回调
+        # P1修复: 收盘时未执行的强平请求，待次日开盘再触发
+        self._pending_liquidation_reason = None
         self.on_vix_spike: Optional[Callable] = None
         self.on_drawdown: Optional[Callable] = None
         self.on_single_stock_drop: Optional[Callable] = None
@@ -93,17 +98,36 @@ class IntradayMonitor:
             if self.risk_monitor:
                 self.risk_monitor.trading_halted = value
     
-    def start(self):
-        """启动监控线程"""
+    def start(self, daemon=True):
+        """启动监控线程
+        
+        参数:
+            daemon: bool, 是否以 daemon 方式运行线程。
+                   默认 True（兼容旧行为，作为主交易线程的子线程）。
+                   独立进程中建议传入 False，以保证进程不随主线程退出。
+        """
         if self.monitoring:
             logger.warning("监控已在运行")
             return
         
         self.monitoring = True
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=daemon)
         self.monitor_thread.start()
         
-        logger.info("🟢 盘中监控已启动")
+        logger.info(f"🟢 盘中监控已启动 (daemon={daemon})")
+    
+    def join(self, timeout=None):
+        """等待监控线程结束
+        
+        参数:
+            timeout: float, 最大等待时间（秒），None 表示一直等待。
+        """
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=timeout)
+    
+    def is_alive(self):
+        """检查监控线程是否仍在运行"""
+        return self.monitor_thread is not None and self.monitor_thread.is_alive()
     
     def stop(self):
         """停止监控"""
@@ -123,6 +147,17 @@ class IntradayMonitor:
                     self._current_date = today
                     self.reset_daily_high()
                     logger.info(f"📅 新的一天，日内高点已重置: {today}")
+
+                # P1修复: 若收盘期间触发了强平但市场关闭，开盘后执行
+                if self._pending_liquidation_reason:
+                    try:
+                        market_open = self.executor.market_is_open()
+                    except AttributeError:
+                        market_open = True
+                    if market_open:
+                        self._execute_pending_liquidation()
+                    else:
+                        logger.info(f"⏳ 待平仓原因: {self._pending_liquidation_reason}，等待市场开盘...")
 
                 self._check_all()
             except Exception as e:
@@ -304,9 +339,27 @@ class IntradayMonitor:
         
         return None
     
+    def _execute_pending_liquidation(self):
+        """
+        P1修复: 执行收盘期间记录下来的待处理强平，避免订单挂到次日开盘。
+        """
+        if not self._pending_liquidation_reason:
+            return
+        reason = self._pending_liquidation_reason
+        self._pending_liquidation_reason = None
+        try:
+            count = self.executor.liquidate_all()
+            logger.critical(f"✅ 已执行待处理强平: {count} 个持仓，原因: {reason}")
+            self._send_emergency_alert(f"开盘后执行待处理强平: {reason}")
+        except Exception as e:
+            logger.critical(f"❌ 待处理强平执行失败: {e}")
+            # 失败时重新标记待处理，下次循环再试
+            self._pending_liquidation_reason = reason
+
     def _emergency_liquidation(self, reason):
         """
         紧急平仓 - 平掉所有持仓（线程安全）
+        P1修复: 市场关闭时记录待平仓，开盘再触发，避免挂单到次日开盘。
         
         参数:
             reason: str, 触发原因
@@ -323,21 +376,22 @@ class IntradayMonitor:
             except AttributeError:
                 market_open = True  # 无 market_is_open 时放行（兼容模式）
 
-            if not market_open:
-                logger.critical("❌ 市场未开盘，紧急平仓订单将在开盘后执行")
-                logger.critical("   已暂停交易，请在开盘后检查账户状态")
-
             # 1. 暂停交易（线程安全）
             self.trading_halted = True
 
-            # 2. 平掉所有持仓（如果市场开盘则立即执行）
-            if market_open:
-                count = self.executor.liquidate_all()
-                logger.critical(f"✅ 已平掉 {count} 个持仓")
-            else:
-                # 市场关闭时提交订单将在次日开盘执行，记录待处理
-                count = self.executor.liquidate_all()
-                logger.critical(f"⏳ 市场已收盘，已提交 {count} 个平仓订单，将在下次开盘执行")
+            if not market_open:
+                # P1修复: 市场关闭时记录待平仓，不提交订单，避免挂单到次日开盘
+                self._pending_liquidation_reason = reason
+                logger.critical("⏳ 市场已收盘，强平已记录待执行，将在下次开盘触发")
+                logger.critical("   已暂停交易，请检查账户状态")
+                logger.critical("⚠️ 交易已暂停，请手动检查并恢复")
+                # 发送告警
+                self._send_emergency_alert(reason)
+                return
+
+            # 2. 市场开盘，立即平掉所有持仓
+            count = self.executor.liquidate_all()
+            logger.critical(f"✅ 已平掉 {count} 个持仓")
 
             logger.critical("⚠️ 交易已暂停，请手动检查并恢复")
             
@@ -348,11 +402,11 @@ class IntradayMonitor:
             logger.critical(f"❌ 紧急平仓网络错误: {e}")
         except Exception as e:
             logger.critical(f"❌ 紧急平仓失败: {e}")
-            logger.critical(f"❌ 紧急平仓失败: {e}")
     
     def _liquidate_symbol(self, symbol, reason):
         """
         平仓单只股票
+        P1修复: 收盘时记录待平仓，开盘再触发，避免挂单到次日开盘。
         
         参数:
             symbol: str
@@ -368,7 +422,11 @@ class IntradayMonitor:
                 market_open = True
 
             if not market_open:
-                logger.critical(f"⏳ 市场未开盘，{symbol} 平仓订单将在开盘后执行")
+                # P1修复: 收盘时记录整体待平仓，不提交订单，避免挂单到次日开盘
+                if not self._pending_liquidation_reason:
+                    self._pending_liquidation_reason = f"{symbol} {reason}"
+                logger.critical(f"⏳ 市场未开盘，{symbol} 平仓已记录待执行，将在开盘后触发")
+                return
 
             positions = self.executor.get_positions()
             for pos in positions:

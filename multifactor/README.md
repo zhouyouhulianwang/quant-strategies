@@ -2,7 +2,7 @@
 
 **V14: 行业相对估值 + GARP + TED 多因子策略**
 
-- **16因子** | **零人工干预** | **月度调仓**
+- **17因子** | **零人工干预** | **月度调仓**
 - 支持真实数据回测、Alpaca Paper Trading 模拟实盘
 - 包含可视化、参数优化、风险监控完整模块
 
@@ -100,7 +100,7 @@ price_df, market_df = prepare_backtest_data(
 
 ### 2. 策略核心 (`main.py`)
 
-**16因子结构：**
+**V14: 17因子计算**
 
 | 类别 | 数量 | 因子 |
 |------|------|------|
@@ -109,7 +109,7 @@ price_df, market_df = prepare_backtest_data(
 | TED早期识别 | 6 | vol_contraction, base_breakout, rel_strength_accel, price_accel, momentum_consistency, low_base_score |
 
 **核心函数：**
-- `compute_factors_v14()` - 16因子计算
+- `compute_factors_v14()` - 17因子计算
 - `v14_composite_score()` - 综合评分（VIX动态权重）
 - `v14_scale()` - 仓位管理
 - `run_v14()` - 回测引擎
@@ -386,7 +386,7 @@ python scheduler.py
 
 ## 版本历史
 
-- **v14.0** (2024) - 初始版本，16因子，行业相对估值
+- **v14.0** (2024) - 初始版本，17因子，行业相对估值
 - **v14.1** (未来) - 接入更多数据源，机器学习增强
 
 ## 作者

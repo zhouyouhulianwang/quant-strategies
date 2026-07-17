@@ -11,6 +11,9 @@ import logging
 from datetime import datetime
 import os
 
+from logging_config import setup_logging
+# P2修复：统一全链路日志格式
+setup_logging()
 logger = logging.getLogger('visualization')
 
 # 设置中文字体支持
@@ -141,18 +144,21 @@ def plot_monthly_returns(result_df, save_path=None):
     # 设置标签 - 只显示实际有的月份
     all_months = list(range(1, 13))  # 1-12
     present_months = [m for m in all_months if m in monthly_pivot.columns]
-    col_positions = [all_months.index(m) for m in present_months]
+    # P2修复: col_positions 应为 present_months 在 monthly_pivot 中的列索引，
+    # 而不是 all_months 中的位置，否则 imshow 的 x 轴与标签错位。
+    col_positions = list(range(len(present_months)))
+    month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     
     ax.set_xticks(col_positions)
-    ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][min(col_positions):max(col_positions)+1] if col_positions else [])
+    ax.set_xticklabels([month_labels[m-1] for m in present_months])
     ax.set_yticks(range(len(monthly_pivot.index)))
     ax.set_yticklabels(monthly_pivot.index)
     
     # 添加数值标注 - 只遍历实际有的列
     for i in range(len(monthly_pivot.index)):
         for j_idx, j_month in enumerate(present_months):
-            col_pos = all_months.index(j_month)
+            col_pos = j_idx  # 对应 imshow 的列索引
             val = monthly_pivot.iloc[i, j_idx]
             if not np.isnan(val):
                 color = 'white' if abs(val) > 5 else 'black'

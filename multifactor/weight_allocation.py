@@ -6,6 +6,10 @@ import numpy as np
 import pandas as pd
 import logging
 
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
+
 logger = logging.getLogger('weight_allocation')
 
 
@@ -23,36 +27,36 @@ class WeightAllocator:
         self.method = method
         self.risk_budget = risk_budget
     
-    def allocate(self, symbols, price_df=None, target_value=None) -> dict:
+    def allocate(self, selected_symbols, price_df=None, target_value=None) -> dict:
         """
         分配权重
-        
+
         参数:
-            symbols: list, 选中的股票列表
+            selected_symbols: list, 选中的股票列表
             price_df: DataFrame, 历史价格数据 (用于风险计算)
             target_value: float, 总目标金额
-        
+
         返回:
-            dict: {symbol: target_value}
+            dict: {symbol: target_value} 或 {symbol: weight}
         """
-        if not symbols:
+        if not selected_symbols:
             return {}
-        
+
         if self.method == 'equal':
-            weights = self._equal_weight(symbols)
+            weights = self._equal_weight(selected_symbols)
         elif self.method == 'risk_parity':
-            weights = self._risk_parity_weight(symbols, price_df)
+            weights = self._risk_parity_weight(selected_symbols, price_df)
         elif self.method == 'min_variance':
-            weights = self._min_variance_weight(symbols, price_df)
+            weights = self._min_variance_weight(selected_symbols, price_df)
         elif self.method == 'momentum_weighted':
-            weights = self._momentum_weighted(symbols, price_df)
+            weights = self._momentum_weighted(selected_symbols, price_df)
         else:
-            weights = self._equal_weight(symbols)
-        
+            weights = self._equal_weight(selected_symbols)
+
         # 转换为金额
         if target_value:
             return {s: target_value * w for s, w in weights.items()}
-        
+
         return weights
     
     def _equal_weight(self, symbols):
@@ -63,74 +67,86 @@ class WeightAllocator:
     def _risk_parity_weight(self, symbols, price_df):
         """
         风险平价分配 - 每只标的风险贡献相等
-        
+
         公式: w_i ∝ 1/σ_i
         """
         if price_df is None or len(price_df) < 20:
             logger.warning("价格数据不足，回退到等权")
             return self._equal_weight(symbols)
-        
+
+        available = list(set(symbols) & set(price_df.columns))
+        if len(available) == 0:
+            return self._equal_weight(symbols)
+
         # 计算波动率
-        returns = price_df[list(set(symbols) & set(price_df.columns))].pct_change().dropna()
-        
+        returns = price_df[available].pct_change().dropna()
+
         if len(returns) < 20:
             return self._equal_weight(symbols)
-        
+
         # 年化波动率
         vols = returns.std() * np.sqrt(252)
-        
+
         # 风险平价权重: 反比于波动率
         inv_vols = 1.0 / vols.replace(0, np.inf)
         weights = inv_vols / inv_vols.sum()
-        
+
         # 归一化
         weights = weights / weights.sum()
-        
+
         result = {}
         for s in symbols:
             if s in weights.index:
                 result[s] = weights[s]
             else:
                 result[s] = 0.0
-        
-        # 重新归一化
+
+        # 重新归一化（缺失 symbol 权重为 0，避免 KeyError）
         total = sum(result.values())
         if total > 0:
             result = {k: v / total for k, v in result.items()}
-        
+        else:
+            result = self._equal_weight(symbols)
+
         return result
     
     def _min_variance_weight(self, symbols, price_df):
         """
         最小方差组合 - 组合波动率最小
-        
+
         简化版: 仅使用对角线（方差），忽略协方差
         """
         if price_df is None or len(price_df) < 20:
             return self._equal_weight(symbols)
-        
-        returns = price_df[list(set(symbols) & set(price_df.columns))].pct_change().dropna()
-        
+
+        available = list(set(symbols) & set(price_df.columns))
+        if len(available) == 0:
+            return self._equal_weight(symbols)
+
+        returns = price_df[available].pct_change().dropna()
+
         if len(returns) < 20:
             return self._equal_weight(symbols)
-        
+
         # 使用方差的倒数作为权重
         variances = returns.var()
         inv_var = 1.0 / variances.replace(0, np.inf)
         weights = inv_var / inv_var.sum()
-        
+
         result = {}
         for s in symbols:
             if s in weights.index:
                 result[s] = weights[s]
             else:
                 result[s] = 0.0
-        
-        # 归一化
+
+        # 归一化（缺失 symbol 权重为 0，避免 KeyError）
         total = sum(result.values())
         if total > 0:
             result = {k: v / total for k, v in result.items()}
-        
+        else:
+            result = self._equal_weight(symbols)
+
         return result
     
     def _momentum_weighted(self, symbols, price_df):
@@ -206,30 +222,100 @@ def normalize_target_positions(target_positions, max_total_value, min_position_v
     return scaled
 
 
-def apply_weight_constraints(weights, min_weight=0.0, max_weight=0.20):
+def apply_weight_constraints(weights, min_weight=0.0, max_weight=0.20, max_iter=10):
     """
     应用权重约束
-    
+
     参数:
         weights: dict, {symbol: weight}
         min_weight: float, 最小权重
         max_weight: float, 最大权重
-    
+        max_iter: int, 迭代裁剪次数
+
     返回:
         dict: 约束后的权重
     """
-    # 上限约束
-    constrained = {k: min(v, max_weight) for k, v in weights.items()}
-    
-    # 下限约束
-    constrained = {k: max(v, min_weight) for k, v in constrained.items()}
-    
-    # 归一化
-    total = sum(constrained.values())
-    if total > 0:
-        constrained = {k: v / total for k, v in constrained.items()}
-    
+    constrained = weights.copy()
+
+    for _ in range(max_iter):
+        # 上限约束
+        capped = {k: min(v, max_weight) for k, v in constrained.items()}
+        # 下限约束
+        floored = {k: max(v, min_weight) for k, v in capped.items()}
+
+        total = sum(floored.values())
+        if total <= 0:
+            return weights
+
+        normalized = {k: v / total for k, v in floored.items()}
+
+        # 若已收敛则退出
+        if all(abs(normalized[k] - constrained.get(k, 0)) < 1e-6 for k in normalized):
+            constrained = normalized
+            break
+
+        constrained = normalized
+
     return constrained
+
+
+def integrate_with_backtest(selected_symbols, total_equity, price_df,
+                            max_weight=0.20, min_weight=0.0,
+                            weight_method='equal', execution_date=None,
+                            **allocator_kwargs):
+    """
+    与回测集成的目标持仓接口
+
+    参数:
+        selected_symbols: list, 选中的股票
+        total_equity: float, 总可用资金
+        price_df: DataFrame, 历史价格数据
+        max_weight: float, 单标的最大权重
+        min_weight: float, 单标的最小权重
+        weight_method: str, 权重分配方法
+        execution_date: 可选, 调仓执行日; 若提供则剔除该日无价格标的
+        **allocator_kwargs: WeightAllocator 的其它参数
+
+    返回:
+        dict: {symbol: target_value}
+    """
+    if not selected_symbols or total_equity <= 0:
+        return {}
+
+    # P1修复: 根据 execution_date 剔除停牌/无价格标的
+    if execution_date is None:
+        exec_date = price_df.index[-1]
+    else:
+        exec_date = execution_date
+        # 若 execution_date 不在 price_df 中, 回退到之后的第一个交易日
+        if exec_date not in price_df.index:
+            future = price_df.index[price_df.index >= exec_date]
+            exec_date = future[0] if len(future) > 0 else price_df.index[-1]
+
+    # 仅保留在 execution_date 有有效价格的标的
+    unique_symbols = list(dict.fromkeys(selected_symbols))
+    available_symbols = [
+        s for s in unique_symbols
+        if s in price_df.columns and pd.notna(price_df.at[exec_date, s])
+    ]
+
+    if not available_symbols:
+        logger.warning(f"⚠️ {exec_date} 无可用价格，无法生成目标持仓")
+        return {}
+
+    allocator = WeightAllocator(method=weight_method, **allocator_kwargs)
+    target_positions = allocator.allocate(available_symbols, price_df=price_df, target_value=total_equity)
+
+    total = sum(target_positions.values())
+    if total <= 0:
+        return {}
+
+    weights = {s: v / total for s, v in target_positions.items()}
+    weights = apply_weight_constraints(weights, min_weight=min_weight, max_weight=max_weight)
+
+    result = {s: total_equity * w for s, w in weights.items()}
+    result = normalize_target_positions(result, total_equity, min_position_value=0)
+    return result
 
 
 # ============================================================

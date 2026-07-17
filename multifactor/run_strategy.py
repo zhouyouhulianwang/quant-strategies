@@ -6,13 +6,14 @@ V14 MultiFactor Strategy - 完整版
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import logging
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+from requests.exceptions import RequestException, ConnectionError, Timeout
+
+# 配置日志（P2修复：统一使用 logging_config 的格式）
+from logging_config import setup_logging
+setup_logging()
 logger = logging.getLogger('v14_strategy')
 
 # 尝试导入各模块
@@ -26,13 +27,8 @@ except ImportError:
     QC_DATA_AVAILABLE = False
     logger.warning("quantconnect_data 模块不可用")
 
-# 2. 回退: 原 data_source (Yahoo Finance)
-try:
-    from data_source import prepare_backtest_data
-    YAHOO_DATA_AVAILABLE = True
-except ImportError:
-    YAHOO_DATA_AVAILABLE = False
-    logger.warning("data_source (Yahoo) 模块不可用")
+# P1-9 修复：移除 Yahoo Finance 作为价格源兜底
+YAHOO_DATA_AVAILABLE = False
 
 try:
     from alpaca_executor import AlpacaPaperExecutor, V14AlpacaExecutor
@@ -121,13 +117,12 @@ class V14Strategy:
         # 加载统一配置
         self.config = config or (get_config() if CONFIG_AVAILABLE else None)
         
-        # 检查数据源可用性
-        has_real_data = QC_DATA_AVAILABLE or YAHOO_DATA_AVAILABLE
+        # 检查数据源可用性（P1-9 修复：仅使用 QuantConnect，不再兜底 Yahoo Finance）
+        has_real_data = QC_DATA_AVAILABLE
         
         if use_real_data and not has_real_data:
-            logger.error("❌ 真实数据源不可用 (QuantConnect/Yahoo Finance)")
-            logger.error("   请安装: pip install yfinance")
-            logger.error("   或配置 QuantConnect Lean CLI")
+            logger.error("❌ 真实数据源不可用 (QuantConnect)")
+            logger.error("   请配置 QuantConnect Lean CLI")
             self.use_real_data = False
         else:
             self.use_real_data = use_real_data and has_real_data
@@ -145,6 +140,8 @@ class V14Strategy:
         self.intraday_monitor = None
         self.weight_allocator = None
         self.backtest_result = None
+        # P1-8 修复：记录最近一次实盘组合价值，用于日亏损计算
+        self._last_live_portfolio_value = None
         
         if self.use_paper_trading:
             # 从配置读取 PDT / 限价单 / 订单超时参数传给执行器
@@ -179,7 +176,37 @@ class V14Strategy:
                 check_interval = self.config.trading.check_interval
                 vix_emergency_level = self.config.risk.vix_panic_threshold
             
-            self.intraday_monitor = IntradayMonitor(
+            # P1-8 修复：在盘中监控中补充调用 check_daily_loss / check_concentration_risk
+            class V14IntradayMonitor(IntradayMonitor):
+                def __init__(inner_self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    inner_self._daily_baseline_nav = None
+                    inner_self._current_baseline_date = None
+            
+                def _check_all(inner_self):
+                    super()._check_all()
+                    if not inner_self.risk_monitor:
+                        return
+                    try:
+                        account = inner_self.executor.get_account()
+                        if not account:
+                            return
+                        portfolio_value = account['portfolio_value']
+                        positions = inner_self.executor.get_positions()
+                        # 集中度风险
+                        inner_self.risk_monitor.check_concentration_risk(positions, portfolio_value)
+                        # 日亏损（以日内首次检查为基准）
+                        today = datetime.now(ZoneInfo('America/New_York')).date()
+                        if inner_self._current_baseline_date != today:
+                            inner_self._current_baseline_date = today
+                            inner_self._daily_baseline_nav = portfolio_value
+                        if inner_self._daily_baseline_nav and inner_self._daily_baseline_nav > 0:
+                            daily_return = (portfolio_value - inner_self._daily_baseline_nav) / inner_self._daily_baseline_nav
+                            inner_self.risk_monitor.check_daily_loss(daily_return)
+                    except Exception as e:
+                        logger.warning(f"盘中风控补充检查失败: {e}")
+            
+            self.intraday_monitor = V14IntradayMonitor(
                 executor=self.executor,
                 risk_monitor=self.risk_monitor,
                 check_interval=check_interval,
@@ -232,24 +259,16 @@ class V14Strategy:
                     if price_df is not None and len(price_df) > 0:
                         logger.info(f"📊 数据源: QuantConnect (Lean)")
                     else:
-                        logger.warning("⚠️ QuantConnect 数据为空，回退到 Yahoo Finance")
+                        logger.warning("⚠️ QuantConnect 数据为空")
                         price_df, market_df = None, None
-                except Exception as e:
-                    logger.warning(f"⚠️ QuantConnect 获取失败: {e}，回退到 Yahoo Finance")
+                except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
+                    logger.warning(f"⚠️ QuantConnect 获取网络失败: {e}")
+                    price_df, market_df = None, None
+                except ValueError as e:
+                    logger.warning(f"⚠️ QuantConnect 数据错误: {e}")
                     price_df, market_df = None, None
             
-            # 2. 回退到 Yahoo Finance
-            if (price_df is None or len(price_df) == 0) and YAHOO_DATA_AVAILABLE:
-                try:
-                    logger.info("📊 数据源: Yahoo Finance (QuantConnect 不可用)")
-                    price_df, market_df = prepare_backtest_data(
-                        TICKERS, start_date, end_date, use_cache
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Yahoo Finance 获取失败: {e}")
-                    price_df, market_df = None, None
-            
-            # 3. 最终回退: 模拟数据
+            # P1-9 修复：移除 Yahoo Finance 兜底，直接回退到模拟数据
             if price_df is None or len(price_df) == 0:
                 logger.warning("⚠️ 无可用真实数据，使用模拟数据")
                 price_df, market_df = self._generate_mock_data(start_date, end_date)
@@ -314,7 +333,7 @@ class V14Strategy:
             logger.info(f"🔄 转换索引为 DatetimeIndex: {type(price_df.index).__name__}")
             try:
                 price_df.index = pd.to_datetime(price_df.index)
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.error(f"❌ 无法转换索引: {e}")
                 return pd.DataFrame()
         
@@ -329,7 +348,7 @@ class V14Strategy:
         if not isinstance(market_df.index, pd.DatetimeIndex):
             try:
                 market_df.index = pd.to_datetime(market_df.index)
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.error(f"❌ 无法转换 market_df 索引: {e}")
                 return pd.DataFrame()
         
@@ -381,7 +400,7 @@ class V14Strategy:
                     from main import v14_scale
                     sc = v14_scale(vix_v)
                     mr = np.mean(p_end / p_start - 1) * (sc / 100)
-                except Exception as e:
+                except (KeyError, ValueError, TypeError) as e:
                     logger.warning(f"⚠️ 收益计算错误: {e}, 使用 0")
                     mr = 0
             else:
@@ -420,16 +439,11 @@ class V14Strategy:
             end = datetime.now().strftime('%Y-%m-%d')
             start = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
             
-            # 优先 QuantConnect
+            # 优先 QuantConnect（P1-9 修复：不再使用 Yahoo Finance 兜底）
             if QC_DATA_AVAILABLE:
                 logger.info("📊 信号生成数据源: QuantConnect")
                 price_df, market_df = prepare_backtest_data_qc(
                     TICKERS, start, end, resolution='daily'
-                )
-            elif YAHOO_DATA_AVAILABLE:
-                logger.info("📊 信号生成数据源: Yahoo Finance")
-                price_df, market_df = prepare_backtest_data(
-                    TICKERS, start, end, use_cache=True
                 )
             else:
                 logger.error("无法获取数据，无可用数据源")
@@ -493,7 +507,11 @@ class V14Strategy:
             try:
                 account = self.executor.get_account()
                 portfolio_value = account['portfolio_value'] if account else 1000000
-            except Exception:
+            except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
+                logger.warning(f"获取账户价值网络失败: {e}，使用默认值 $1M")
+                portfolio_value = 1000000
+            except ValueError as e:
+                logger.warning(f"获取账户价值参数错误: {e}，使用默认值 $1M")
                 portfolio_value = 1000000
         else:
             portfolio_value = 1000000  # 回测默认
@@ -537,10 +555,25 @@ class V14Strategy:
             logger.error("未启用 Alpaca Paper Trading")
             return
 
-        # 0. 市场开盘检查 - P0 修复
+        # P1 修复：真正下单前再次检查 market_is_open()
         if not self.executor.market_is_open():
             logger.warning("⚠️ 市场未开盘，跳过本次实盘调仓")
             logger.warning("   V14 是月末 EOD 策略，建议在开盘后执行")
+            return
+
+        # P1-4 修复：统一转换为 America/New_York 判断收盘前保护时间
+        cutoff_minutes = 15
+        if self.config and hasattr(self.config, 'trading'):
+            cutoff_minutes = getattr(self.config.trading, 'market_close_cutoff_minutes', 15)
+        cutoff_total_minutes = 16 * 60 - cutoff_minutes
+        cutoff_hour = cutoff_total_minutes // 60
+        cutoff_minute = cutoff_total_minutes % 60
+        try:
+            now = datetime.now(ZoneInfo('America/New_York'))
+        except Exception:
+            now = datetime.now()
+        if now.hour > cutoff_hour or (now.hour == cutoff_hour and now.minute >= cutoff_minute):
+            logger.warning(f"⚠️ 已过收盘前保护时间 {cutoff_hour:02d}:{cutoff_minute:02d} ET，拒绝启动新调仓")
             return
 
         # 1. 开始新会话（幂等性保障）
@@ -570,7 +603,7 @@ class V14Strategy:
         logger.info("✅ 实盘再平衡完成")
     
     def _get_latest_vix(self):
-        """获取最新 VIX - 优先 QuantConnect, 回退 Yahoo"""
+        """获取最新 VIX - 仅使用 QuantConnect（P1-9 修复：彻底移除 Yahoo Finance 兜底）"""
         # 1. 尝试 QuantConnect
         if QC_DATA_AVAILABLE:
             try:
@@ -578,36 +611,13 @@ class V14Strategy:
                 vix = source.get_vix()
                 if vix:
                     return vix
-            except (ConnectionError, TimeoutError) as e:
+            except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
                 logger.warning(f"QuantConnect 获取 VIX 网络错误: {e}")
-            except Exception as e:
-                logger.warning(f"QuantConnect 获取 VIX 失败: {e}")
+            except ValueError as e:
+                logger.warning(f"QuantConnect 获取 VIX 数据错误: {e}")
         
-        # 2. 回退到 Yahoo Finance
-        if YAHOO_DATA_AVAILABLE:
-            try:
-                from data_source import fetch_vix_data
-                end = datetime.now().strftime('%Y-%m-%d')
-                start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-                vix_series = fetch_vix_data(start, end)
-                if vix_series is not None and len(vix_series) > 0:
-                    return float(vix_series.iloc[-1])
-            except (ConnectionError, TimeoutError) as e:
-                logger.warning(f"Yahoo 获取 VIX 网络错误: {e}")
-            except Exception as e:
-                logger.warning(f"Yahoo 获取 VIX 失败: {e}")
-        
-        # 3. 最终回退: 直接请求
-        try:
-            import yfinance as yf
-            vix_data = yf.Ticker('^VIX').history(period='5d')
-            if len(vix_data) > 0:
-                return float(vix_data['Close'].iloc[-1])
-        except (ConnectionError, TimeoutError) as e:
-            logger.warning(f"yfinance 获取 VIX 网络错误: {e}")
-        except Exception as e:
-            logger.warning(f"yfinance 获取 VIX 失败: {e}")
-        
+        # P1-9 修复：无可用数据源时不返回硬编码值
+        logger.warning("⚠️ 无法获取 VIX，风控使用默认状态")
         return None
     
     def live_trade(self, target_positions, confirm_fills=True):
@@ -635,13 +645,46 @@ class V14Strategy:
         if account:
             logger.info(f"账户现金: ${account['cash']:,.2f}")
             logger.info(f"组合价值: ${account['portfolio_value']:,.2f}")
+        else:
+            logger.error("无法获取账户信息，暂停交易")
+            return
+
+        # P1-8 修复：调仓前调用 check_daily_loss / check_concentration_risk
+        portfolio_value = account['portfolio_value']
+        if self.risk_monitor:
+            positions = self.executor.get_positions()
+            self.risk_monitor.check_concentration_risk(positions, portfolio_value)
+            if self._last_live_portfolio_value is not None and self._last_live_portfolio_value > 0:
+                daily_return = (portfolio_value - self._last_live_portfolio_value) / self._last_live_portfolio_value
+                self.risk_monitor.check_daily_loss(daily_return)
+            # 若风控已暂停交易，直接返回
+            if self.risk_monitor.trading_halted:
+                logger.warning("⚠️ 交易已暂停（风险监控触发）")
+                return
+
+        # P1 修复：检查总目标金额不超过购买力
+        total_target = sum(target_positions.values())
+        buying_power = account.get('buying_power', 0.0)
+        if total_target > buying_power:
+            logger.error(f"目标总金额 ${total_target:,.2f} 超过购买力 ${buying_power:,.2f}，暂停交易")
+            return
         
         # 使用 OrderManager 执行再平衡（带成交确认）
         if ORDER_MGR_AVAILABLE:
             manager = RebalanceManager(self.executor)
+            # 从配置读取风控/交易参数
+            kwargs = {}
+            if self.config:
+                kwargs = {
+                    'max_position_pct': self.config.risk.max_position_pct,
+                    'max_wait_sec': self.config.trading.max_wait_sec,
+                    'poll_interval': self.config.trading.poll_interval,
+                    'min_notional': 1.0,
+                }
             results = manager.rebalance(
                 target_positions, 
-                confirm_fills=confirm_fills
+                confirm_fills=confirm_fills,
+                **kwargs
             )
             
             # 估算成本
@@ -658,8 +701,11 @@ class V14Strategy:
         # 风控检查
         if self.risk_monitor:
             positions = self.executor.get_positions()
-            portfolio_value = account['portfolio_value']
+            account = self.executor.get_account()
+            portfolio_value = account['portfolio_value'] if account else portfolio_value
             self.risk_monitor.check_position_limits(positions, portfolio_value)
+            # P1-8 修复：记录本次组合价值，用于下次调仓日亏损计算
+            self._last_live_portfolio_value = portfolio_value
     
     def check_risk(self, nav=None, vix=None, positions=None, portfolio_value=None):
         """
@@ -811,7 +857,7 @@ if __name__ == '__main__':
     # 检查数据可用性
     if not strategy.use_real_data:
         logger.error("❌ 真实数据不可用，请检查网络连接或数据源配置")
-        logger.error("   可选数据源: Yahoo Finance (pip install yfinance)")
+        logger.error("   请配置 QuantConnect Lean CLI")
         logger.error("   回测已中止，未使用模拟数据")
         exit(1)
     

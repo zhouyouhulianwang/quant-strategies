@@ -3,6 +3,12 @@
 """
 
 import logging
+import numpy as np
+import pandas as pd
+
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
 
 logger = logging.getLogger('cost_model')
 
@@ -58,6 +64,22 @@ class TradingCostModel:
         返回:
             dict: 成本明细
         """
+        # P0修复: 价格或数量无效时直接返回0成本, 不硬编码价格
+        if price is None or price <= 0 or qty <= 0:
+            return {
+                'symbol': symbol,
+                'qty': qty,
+                'price': price if price is not None else 0.0,
+                'trade_value': 0.0,
+                'commission': 0.0,
+                'slippage': 0.0,
+                'market_impact': 0.0,
+                'total_cost': 0.0,
+                'cost_pct': 0.0,
+                'side': side,
+                'order_type': order_type,
+            }
+        
         # 交易额
         trade_value = qty * price
         
@@ -98,19 +120,24 @@ class TradingCostModel:
         return result
     
     def estimate_portfolio_cost(self, target_positions: dict, 
-                                current_positions: dict = None) -> dict:
+                                current_positions: dict = None,
+                                total_value: float = None) -> dict:
         """
         估算组合调仓总成本
         
         参数:
-            target_positions: dict, {symbol: target_value}
+            target_positions: dict, {symbol: target_value} 或 {symbol: weight}
             current_positions: dict, {symbol: {'qty': int, 'price': float}}
+            total_value: float, 可选，用于将权重转换为金额
         
         返回:
             dict: 总成本估算
         """
         if current_positions is None:
             current_positions = {}
+        
+        # P1修复: 若 target_positions 是权重（和约 1）则转换为金额
+        target_positions = self._rescale_target_positions(target_positions, current_positions, total_value)
         
         total_commission = 0
         total_slippage = 0
@@ -120,14 +147,38 @@ class TradingCostModel:
         # 计算需要交易的标的
         all_symbols = set(list(target_positions.keys()) + list(current_positions.keys()))
         
+        def _get_current_price(current, symbol):
+            """价格缺失保护：依次尝试 price/current_price/avg_entry_price，缺失则默认 0"""
+            if isinstance(current, dict):
+                for key in ('price', 'current_price', 'avg_entry_price', 'last_price'):
+                    price = current.get(key)
+                    try:
+                        if price is not None and float(price) > 0:
+                            return float(price)
+                    except (TypeError, ValueError):
+                        continue
+            logger.warning(f"⚠️ {symbol} 持仓价格缺失，默认价格为 0")
+            return 0.0
+        
         for symbol in all_symbols:
             target_value = target_positions.get(symbol, 0)
-            current = current_positions.get(symbol, {'qty': 0, 'price': 0})
-            current_qty = current.get('qty', 0)
-            current_price = current.get('price', 100)
+            current = current_positions.get(symbol, {'qty': 0})
+            if isinstance(current, dict):
+                current_qty = current.get('qty', 0)
+            else:
+                try:
+                    current_qty = int(current)
+                except Exception:
+                    current_qty = 0
+            current_price = _get_current_price(current, symbol)
+            
+            # P0修复: 价格缺失时跳过，默认 0 成本
+            if current_price <= 0:
+                logger.warning(f"⚠️ {symbol} 价格无效，跳过成本估算")
+                continue
             
             # 目标数量
-            if target_value > 0:
+            if target_value > 0 and current_price > 0:
                 target_qty = int(target_value / current_price)
             else:
                 target_qty = 0
@@ -155,26 +206,161 @@ class TradingCostModel:
             'trade_details': trade_details,
         }
     
-    def apply_cost_to_nav(self, nav, turnover=0.5):
+    def calculate_rebalance_cost(self, target_positions: dict,
+                                 current_positions: dict = None,
+                                 current_prices: dict = None,
+                                 total_value: float = None) -> dict:
         """
-        简化版：按换手率估算成本对 NAV 的影响
+        基于 target_positions 和 current_positions 的逐笔成本计算
+        
+        参数:
+            target_positions: dict, {symbol: target_value} 或 {symbol: weight}
+            current_positions: dict, {symbol: {'qty': int, 'price': float}} 或 {symbol: qty}
+            current_prices: dict, 可选，当前市价 {symbol: price}
+            total_value: float, 可选，用于将权重转换为金额
+        
+        返回:
+            dict: 总成本、成交额、换手率、单笔明细
+        """
+        if current_positions is None:
+            current_positions = {}
+        if current_prices is None:
+            current_prices = {}
+
+        # P1修复: 若 target_positions 是权重（和约 1）则转换为金额
+        target_positions = self._rescale_target_positions(target_positions, current_positions, total_value)
+
+        total_cost = 0.0
+        total_traded_value = 0.0
+        trade_details = []
+        total_target_value = sum(v for v in target_positions.values() if isinstance(v, (int, float)) and v > 0)
+
+        all_symbols = set(list(target_positions.keys()) + list(current_positions.keys()))
+
+        def _get_price(current, symbol):
+            if isinstance(current, dict):
+                for key in ('price', 'current_price', 'avg_entry_price', 'last_price'):
+                    price = current.get(key)
+                    try:
+                        if price is not None and float(price) > 0:
+                            return float(price)
+                    except (TypeError, ValueError):
+                        continue
+            try:
+                price = float(current_prices.get(symbol, 0.0))
+                if price > 0:
+                    return price
+            except (TypeError, ValueError):
+                pass
+            logger.warning(f"⚠️ {symbol} 价格缺失，默认价格为 0")
+            return 0.0
+
+        for symbol in all_symbols:
+            target_value = target_positions.get(symbol, 0)
+            current = current_positions.get(symbol, {'qty': 0})
+            if isinstance(current, dict):
+                current_qty = current.get('qty', 0)
+            else:
+                try:
+                    current_qty = int(current)
+                except Exception:
+                    current_qty = 0
+            current_price = _get_price(current, symbol)
+
+            # P0修复: 价格缺失时跳过，默认 0 成本
+            if current_price <= 0:
+                logger.warning(f"⚠️ {symbol} 价格无效，跳过成本估算")
+                continue
+
+            try:
+                target_qty = int(target_value / current_price) if current_price > 0 else 0
+            except (TypeError, ValueError):
+                target_qty = 0
+
+            diff = target_qty - current_qty
+            if diff == 0:
+                continue
+
+            side = 'buy' if diff > 0 else 'sell'
+            qty = abs(diff)
+            cost = self.calculate_cost(symbol, qty, current_price, side)
+            total_cost += cost['total_cost']
+            total_traded_value += cost['trade_value']
+            trade_details.append(cost)
+
+        turnover = (total_traded_value / total_target_value) if total_target_value > 0 else 0.0
+        cost_pct = (total_cost / total_target_value) if total_target_value > 0 else 0.0
+
+        return {
+            'total_cost': total_cost,
+            'total_traded_value': total_traded_value,
+            'turnover': turnover,
+            'cost_pct': cost_pct,
+            'trade_details': trade_details,
+        }
+    
+    def _rescale_target_positions(self, target_positions: dict,
+                                  current_positions: dict = None,
+                                  total_value: float = None) -> dict:
+        """
+        检测 target_positions 是权重（和约 1）还是金额，并统一为金额
+        
+        参数:
+            target_positions: dict, {symbol: target_value} 或 {symbol: weight}
+            current_positions: dict, 当前持仓
+            total_value: float, 可选，组合总价值
+        
+        返回:
+            dict: {symbol: target_value}
+        """
+        if not target_positions:
+            return {}
+        
+        # 仅处理数值型 value
+        values = [v for v in target_positions.values() if isinstance(v, (int, float)) and v > 0]
+        if not values:
+            return target_positions
+        
+        total = sum(values)
+        # 和约 1 且每个 value <= 1 视为权重
+        if total > 0 and abs(total - 1.0) <= 1e-3 and max(values) <= 1.0:
+            if total_value is None and current_positions:
+                # 从当前持仓市值推导 total_value
+                total_value = 0.0
+                for s, c in current_positions.items():
+                    if isinstance(c, dict):
+                        qty = c.get('qty', 0)
+                        price = c.get('price', 0) or c.get('current_price', 0) or c.get('avg_entry_price', 0)
+                    else:
+                        try:
+                            qty = int(c)
+                            price = 0
+                        except Exception:
+                            qty = 0
+                            price = 0
+                    if qty > 0 and price > 0:
+                        total_value += qty * price
+            if total_value and total_value > 0:
+                return {s: (v / total) * total_value for s, v in target_positions.items()}
+            else:
+                logger.warning("⚠️ target_positions 为权重但无法获取 total_value，按 0 处理")
+                return {s: 0.0 for s in target_positions}
+        return target_positions
+
+    def apply_cost_to_nav(self, nav, turnover=0.0, cost_per_turnover=0.002):
+        """
+        按实际换手率估算成本对 NAV 的影响
         
         参数:
             nav: float, 当前 NAV
-            turnover: float, 月度换手率 (0-1)
+            turnover: float, 换手率 (0-1)
+            cost_per_turnover: float, 每单位换手率对应的成本
         
         返回:
             float: 扣除成本后的 NAV
         """
-        # 假设每次调仓平均成本 0.2%
-        avg_cost_per_trade = 0.002
-        
-        # 月度成本
-        monthly_cost = turnover * avg_cost_per_trade
-        
-        # 应用到 NAV
+        monthly_cost = turnover * cost_per_turnover
         adjusted_nav = nav * (1 - monthly_cost)
-        
         return adjusted_nav
 
 
@@ -182,35 +368,58 @@ class TradingCostModel:
 cost_model = TradingCostModel()
 
 
-def apply_costs_to_backtest(result_df, cost_model_instance=None):
+def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnover=0.002):
     """
-    将交易成本应用到回测结果
-    
+    将交易成本应用到回测结果，按实际换手率（turnover）计算
+
     参数:
-        result_df: DataFrame, 回测结果
+        result_df: DataFrame, 回测结果（可包含 holdings 列）
         cost_model_instance: TradingCostModel
-    
+        cost_per_turnover: float, 每单位换手率成本
+
     返回:
         DataFrame: 扣除成本后的结果
     """
     if cost_model_instance is None:
         cost_model_instance = cost_model
-    
+
     result = result_df.copy()
-    
-    # 简化处理：假设每次调仓成本 0.2%
-    trade_cost = 0.002
-    
-    # 调整月度收益
-    result['nav_after_cost'] = result['nav'] * (1 - trade_cost)
-    
-    # 重新计算累计收益
-    for i in range(1, len(result)):
-        result.loc[result.index[i], 'nav_after_cost'] = (
-            result.iloc[i-1]['nav_after_cost'] * 
-            (1 + result.iloc[i]['mr'] - trade_cost)
+    if len(result) == 0:
+        return result
+
+    # 默认换手率
+    default_turnover = 0.5
+
+    # 若存在 holdings 列，则按实际持仓计算换手率
+    if 'holdings' in result.columns:
+        turnovers = []
+        prev = set()
+        for _, row in result.iterrows():
+            curr = set(row.get('holdings', []))
+            avg = (len(prev) + len(curr)) / 2
+            if avg > 0:
+                t = (len(prev - curr) + len(curr - prev)) / (2 * avg)
+            else:
+                t = 0.0
+            turnovers.append(t)
+            prev = curr
+    else:
+        turnovers = [default_turnover] * len(result)
+
+    result['turnover'] = turnovers
+
+    # 应用成本
+    result['nav_after_cost'] = result['nav'].copy()
+    if len(result) > 0:
+        result.iloc[0, result.columns.get_loc('nav_after_cost')] = (
+            result.iloc[0]['nav'] * (1 - turnovers[0] * cost_per_turnover)
         )
-    
+    for i in range(1, len(result)):
+        cost_pct = result.iloc[i]['turnover'] * cost_per_turnover
+        result.iloc[i, result.columns.get_loc('nav_after_cost')] = (
+            result.iloc[i-1]['nav_after_cost'] * (1 + result.iloc[i]['mr'] - cost_pct)
+        )
+
     return result
 
 

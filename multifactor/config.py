@@ -4,6 +4,8 @@
 """
 
 from typing import Optional
+import os
+import json
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -29,6 +31,8 @@ class TradingConfig(BaseModel):
     check_interval: int = Field(60, ge=10, le=3600)
     max_wait_sec: int = Field(1800, ge=30, le=1800)
     poll_interval: int = Field(5, ge=1, le=60)
+    # P1 修复：收盘前 N 分钟拒绝启动新调仓
+    market_close_cutoff_minutes: int = Field(15, ge=0, le=240)
     
     # PDT 检查配置
     enable_pdt_check: bool = True
@@ -37,6 +41,23 @@ class TradingConfig(BaseModel):
     # 限价单配置
     use_limit_orders: bool = False
     limit_order_offset_pct: float = Field(0.001, ge=0.0001, le=0.05)
+    
+    # 调仓频率（通过项目下的 config.json 配置，不依赖环境变量）
+    rebalance_frequency: str = Field('monthly', pattern='^(monthly|daily)$')
+    
+    @field_validator('rebalance_frequency')
+    @classmethod
+    def rebalance_frequency_must_be_valid(cls, v):
+        """调仓频率必须是 monthly 或 daily"""
+        if v not in ('monthly', 'daily'):
+            raise ValueError("rebalance_frequency 必须是 'monthly' 或 'daily'")
+        return v
+    
+    @field_validator('market_close_cutoff_minutes')
+    def cutoff_reasonable(cls, v):
+        if v < 0 or v > 240:
+            raise ValueError('收盘前保护时间应在 0-240 分钟之间')
+        return v
     
     @field_validator('check_interval')
     def check_interval_not_too_fast(cls, v):
@@ -66,8 +87,73 @@ class V14StrategyConfig(BaseModel):
     trading: TradingConfig = TradingConfig()
     weight: WeightConfig = WeightConfig()
     
+    # Alpaca API Key/Secret（从环境变量读取，不硬编码）
+    # P1修复: 增加非空校验，但允许通过环境变量注入
+    alpaca_api_key: str = Field(default='')
+    alpaca_api_secret: str = Field(default='')
+    
+    @field_validator('alpaca_api_key', mode='before')
+    @classmethod
+    def _load_api_key_from_env(cls, v):
+        """P1修复: 允许 ALPACA_API_KEY 环境变量注入"""
+        if v is None or v == '':
+            env_key = os.environ.get('ALPACA_API_KEY')
+            if env_key:
+                return env_key
+        return v or ''
+    
+    @field_validator('alpaca_api_secret', mode='before')
+    @classmethod
+    def _load_api_secret_from_env(cls, v):
+        """P1修复: 允许 ALPACA_API_SECRET 环境变量注入"""
+        if v is None or v == '':
+            env_secret = os.environ.get('ALPACA_API_SECRET')
+            if env_secret:
+                return env_secret
+        return v or ''
+    
+    @field_validator('alpaca_api_key')
+    @classmethod
+    def api_key_must_be_set(cls, v):
+        """P1修复: API Key 必须非空"""
+        if not v or not v.strip():
+            raise ValueError('ALPACA_API_KEY 不能为空，请通过环境变量或构造函数传入')
+        return v
+    
+    @field_validator('alpaca_api_secret')
+    @classmethod
+    def api_secret_must_be_set(cls, v):
+        """P1修复: API Secret 必须非空"""
+        if not v or not v.strip():
+            raise ValueError('ALPACA_API_SECRET 不能为空，请通过环境变量或构造函数传入')
+        return v
+    
     # Alpaca 配置（从环境变量读取，不硬编码）
-    alpaca_base_url: str = 'https://paper-api.alpaca.markets'
+    alpaca_base_url: str = Field(
+        default='https://paper-api.alpaca.markets',
+        pattern=r'^https://(paper-)?api\.alpaca\.markets$'
+    )
+    
+    @field_validator('alpaca_base_url', mode='before')
+    @classmethod
+    def _load_base_url_from_env(cls, v):
+        """P1 修复：允许 ALPACA_BASE_URL 环境变量覆盖配置，未设置时使用默认值"""
+        env_url = os.environ.get('ALPACA_BASE_URL')
+        if env_url:
+            return env_url
+        if v is None or v == '':
+            return 'https://paper-api.alpaca.markets'
+        return v
+    
+    @field_validator('alpaca_base_url')
+    @classmethod
+    def base_url_must_be_valid(cls, v):
+        """P1 修复：base_url 必须是 Alpaca 官方域名，防止错误配置导致订单发往未知地址"""
+        if not v.startswith('https://'):
+            raise ValueError('alpaca_base_url 必须以 https:// 开头')
+        if v not in ('https://paper-api.alpaca.markets', 'https://api.alpaca.markets'):
+            raise ValueError('alpaca_base_url 必须是 https://paper-api.alpaca.markets 或 https://api.alpaca.markets')
+        return v
 
 
 # 全局配置实例
@@ -75,10 +161,21 @@ _config_instance: Optional[V14StrategyConfig] = None
 
 
 def get_config() -> V14StrategyConfig:
-    """获取全局配置（单例）"""
+    """获取全局配置（单例）
+    优先读取项目根目录下的 config.json，不存在时使用默认配置
+    """
     global _config_instance
     if _config_instance is None:
-        _config_instance = V14StrategyConfig()
+        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+        kwargs = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    kwargs = json.load(f)
+            except Exception as e:
+                # 不抛异常，避免配置损坏导致服务无法启动
+                print(f"⚠️ 读取 config.json 失败，使用默认配置: {e}")
+        _config_instance = V14StrategyConfig(**kwargs)
     return _config_instance
 
 
@@ -92,11 +189,20 @@ def set_config(config: V14StrategyConfig):
 # 使用示例
 # ============================================================
 if __name__ == '__main__':
-    # 创建有效配置
-    config = V14StrategyConfig()
-    print(f"VIX 阈值: {config.risk.vix_panic_threshold}")
-    print(f"最大仓位: {config.risk.max_position_pct:.0%}")
-    print(f"检查间隔: {config.trading.check_interval}秒")
+    # P1修复: 若环境变量未设置，演示配置验证失败；
+    # 正常使用时请通过环境变量或构造函数传入真实凭证。
+    try:
+        # 创建有效配置
+        config = V14StrategyConfig()
+        print(f"VIX 阈值: {config.risk.vix_panic_threshold}")
+        print(f"最大仓位: {config.risk.max_position_pct:.0%}")
+        print(f"检查间隔: {config.trading.check_interval}秒")
+        print(f"Alpaca Base URL: {config.alpaca_base_url}")
+        if config.alpaca_api_key:
+            print(f"Alpaca API Key: {config.alpaca_api_key[:4]}...")
+    except ValueError as e:
+        print(f"\n❌ 配置验证失败: {e}")
+        print("   请设置 ALPACA_API_KEY 和 ALPACA_API_SECRET 环境变量，或传入真实凭证。")
     
     # 尝试无效配置（会报错）
     try:
@@ -106,11 +212,18 @@ if __name__ == '__main__':
     except ValueError as e:
         print(f"\n❌ 配置验证失败: {e}")
     
-    # 尝试修改后验证
-    config.risk.vix_panic_threshold = 40.0  # 有效
-    print(f"\n✅ 更新后 VIX 阈值: {config.risk.vix_panic_threshold}")
-    
     try:
-        config.risk.max_position_pct = 1.5  # 超出范围
+        # 尝试修改后验证
+        config = V14StrategyConfig(
+            alpaca_api_key=os.environ.get('ALPACA_API_KEY', 'PK_EXAMPLE'),
+            alpaca_api_secret=os.environ.get('ALPACA_API_SECRET', 'SK_EXAMPLE'),
+        )
+        config.risk.vix_panic_threshold = 40.0  # 有效
+        print(f"\n✅ 更新后 VIX 阈值: {config.risk.vix_panic_threshold}")
+        
+        try:
+            config.risk.max_position_pct = 1.5  # 超出范围
+        except ValueError as e:
+            print(f"❌ 赋值验证失败: {e}")
     except ValueError as e:
-        print(f"❌ 赋值验证失败: {e}")
+        print(f"\n❌ 配置验证失败: {e}")

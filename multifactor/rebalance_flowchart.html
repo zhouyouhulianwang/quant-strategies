@@ -1,0 +1,247 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>V14 Rebalance Flowchart</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f8fafc;
+    --fg: #172033;
+    --muted: #5b6475;
+    --line: #64748b;
+    --neutral: #e2e8f0;
+    --input: #bfdbfe;
+    --process: #c7d2fe;
+    --storage: #99f6e4;
+    --external: #fde68a;
+    --risk: #fecaca;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --fg: #e5e7eb;
+      --muted: #a3adbd;
+      --line: #94a3b8;
+      --neutral: #334155;
+      --input: #1d4ed8;
+      --process: #4338ca;
+      --storage: #0f766e;
+      --external: #92400e;
+      --risk: #991b1b;
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font:
+      14px/1.4 ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+  }
+  main {
+    max-width: 980px;
+    margin: 32px auto;
+    padding: 0 20px;
+  }
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .title {
+    font-size: 20px;
+    font-weight: 650;
+    fill: var(--fg);
+  }
+  .label {
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--fg);
+  }
+  .small {
+    font-size: 11px;
+    fill: var(--muted);
+  }
+  .node {
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+  .neutral {
+    fill: var(--neutral);
+  }
+  .input {
+    fill: var(--input);
+  }
+  .process {
+    fill: var(--process);
+  }
+  .storage {
+    fill: var(--storage);
+  }
+  .external {
+    fill: var(--external);
+  }
+  .risk {
+    fill: var(--risk);
+  }
+  .edge {
+    stroke: var(--line);
+    stroke-width: 1.5;
+    fill: none;
+  }
+  .zone {
+    fill: none;
+    stroke: var(--line);
+    stroke-width: 1;
+    stroke-dasharray: 6 5;
+    opacity: 0.8;
+  }
+</style>
+<main>
+  <svg viewBox="0 0 800 1520" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="var(--line)" />
+      </marker>
+    </defs>
+
+    <text x="400" y="30" text-anchor="middle" class="title">V14 MultiFactor 调仓流程图</text>
+    <text x="400" y="55" text-anchor="middle" class="small">scheduler.py → run_strategy.py → order_manager.py</text>
+
+    <!-- Zone: Scheduler trigger -->
+    <rect x="80" y="75" width="640" height="560" rx="12" class="zone" />
+    <text x="110" y="105" class="label">1. 调度触发（scheduler.py）</text>
+
+    <!-- Start -->
+    <ellipse cx="400" cy="150" rx="60" ry="28" class="node input" />
+    <text x="400" y="155" text-anchor="middle" class="label">开始</text>
+
+    <!-- Trading day -->
+    <polygon points="400,210 500,250 400,290 300,250" class="node neutral" />
+    <text x="400" y="245" text-anchor="middle" class="label">是交易日？</text>
+    <text x="400" y="260" text-anchor="middle" class="small">XNYS / 周末回退</text>
+
+    <!-- After 16:30 ET -->
+    <polygon points="400,320 500,360 400,400 300,360" class="node neutral" />
+    <text x="400" y="355" text-anchor="middle" class="label">已过 16:30 ET？</text>
+    <text x="400" y="370" text-anchor="middle" class="small">EOD 数据可用</text>
+
+    <!-- Already rebalanced -->
+    <polygon points="400,430 500,470 400,510 300,470" class="node neutral" />
+    <text x="400" y="465" text-anchor="middle" class="label">今天已调仓？</text>
+    <text x="400" y="480" text-anchor="middle" class="small">.last_rebalance.json</text>
+
+    <!-- Frequency monthly -->
+    <polygon points="400,540 500,580 400,620 300,580" class="node neutral" />
+    <text x="400" y="575" text-anchor="middle" class="label">frequency == monthly？</text>
+
+    <!-- Last trading day of month -->
+    <polygon points="400,650 500,690 400,730 300,690" class="node neutral" />
+    <text x="400" y="685" text-anchor="middle" class="label">是本月最后交易日？</text>
+
+    <!-- End: no rebalance -->
+    <ellipse cx="620" cy="470" rx="70" ry="28" class="node neutral" />
+    <text x="620" y="475" text-anchor="middle" class="label">跳过，等待</text>
+
+    <!-- Zone: Execution -->
+    <rect x="80" y="655" width="640" height="780" rx="12" class="zone" />
+    <text x="110" y="685" class="label">2. 实盘执行（run_strategy.py）</text>
+
+    <!-- Market open -->
+    <polygon points="400,760 500,800 400,840 300,800" class="node neutral" />
+    <text x="400" y="795" text-anchor="middle" class="label">市场开盘？</text>
+    <text x="400" y="810" text-anchor="middle" class="small">market_is_open()</text>
+
+    <!-- Within 15 min of close -->
+    <polygon points="400,870 500,910 400,950 300,910" class="node neutral" />
+    <text x="400" y="900" text-anchor="middle" class="label">距收盘 ≥ 15 分钟？</text>
+    <text x="400" y="915" text-anchor="middle" class="small">避免无法成交</text>
+
+    <!-- Start rebalance session -->
+    <rect x="320" y="985" width="160" height="50" rx="6" class="node process" />
+    <text x="400" y="1008" text-anchor="middle" class="label">开启调仓会话</text>
+    <text x="400" y="1023" text-anchor="middle" class="small">client_order_id 幂等</text>
+
+    <!-- Generate signals -->
+    <rect x="320" y="1065" width="160" height="70" rx="6" class="node process" />
+    <text x="400" y="1088" text-anchor="middle" class="label">生成交易信号</text>
+    <text x="400" y="1103" text-anchor="middle" class="small">252日数据 → V14因子</text>
+    <text x="400" y="1118" text-anchor="middle" class="small">选股 + 权重归一化</text>
+
+    <!-- Risk check -->
+    <polygon points="400,1180 500,1220 400,1260 300,1220" class="node risk" />
+    <text x="400" y="1215" text-anchor="middle" class="label">风控暂停交易？</text>
+    <text x="400" y="1230" text-anchor="middle" class="small">VIX / trading_halted</text>
+
+    <!-- Buying power check -->
+    <polygon points="400,1290 500,1330 400,1370 300,1330" class="node risk" />
+    <text x="400" y="1320" text-anchor="middle" class="label">购买力足够？</text>
+    <text x="400" y="1335" text-anchor="middle" class="small">target ≤ buying_power</text>
+
+    <!-- Execute trades -->
+    <rect x="320" y="1395" width="160" height="55" rx="6" class="node process" />
+    <text x="400" y="1418" text-anchor="middle" class="label">执行调仓交易</text>
+    <text x="400" y="1433" text-anchor="middle" class="small">PDT / 补单 / 回滚</text>
+
+    <!-- Save last rebalance -->
+    <path d="M320,1475 L480,1475 L500,1505 L480,1535 L320,1535 L300,1505 Z" class="node storage" />
+    <text x="400" y="1505" text-anchor="middle" class="label">保存 .last_rebalance.json</text>
+
+    <!-- End -->
+    <ellipse cx="400" cy="1585" rx="60" ry="28" class="node input" />
+    <text x="400" y="1590" text-anchor="middle" class="label">结束</text>
+
+    <!-- Edges -->
+    <path d="M400,178 L400,210" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,290 L400,320" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,400 L400,430" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,510 L400,540" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,620 L400,650" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,730 L400,760" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,840 L400,870" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,950 L400,985" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1035 L400,1065" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1135 L400,1180" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1260 L400,1290" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1370 L400,1395" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1450 L400,1475" class="edge" marker-end="url(#arrow)" />
+    <path d="M400,1535 L400,1557" class="edge" marker-end="url(#arrow)" />
+
+    <!-- No branches -->
+    <path d="M500,250 L620,250 L620,442" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,360 L560,360 L560,250" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,470 L550,470" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,580 L560,580 L560,470" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,690 L600,690 L600,498" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,800 L600,800 L600,498" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,910 L600,910 L600,498" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,1220 L600,1220 L600,498" class="edge" marker-end="url(#arrow)" />
+    <path d="M500,1330 L600,1330 L600,498" class="edge" marker-end="url(#arrow)" />
+
+    <!-- Labels for no branches -->
+    <text x="515" y="245" class="small">否</text>
+    <text x="515" y="355" class="small">否</text>
+    <text x="515" y="465" class="small">是</text>
+    <text x="515" y="575" class="small">否</text>
+    <text x="515" y="685" class="small">否</text>
+    <text x="515" y="795" class="small">否</text>
+    <text x="515" y="905" class="small">否</text>
+    <text x="515" y="1215" class="small">是</text>
+    <text x="515" y="1325" class="small">否</text>
+
+    <!-- Labels for yes branches -->
+    <text x="410" y="305" class="small">是</text>
+    <text x="410" y="415" class="small">是</text>
+    <text x="410" y="525" class="small">否</text>
+    <text x="410" y="635" class="small">是 / daily</text>
+    <text x="410" y="745" class="small">是</text>
+    <text x="410" y="855" class="small">是</text>
+    <text x="410" y="965" class="small">是</text>
+    <text x="410" y="1275" class="small">是</text>
+    <text x="410" y="1385" class="small">是</text>
+  </svg>
+</main>

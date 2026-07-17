@@ -11,9 +11,17 @@ import logging
 import json
 import os
 
-# 日志设置
-logging.basicConfig(level=logging.INFO)
+# 日志设置（P2修复：统一使用 logging_config 的格式）
+from logging_config import setup_logging
+setup_logging()
 logger = logging.getLogger('risk_monitor')
+
+# P2修复：引入统一告警管理器
+try:
+    from alert_manager import AlertManager
+    ALERT_MGR_AVAILABLE = True
+except ImportError:
+    ALERT_MGR_AVAILABLE = False
 
 # 告警记录
 ALERTS_DIR = os.path.join(os.path.dirname(__file__), 'alerts')
@@ -29,7 +37,8 @@ class RiskMonitor:
                  max_sector_pct=0.30,
                  daily_loss_limit=0.03,
                  vix_pause_level=35.0,
-                 alert_callbacks=None):
+                 alert_callbacks=None,
+                 alert_manager=None):
         """
         初始化风险监控器
         
@@ -40,6 +49,7 @@ class RiskMonitor:
             daily_loss_limit: float, 日亏损限制 (3%)
             vix_pause_level: float, VIX暂停交易水平
             alert_callbacks: list, 告警回调函数列表
+            alert_manager: AlertManager, 可选统一告警管理器（P2修复）
         """
         self.limits = {
             'max_drawdown': max_drawdown_limit,
@@ -50,6 +60,9 @@ class RiskMonitor:
         }
         
         self.alert_callbacks = alert_callbacks or []
+        self.alert_manager = alert_manager
+        if self.alert_manager is None and ALERT_MGR_AVAILABLE:
+            self.alert_manager = AlertManager(enabled=True)
         self.alerts_history = []
         self.nav_history = []
         self.position_history = []
@@ -145,11 +158,18 @@ class RiskMonitor:
         检查日亏损
         
         参数:
-            daily_return: float, 日收益率
+            daily_return: float, 日收益率（如 -0.03 表示 -3%）
         
         返回:
             bool: 是否触发告警
         """
+        # P1/P2: 确保接口签名可用，防御非数值输入
+        try:
+            daily_return = float(daily_return)
+        except (TypeError, ValueError):
+            logger.warning(f"check_daily_loss 收到非数值输入: {daily_return}")
+            return False
+        
         if daily_return <= -self.limits['daily_loss']:
             self._trigger_alert(
                 'DAILY_LOSS',
@@ -203,7 +223,8 @@ class RiskMonitor:
         返回:
             dict: 集中度指标
         """
-        if not positions:
+        # P1/P2: 确保接口签名可用，防御组合价值异常
+        if not positions or portfolio_value <= 0:
             return {'hh_index': 0, 'top5_concentration': 0}
         
         weights = [p['market_value'] / portfolio_value for p in positions.values()]
@@ -252,6 +273,14 @@ class RiskMonitor:
         
         return sector_weights
     
+    def _send_alert(self, method, *args, **kwargs):
+        """P2修复：统一封装告警调用"""
+        if self.alert_manager is not None and hasattr(self.alert_manager, method):
+            try:
+                getattr(self.alert_manager, method)(*args, **kwargs)
+            except Exception as e:
+                logger.debug(f"告警发送失败: {e}")
+
     def _trigger_alert(self, alert_type, message, data):
         """触发告警"""
         alert = {
@@ -267,6 +296,9 @@ class RiskMonitor:
         # 记录日志
         logger.warning(f"🚨 [{alert_type}] {message}")
         
+        # P2修复：通过统一告警管理器发送风控告警
+        self._send_alert('risk_triggered', alert_type, message, data)
+        
         # 执行回调
         for callback in self.alert_callbacks:
             try:
@@ -281,19 +313,30 @@ class RiskMonitor:
         """保存告警到文件"""
         filename = f"alerts_{datetime.now():%Y%m%d}.json"
         filepath = os.path.join(ALERTS_DIR, filename)
-        
-        # 读取现有告警
+
+        # 读取现有告警（损坏时自动重置为空列表）
+        alerts = []
         if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                alerts = json.load(f)
-        else:
-            alerts = []
-        
+            try:
+                with open(filepath, 'r') as f:
+                    alerts = json.load(f)
+                    if not isinstance(alerts, list):
+                        alerts = []
+            except json.JSONDecodeError:
+                logger.warning(f"告警文件 {filepath} 损坏，将重置")
+                alerts = []
+            except Exception as e:
+                logger.warning(f"读取告警文件失败: {e}")
+                alerts = []
+
         alerts.append(alert)
-        
+
         # 保存
-        with open(filepath, 'w') as f:
-            json.dump(alerts, f, indent=2, default=str)
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(alerts, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"保存告警文件失败: {e}")
     
     def get_risk_summary(self):
         """获取风险摘要"""
@@ -330,79 +373,6 @@ class RiskMonitor:
         
         logger.info(f"✅ 风险报告已生成: {filepath}")
         return report
-
-
-class AlertManager:
-    """告警管理器"""
-    
-    def __init__(self):
-        self.channels = []
-    
-    def add_telegram_channel(self, bot_token, chat_id):
-        """添加 Telegram 告警通道"""
-        self.channels.append({
-            'type': 'telegram',
-            'token': bot_token,
-            'chat_id': chat_id
-        })
-    
-    def add_email_channel(self, smtp_server, from_addr, to_addr, password):
-        """添加邮件告警通道"""
-        self.channels.append({
-            'type': 'email',
-            'smtp': smtp_server,
-            'from': from_addr,
-            'to': to_addr,
-            'password': password
-        })
-    
-    def send_alert(self, alert):
-        """发送告警"""
-        for channel in self.channels:
-            if channel['type'] == 'telegram':
-                self._send_telegram(alert, channel)
-            elif channel['type'] == 'email':
-                self._send_email(alert, channel)
-    
-    def _send_telegram(self, alert, channel):
-        """发送 Telegram 告警"""
-        try:
-            import requests
-            message = f"🚨 *{alert['type']}*\n\n{alert['message']}\n\n时间: {alert['timestamp']}"
-            
-            url = f"https://api.telegram.org/bot{channel['token']}/sendMessage"
-            payload = {
-                'chat_id': channel['chat_id'],
-                'text': message,
-                'parse_mode': 'Markdown'
-            }
-            
-            requests.post(url, json=payload, timeout=10)
-            logger.info("✅ Telegram 告警已发送")
-            
-        except Exception as e:
-            logger.error(f"Telegram 发送失败: {e}")
-    
-    def _send_email(self, alert, channel):
-        """发送邮件告警"""
-        try:
-            import smtplib
-            from email.mime.text import MIMEText
-            
-            msg = MIMEText(f"{alert['message']}\n\n详情: {alert['data']}")
-            msg['Subject'] = f"[Risk Alert] {alert['type']}"
-            msg['From'] = channel['from']
-            msg['To'] = channel['to']
-            
-            with smtplib.SMTP(channel['smtp'], 587) as server:
-                server.starttls()
-                server.login(channel['from'], channel['password'])
-                server.send_message(msg)
-            
-            logger.info("✅ 邮件告警已发送")
-            
-        except Exception as e:
-            logger.error(f"邮件发送失败: {e}")
 
 
 # ============================================================

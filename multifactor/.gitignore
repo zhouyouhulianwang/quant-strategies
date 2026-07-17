@@ -19,3 +19,9 @@ orders/
 alerts/
 charts/
 optimization/
+# P2修复: 调度器持久化文件不应提交到版本控制
+.last_rebalance.json
+
+# 本地运行时配置（可包含用户特定设置，如调仓频率）
+config.json
+

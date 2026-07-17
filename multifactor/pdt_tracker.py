@@ -15,6 +15,10 @@ from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
+
 logger = logging.getLogger('pdt_tracker')
 
 
@@ -59,8 +63,14 @@ class PDTTracker:
         self.positions: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         # 历史 day trade 记录，每个元素为 {'date': str, 'symbol': str, 'qty': int}
         self.day_trade_history: List[Dict[str, Any]] = []
+        # 今日卖出记录（用于先卖后买也构成 day trade 的场景）
+        self._today_sells: Dict[str, int] = {}
         # 上次交易日，用于跨日重置
         self._last_trade_date: Optional[str] = None
+        # P1-5 修复：标记 state_file 是否由外部指定，便于延迟初始化时自动切换路径
+        self._state_file_custom = bool(state_file)
+        # P1-5 修复：缓存券商返回的 daytrade_count，用于 can_open_position 默认取值
+        self._broker_daytrade_count = 0
 
         self._load_state()
 
@@ -81,11 +91,16 @@ class PDTTracker:
                     for lot in lots
                 ]
             self._last_trade_date = data.get('last_trade_date', None)
+            # P0 修复：恢复今日卖出记录，覆盖卖出侧 PDT 判断
+            self._today_sells = data.get('today_sells', {})
+            # P1-5 修复：恢复券商 daytrade_count
+            self._broker_daytrade_count = int(data.get('broker_daytrade_count', 0))
             logger.info(f"📂 加载 PDT 状态 [{self.account_id}]: {len(self.day_trade_history)} 条 day trade")
-        except Exception as e:
+        except (json.JSONDecodeError, OSError, IOError, PermissionError) as e:
             logger.warning(f"加载 PDT 状态失败: {e}，使用空记录")
             self.day_trade_history = []
             self.positions = defaultdict(list)
+            self._today_sells = {}
 
     def _persist_state(self):
         """持久化 day trade 记录和仓位到本地文件"""
@@ -98,8 +113,12 @@ class PDTTracker:
                     'day_trade_history': self.day_trade_history,
                     'positions': {s: lots for s, lots in self.positions.items()},
                     'last_trade_date': self._last_trade_date,
+                    # P0 修复：持久化今日卖出记录，支撑先卖后买场景
+                    'today_sells': self._today_sells,
+                    # P1-5 修复：持久化券商 daytrade_count
+                    'broker_daytrade_count': self._broker_daytrade_count,
                 }, f, indent=2)
-        except Exception as e:
+        except (OSError, IOError, PermissionError) as e:
             logger.warning(f"持久化 PDT 状态失败: {e}")
 
     def _reset_if_new_day(self):
@@ -107,6 +126,8 @@ class PDTTracker:
         today = date.today().isoformat()
         if self._last_trade_date != today:
             self._last_trade_date = today
+            # P0 修复：跨日清空当日卖出缓存，避免昨日卖出影响今日 PDT 判断
+            self._today_sells = {}
             self._persist_state()
 
     def _rolling_count(self, today: date) -> int:
@@ -121,18 +142,34 @@ class PDTTracker:
         unique = {(dt['date'], dt['symbol']) for dt in recent}
         return len(unique)
 
-    def sync_positions(self, positions: List[Dict[str, Any]]):
+    def sync_positions(self, positions: List[Dict[str, Any]],
+                         broker_daytrade_count: Optional[int] = None,
+                         account_id: Optional[str] = None):
         """
         与券商持仓同步（用于初始化或定时对账）
-        
+
         参数:
             positions: list of dict, 每个 dict 需包含 symbol, qty, 可选 entry_date
+            broker_daytrade_count: int, 券商返回的 daytrade_count（P1-5 修复）
+            account_id: str, 券商账户 ID（延迟初始化时传入）
         """
         if not self.enabled:
             return
 
         self._reset_if_new_day()
         today = date.today().isoformat()
+
+        # P1-5 修复：延迟初始化账户 ID，避免构造时 API 失败阻塞启动
+        if account_id is not None and account_id != self.account_id:
+            self.account_id = account_id
+            if not self._state_file_custom:
+                base_dir = os.path.join(os.path.dirname(__file__), 'data')
+                self.state_file = os.path.join(base_dir, f'pdt_{self.account_id}.json')
+            self._load_state()
+
+        # P1-5 修复：同步券商 daytrade_count
+        if broker_daytrade_count is not None:
+            self._broker_daytrade_count = int(broker_daytrade_count)
 
         # 简单同步：用当前日期作为未知 entry_date 的 lot 日期
         # 生产环境下建议从 Alpaca 的成交记录反推 entry_date
@@ -170,9 +207,12 @@ class PDTTracker:
             if symbol not in self.positions:
                 self.positions[symbol] = []
             self.positions[symbol].append({'entry_date': today, 'qty': filled_qty})
-            # 检查是否今日已有卖出（short 场景）：先卖后买也构成 day trade
-            # 这里简化处理：如果有同 symbol 当日卖出记录，计为 day trade
-            self._check_same_day_reverse(symbol, 'sell', filled_qty)
+            # P0 修复：买入时若今日已有同 symbol 卖出，则先卖后买也构成 day trade
+            sell_qty_today = self._today_sells.get(symbol, 0)
+            if sell_qty_today > 0:
+                dt_qty = min(filled_qty, sell_qty_today)
+                self._record_day_trade(symbol, dt_qty)
+                self._today_sells[symbol] = max(0, sell_qty_today - filled_qty)
         elif side == 'sell':
             # FIFO 平仓：优先平掉 entry_date 最早的 lot
             remaining = filled_qty
@@ -198,12 +238,15 @@ class PDTTracker:
                 # 卖出数量超过本地记录（可能是 short selling 或数据未同步）
                 logger.warning(f"PDT 卖出 {symbol} {filled_qty} 超出本地持仓记录，假设超卖部分为当日开仓")
                 day_trade_qty += remaining
+                # P0 修复：记录超卖部分，后续买入可据此判断 day trade
+                self._today_sells[symbol] = self._today_sells.get(symbol, 0) + remaining
 
             if day_trade_qty > 0:
                 self._record_day_trade(symbol, day_trade_qty)
-        else:
-            logger.warning(f"未知 side: {side}，忽略 PDT 记录")
-
+            # P0 修复：缓存今日卖出数量，用于先卖后买场景
+            if remaining == 0:
+                self._today_sells[symbol] = self._today_sells.get(symbol, 0) + filled_qty
+                
         self._persist_state()
 
     def _check_same_day_reverse(self, symbol: str, side: str, qty: int):
@@ -265,7 +308,13 @@ class PDTTracker:
 
         # 计算已使用次数
         local_count = self._rolling_count(today)
-        day_trades_used = max(local_count, broker_daytrade_count)
+        # P1-5 修复：若未显式传入，使用同步时缓存的券商 daytrade_count
+        broker_count = (
+            broker_daytrade_count
+            if broker_daytrade_count is not None
+            else getattr(self, '_broker_daytrade_count', 0)
+        )
+        day_trades_used = max(local_count, broker_count)
         day_trades_left = max(0, self.max_day_trades_in_5_days - day_trades_used)
 
         if day_trades_used >= self.max_day_trades_in_5_days:
@@ -277,15 +326,25 @@ class PDTTracker:
             }
 
         # 预估：如果今日有反向操作，本次开仓可能新增一次 day trade
-        # 保守策略：如果今日有同 symbol 的卖出（即使是平旧仓），也视为可能新增 day trade
-        if side == 'buy' and self.positions.get(symbol):
-            # 今日已有卖出 lot 或当前 sell 可能 close 今日 buy
-            # 这里只检查是否今日已有 sell 成交记录
-            has_sell_today = self._has_sell_today(symbol)
-            if has_sell_today and day_trades_used + 1 > self.max_day_trades_in_5_days:
+        # P0 修复：卖出侧开仓（short）也可能构成 day trade，需要覆盖
+        if side == 'buy' and self._has_sell_today(symbol):
+            if day_trades_used + 1 > self.max_day_trades_in_5_days:
                 return {
                     'allowed': False,
                     'reason': f'potential_pdt_exceed: {day_trades_used + 1}/{self.max_day_trades_in_5_days}',
+                    'day_trades_used': day_trades_used,
+                    'day_trades_left': day_trades_left,
+                }
+        elif side == 'sell':
+            # 若今日有同 symbol 买入，则卖出可能是 day trade；若持仓不足，卖出=开仓 short，也可能后续买回形成 day trade
+            has_buy_today_lot = any(
+                lot['entry_date'] == today_str
+                for lot in self.positions.get(symbol, [])
+            )
+            if has_buy_today_lot and day_trades_used + 1 > self.max_day_trades_in_5_days:
+                return {
+                    'allowed': False,
+                    'reason': f'potential_pdt_exceed_sell: {day_trades_used + 1}/{self.max_day_trades_in_5_days}',
                     'day_trades_used': day_trades_used,
                     'day_trades_left': day_trades_left,
                 }
@@ -298,13 +357,8 @@ class PDTTracker:
         }
 
     def _has_sell_today(self, symbol: str) -> bool:
-        """检查今日是否有卖出成交（简化：通过历史记录中当天同 symbol 的 sell）"""
-        # 实际更准确的记录：可以维护今日成交缓存，但这里简化
-        today = date.today().isoformat()
-        for dt in self.day_trade_history:
-            if dt['date'] == today and dt['symbol'] == symbol:
-                return True
-        return False
+        """检查今日是否有卖出成交（P0 修复：使用今日卖出缓存）"""
+        return self._today_sells.get(symbol.upper(), 0) > 0
 
     def get_status(self) -> Dict[str, Any]:
         """获取当前 PDT 状态摘要"""

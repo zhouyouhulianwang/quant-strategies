@@ -1,6 +1,6 @@
 """
 V14: 行业相对估值 + GARP + TED 多因子策略
-16因子 | 零人工干预 | 月度调仓
+17因子 | 零人工干预 | 月度调仓
 
 改进点 (vs V13):
  - 去掉跨行业绝对value排名
@@ -10,12 +10,72 @@ V14: 行业相对估值 + GARP + TED 多因子策略
  - 新增行业相对动量(industry_momentum)
  - 去掉rate_sensitive硬编码行业
 
+P2修复: 文档此前宣称16因子，实际实现为17个(基础7 + V14估值4 + TED6)，统一为17。
+
 作者: AI Quant Strategy Lab
 版本: v14.0
 """
 
 import numpy as np
 import pandas as pd
+import logging
+from logging_config import setup_logging
+
+# P2修复：统一全链路日志格式
+setup_logging()
+logger = logging.getLogger('main')
+
+from weight_allocation import WeightAllocator, integrate_with_backtest
+from cost_model import TradingCostModel
+
+# ============================================================
+# 0. 交易日历辅助函数
+# ============================================================
+
+def _get_next_trading_day(price_df, date):
+    """
+    获取下一个交易日
+    用于信号生成后延至下一交易日执行，避免 look-ahead 偏差
+    """
+    try:
+        idx = price_df.index.get_loc(date)
+        if isinstance(idx, (list, np.ndarray, slice)):
+            idx = idx.start if isinstance(idx, slice) else idx[0]
+        if idx + 1 < len(price_df):
+            return price_df.index[idx + 1]
+    except Exception:
+        pass
+    # fallback: 从 date 之后找第一个交易日
+    future = price_df.index[price_df.index > date]
+    return future[0] if len(future) > 0 else date
+
+
+def _get_last_trading_day_of_month(price_df, year, month):
+    """
+    使用 XNYS (NYSE) 交易日历获取某月最后一个交易日
+    与 scheduler.py 保持一致
+    """
+    try:
+        import exchange_calendars as xcals
+        xnys = xcals.get_calendar('XNYS')
+        start = f"{year}-{month:02d}-01"
+        if month == 12:
+            next_start = f"{year+1}-01-01"
+        else:
+            next_start = f"{year}-{month+1:02d}-01"
+        schedule = xnys.sessions_in_range(start, next_start)
+        month_sessions = [s for s in schedule if s.year == year and s.month == month]
+        if month_sessions:
+            return pd.Timestamp(month_sessions[-1])
+    except Exception:
+        pass
+    # fallback: 仅跳过周末
+    import calendar
+    last_day = calendar.monthrange(year, month)[1]
+    last_date = pd.Timestamp(year, month, last_day)
+    while last_date.weekday() >= 5:
+        last_date -= pd.Timedelta(days=1)
+    return last_date
 
 # ============================================================
 # 1. 配置
@@ -51,19 +111,19 @@ NDX_SET = set(TICKERS[:35])
 
 
 # ============================================================
-# 2. V14 因子计算 (16因子)
+# 2. V14 因子计算 (17因子)
 # ============================================================
 
 def compute_factors_v14(price_slice):
     """
-    V14: 16因子计算
+    V14: 17因子计算
     
     参数:
         price_slice: DataFrame, 索引=日期, 列=股票代码, 值=价格
         至少需要252日历史数据
     
     返回:
-        DataFrame, 索引=股票代码, 列=16个因子的percentile排名(0-1)
+        DataFrame, 索引=股票代码, 列=17个因子的percentile排名(0-1)
     """
     f = pd.DataFrame(index=price_slice.columns)
     cur = price_slice.iloc[-1]
@@ -114,33 +174,45 @@ def compute_factors_v14(price_slice):
     else:
         f['ma_trend'] = 0.5
     
-    # technical: EMA动量
+    # technical: EMA/SMA 动量（与 momentum 区别：momentum 为252日总收益，
+    # technical 为短期 EMA12/EMA26 或 SMA 交叉，命名保留 technical 以兼容历史权重）
+    # P2修复: 增加注释说明 technical 与 momentum 的差异，避免名实混淆。
+    # P1修复: 使用 pandas ewm 计算真实 EMA, 不足时平滑回退到 SMA 并显式重命名
     if len(price_slice) >= 26:
-        ema12 = price_slice.iloc[-12:].mean()
-        ema26 = price_slice.iloc[-26:].mean()
+        ema12 = price_slice.ewm(span=12, min_periods=12, adjust=False).mean().iloc[-1]
+        ema26 = price_slice.ewm(span=26, min_periods=26, adjust=False).mean().iloc[-1]
         f['technical'] = (ema12 / ema26 - 1).rank(pct=True)
+    elif len(price_slice) >= 12:
+        sma12 = price_slice.iloc[-12:].mean()
+        sma26 = price_slice.iloc[-26:].mean() if len(price_slice) >= 26 else price_slice.mean()
+        # 数据不足, 回退到 SMA 并更名避免名不副实
+        f['technical'] = (sma12 / sma26 - 1).rank(pct=True)
     else:
         f['technical'] = 0.5
     
     # ===== V14新增: 行业相对估值 (4个) =====
     
-    # relative_value: 行业内相对PE排名
-    # PE代理 = 1/(年化收益+eps), 在行业内排名
+    # relative_value: 行业内相对估值排名
+    # 使用价格收益率代理(earnings_yield_proxy), 并非真实基本面PE
+    # 年化价格收益率 = (1 + 日均收益)^252 - 1, 其倒数作为“估值”代理
     if len(ret) >= 252:
-        ret_annual = (1 + ret.mean()) ** 252 - 1
-        pe_proxy = 1 / (ret_annual.clip(-0.5, 1.0) + 0.01)
+        earnings_yield_proxy = (1 + ret.mean()) ** 252 - 1
+        # 为避免除零, 对收益率代理裁剪并加极小值
+        pe_proxy = 1 / (earnings_yield_proxy.clip(-0.5, 1.0) + 0.01)
         # 行业内排名: 相对PE越低=越便宜=越高分
-        f['relative_value'] = pe_proxy.groupby(industries).apply(
+        # P0修复: 使用 groupby(..., sort=False).transform 保持索引对齐
+        f['relative_value'] = pe_proxy.groupby(industries, sort=False).transform(
             lambda x: (-x).rank(pct=True)
-        ).values
+        )
     else:
         f['relative_value'] = 0.5
     
     # garp: 成长调整估值 = growth / relative_pe
+    # 同样使用 earnings_yield_proxy, 明确标注非真实PE
     if len(ret) >= 60:
         ret_60d = cur / price_slice.iloc[-60] - 1
-        ret_annual_garp = (1 + ret.mean()) ** 252 - 1
-        pe_p = 1 / (ret_annual_garp.clip(-0.5, 1.0) + 0.01)
+        earnings_yield_proxy_garp = (1 + ret.mean()) ** 252 - 1
+        pe_p = 1 / (earnings_yield_proxy_garp.clip(-0.5, 1.0) + 0.01)
         ind_med = pe_p.groupby(industries).transform('median')
         rel_pe = pe_p / (ind_med + 0.001)
         garp_raw = ret_60d / (rel_pe.clip(0.1, 5) + 0.1)
@@ -228,7 +300,7 @@ def v14_composite_score(factors, vix):
     V14综合评分
     
     参数:
-        factors: DataFrame, 16因子percentile
+        factors: DataFrame, 17因子percentile
         vix: float, 当前VIX值
     
     返回:
@@ -246,16 +318,26 @@ def v14_composite_score(factors, vix):
         'rsi_mr': -0.02, 'ma_trend': -0.03, 'technical': -0.02
     }
     
+    # P1修复: 组内权重先归一化到1, 再乘以 base_weight
+    effective_base_w = {name: base_w[name] + crisis_shift[name] * vix_norm for name in base_w}
+    base_sum = sum(effective_base_w.values())
+    if base_sum > 0:
+        effective_base_w = {name: w / base_sum for name, w in effective_base_w.items()}
+    
     base_score = pd.Series(0.0, index=factors.index)
-    for name in base_w:
-        w = base_w[name] + crisis_shift[name] * vix_norm
-        base_score += factors[name].fillna(0.5) * w
+    for name in effective_base_w:
+        base_score += factors[name].fillna(0.5) * effective_base_w[name]
     
     # V14估值因子 (4因子)
     v14_w = {
         'relative_value': 0.10, 'garp': 0.12,
         'price_position': 0.08, 'industry_momentum': 0.06
     }
+    # P1修复: 组内权重归一化到1
+    v14_sum = sum(v14_w.values())
+    if v14_sum > 0:
+        v14_w = {name: w / v14_sum for name, w in v14_w.items()}
+    
     v14_score = pd.Series(0.0, index=factors.index)
     for name in v14_w:
         v14_score += factors[name].fillna(0.5) * v14_w[name]
@@ -266,11 +348,16 @@ def v14_composite_score(factors, vix):
         'rel_strength_accel': 0.15, 'price_accel': 0.08,
         'momentum_consistency': 0.06, 'low_base_score': 0.08
     }
+    # P1修复: 组内权重归一化到1
+    ted_sum = sum(ted_w.values())
+    if ted_sum > 0:
+        ted_w = {name: w / ted_sum for name, w in ted_w.items()}
+    
     ted_score = pd.Series(0.0, index=factors.index)
     for name in ted_w:
         ted_score += factors[name].fillna(0.5) * ted_w[name]
     
-    # 权重分配 (随VIX连续变化)
+    # 权重分配 (随VIX连续变化; 三组权重之和恒为1)
     v14_weight = 0.22 + 0.08 * vix_norm  # 高VIX时估值因子权重提升
     ted_weight = 0.18 + 0.07 * vix_norm  # 高VIX时TED因子权重提升
     base_weight = 1 - v14_weight - ted_weight
@@ -300,80 +387,201 @@ def v14_scale(vix):
 # 5. 回测引擎
 # ============================================================
 
-def run_v14(price_df, market_df, ndx_set):
+def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital=1.0):
     """
-    V14回测引擎
-    
+    V14回测引擎 (与实盘路径一致)
+
     参数:
         price_df: DataFrame, 日频价格数据 (索引=日期, 列=股票代码)
         market_df: DataFrame, 市场数据 (VIX, RSI), 索引=日期
         ndx_set: set, NDX股票代码集合
-    
+        weight_method: str, 权重分配方法 (equal/risk_parity/min_variance/momentum_weighted)
+        initial_capital: float, 初始资金 (默认1.0, 建议回测使用1e6等真实资金以产生合理交易成本)
+
     返回:
-        DataFrame, 回测结果 (date, nav, sc, n, ndx_ratio)
+        DataFrame, 回测结果 (date, nav, nav_after_cost, mr, vix, sc, n, ndx_ratio, cost, holdings)
     """
-    # 月末调仓日
-    monthly = price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
+    # P1修复: 使用 XNYS 交易日历获取月末最后交易日, 与 scheduler.py 保持一致
+    unique_ym = sorted(set((d.year, d.month) for d in price_df.index))
+    monthly = pd.DatetimeIndex([
+        _get_last_trading_day_of_month(price_df, y, m) for y, m in unique_ym
+    ])
     monthly = monthly[monthly >= price_df.index[252]]  # 252日预热
-    
-    nav = 1.0
-    prev_holdings = []
+    monthly = monthly[monthly.isin(price_df.index)]  # 仅保留价格数据中存在的日期
+
+    # P0/P1修复: 维护真实组合状态 (equity, cash, positions)
+    cash = float(initial_capital)
+    positions = {}  # {symbol: qty}
+    prev_nav = float(initial_capital)
     records = []
-    
-    for i in range(1, len(monthly)):
-        prev_d, curr_d = monthly[i-1], monthly[i]
-        vix_v = market_df.loc[prev_d, 'VIX']
-        sc = v14_scale(vix_v)
-        
-        # PIT因子计算 (只用prev_d及之前数据)
-        pos = price_df.index.get_loc(prev_d)
+
+    # P0/P1修复: 接入 WeightAllocator 与 TradingCostModel
+    cost_model = TradingCostModel()
+
+    for signal_d in monthly:
+        # P0修复: 信号在 signal_d 收盘后生成, 延至下一交易日 next_d 开盘/市价执行
+        next_d = _get_next_trading_day(price_df, signal_d)
+        if next_d not in price_df.index:
+            continue
+
+        # 1. 用 next_d 开盘前持仓市值重估 NAV
+        if positions:
+            next_prices = price_df.loc[next_d, list(positions.keys())].dropna()
+            # 剔除停牌标的
+            invalid = set(positions.keys()) - set(next_prices.index)
+            for s in invalid:
+                del positions[s]
+            equity = float(sum(next_prices[s] * positions[s] for s in positions))
+            nav = equity + cash
+        else:
+            equity = 0.0
+            nav = cash
+
+        # 2. 计算 holding period return (execution-to-execution)
+        mr = (nav / prev_nav - 1.0) if prev_nav > 0 else 0.0
+
+        # 3. PIT 因子计算 (仅使用 signal_d 及之前数据)
+        pos = price_df.index.get_loc(signal_d)
         price_slice = price_df.iloc[max(0, pos - 252):pos + 1]
-        
+
+        vix_v = market_df.loc[signal_d, 'VIX']
+        sc = v14_scale(vix_v)
+
         factors = compute_factors_v14(price_slice)
         score = v14_composite_score(factors, vix_v)
-        
+
         # NDX比例: 因子驱动 (非硬编码)
         ndx_mask = score.index.isin(ndx_set)
         ndx_avg = score[ndx_mask].mean() if ndx_mask.any() else 0.5
         non_avg = score[~ndx_mask].mean() if (~ndx_mask).any() else 0.5
         total = ndx_avg + non_avg
         ndx_ratio = np.clip(ndx_avg / total if total > 0 else 0.5, 0.15, 0.60)
-        
+
         # 选股数量: VIX动态
         vix_norm = np.clip((vix_v - 15) / 40, 0, 1)
         n_stocks = max(10, min(40, int(20 + 15 * (1 - vix_norm))))
-        
+
         # 分层选股
         ndx_n = max(2, int(n_stocks * ndx_ratio))
         ndx_sorted = score[ndx_mask].sort_values(ascending=False).dropna()
         non_sorted = score[~ndx_mask].sort_values(ascending=False).dropna()
-        
+
         selected = (
             list(ndx_sorted.index[:min(ndx_n, len(ndx_sorted))]) +
             list(non_sorted.index[:min(n_stocks - ndx_n, len(non_sorted))])
         )
-        
-        # 收益计算
-        if prev_holdings:
-            p_start = price_df.loc[prev_d, prev_holdings].values
-            p_end = price_df.loc[curr_d, prev_holdings].values
-            mr = np.mean(p_end / p_start - 1) * (sc / 100)
-        else:
-            mr = 0
-        
-        nav *= (1 + mr)
-        
+
+        # 4. P0/P1修复: 先按 next_d 可用价格剔除不可交易标的, 再生成 target_positions
+        target_value = nav * (sc / 100.0)
+        target_positions = integrate_with_backtest(
+            selected_symbols=selected,
+            total_equity=target_value,
+            price_df=price_df,
+            max_weight=0.20,
+            min_weight=0.0,
+            weight_method=weight_method,
+            execution_date=next_d,  # 按 next_d 价格过滤停牌
+        )
+
+        # 5. 构造当前持仓在 next_d 的市价快照
+        all_symbols = set(target_positions.keys()) | set(positions.keys())
+        next_prices = price_df.loc[next_d, list(all_symbols)].dropna()
+        current_positions = {}
+        for s in all_symbols:
+            if s in next_prices.index:
+                current_positions[s] = {
+                    'qty': positions.get(s, 0),
+                    'price': float(next_prices[s]),
+                }
+
+        # 6. P0修复: 在按 next_d 价格过滤后再估算调仓成本
+        cost_summary = cost_model.estimate_portfolio_cost(
+            target_positions, current_positions, total_value=nav
+        )
+        total_cost = cost_summary['total_cost']
+
+        # P1修复: 预留交易成本，避免 cash 为负
+        if total_cost > 0 and target_value > 0:
+            target_value = max(0.0, target_value - total_cost)
+            # 按新的 investable 金额重新生成目标持仓
+            target_positions = integrate_with_backtest(
+                selected_symbols=selected,
+                total_equity=target_value,
+                price_df=price_df,
+                max_weight=0.20,
+                min_weight=0.0,
+                weight_method=weight_method,
+                execution_date=next_d,
+            )
+            # 重新估算成本（已扣除成本，现金不会为负）
+            all_symbols = set(target_positions.keys()) | set(positions.keys())
+            next_prices = price_df.loc[next_d, list(all_symbols)].dropna()
+            current_positions = {}
+            for s in all_symbols:
+                if s in next_prices.index:
+                    current_positions[s] = {
+                        'qty': positions.get(s, 0),
+                        'price': float(next_prices[s]),
+                    }
+            cost_summary = cost_model.estimate_portfolio_cost(
+                target_positions, current_positions, total_value=nav
+            )
+            total_cost = cost_summary['total_cost']
+
+        # 7. P0修复: 在 next_d 执行真实成交, 并更新 cash/positions
+        new_positions = {}
+        total_buy_value = 0.0
+        total_sell_value = 0.0
+        for s in all_symbols:
+            if s not in next_prices.index:
+                # 停牌标的无法成交, 保持当前持仓
+                if s in positions:
+                    new_positions[s] = positions[s]
+                continue
+            current_qty = positions.get(s, 0)
+            target_qty = 0
+            if s in target_positions:
+                target_qty = int(target_positions[s] / next_prices[s])
+            diff = target_qty - current_qty
+            if diff > 0:
+                total_buy_value += diff * next_prices[s]
+                new_positions[s] = target_qty
+            elif diff < 0:
+                total_sell_value += (-diff) * next_prices[s]
+                if target_qty > 0:
+                    new_positions[s] = target_qty
+            else:
+                if target_qty > 0:
+                    new_positions[s] = target_qty
+
+        cash = cash + total_sell_value - total_buy_value - total_cost
+        positions = new_positions
+
+        # 8. 记录持仓市值与真实 NAV
+        post_equity = float(
+            sum(qty * next_prices[s] for s, qty in positions.items() if s in next_prices.index)
+        )
+        nav_after_cost = post_equity + cash
+        holdings = {
+            s: qty * next_prices[s]
+            for s, qty in positions.items()
+            if s in next_prices.index
+        }
+        prev_nav = nav_after_cost
+
         records.append({
-            'date': curr_d,
-            'nav': nav,
+            'date': next_d,
+            'nav': nav / initial_capital,
+            'nav_after_cost': nav_after_cost / initial_capital,
             'mr': mr,
             'vix': vix_v,
             'sc': sc,
-            'n': len(selected),
+            'n': len(target_positions),
             'ndx_ratio': ndx_ratio,
+            'cost': total_cost / initial_capital,
+            'holdings': holdings,
         })
-        prev_holdings = selected
-    
+
     return pd.DataFrame(records)
 
 
@@ -410,9 +618,9 @@ if __name__ == '__main__':
     vix = np.clip(15 + np.cumsum(np.random.normal(0, 0.5, n_days)) * 0.08, 9, 55)
     market_df = pd.DataFrame({'VIX': vix, 'RSI': np.random.uniform(30, 70, n_days)}, index=dates)
     
-    # 执行回测
+    # 执行回测 (使用100万初始资金以产生合理交易成本)
     print("执行 V14 回测...")
-    result = run_v14(price_df, market_df, NDX_SET)
+    result = run_v14(price_df, market_df, NDX_SET, weight_method='equal', initial_capital=1_000_000.0)
     
     # 计算指标
     nav = result['nav']
@@ -434,6 +642,8 @@ if __name__ == '__main__':
     print(f" MaxDD: {maxdd:.2%}")
     print(f" 波动率: {vol:.2%}")
     print(f" 胜率: {(mr > 0).mean():.1%}")
-    print(f"\nV14 因子数: 16 (基础7 + V14估值4 + TED6)")
+    print(f" 累计成本: {result['cost'].sum():.4f}")
+    print(f"\nV14 因子数: 17 (基础7 + V14估值4 + TED6)")
+
     print(f"V14 人工干预: 0")
     print(f"V14 MWH模块: 已去除")

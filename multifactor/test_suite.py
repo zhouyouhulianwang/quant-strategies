@@ -6,6 +6,11 @@ Pytest 测试套件 - V14 多因子策略
 import pytest
 import numpy as np
 import pandas as pd
+import os
+import signal
+import subprocess
+import sys
+import time
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -221,7 +226,7 @@ class TestOrderIdempotency:
         """测试 client_order_id 格式"""
         from alpaca_executor import AlpacaPaperExecutor
         
-        executor = AlpacaPaperExecutor()
+        executor = AlpacaPaperExecutor(mock=True)
         session = executor.start_rebalance_session()
         
         # session_id 应为 8 位 hex
@@ -236,7 +241,7 @@ class TestOrderIdempotency:
         """测试不同会话的 ID 不同"""
         from alpaca_executor import AlpacaPaperExecutor
         
-        executor = AlpacaPaperExecutor()
+        executor = AlpacaPaperExecutor(mock=True)
         session1 = executor.start_rebalance_session()
         session2 = executor.start_rebalance_session()
         
@@ -250,7 +255,7 @@ class TestOrderIdempotency:
         """测试去重方法存在"""
         from alpaca_executor import AlpacaPaperExecutor
         
-        executor = AlpacaPaperExecutor()
+        executor = AlpacaPaperExecutor(mock=True)
         assert hasattr(executor, '_find_order_by_client_id'), "应有去重方法"
 
 
@@ -390,12 +395,11 @@ class TestExecutor:
         'ALPACA_API_KEY': 'PK_TEST123',
         'ALPACA_API_SECRET': 'SK_TEST456'
     })
-    @patch('alpaca_executor.ALPACA_AVAILABLE', False)
     def test_v14_executor_wrappers(self):
         """测试 V14AlpacaExecutor 包装方法（P0 修复）"""
         from alpaca_executor import V14AlpacaExecutor
 
-        v14 = V14AlpacaExecutor()
+        v14 = V14AlpacaExecutor(mock=True)
 
         # 包装方法应正确透传到底层 executor
         assert hasattr(v14, 'market_is_open'), "V14AlpacaExecutor 应有 market_is_open 方法"
@@ -705,8 +709,430 @@ class TestReconciliation:
 
 
 # ============================================================
+# 12. 端到端 mock Alpaca 测试
+# ============================================================
+
+class TestEndToEndMockAlpaca:
+    """端到端 mock Alpaca 测试（不连接真实 API，不提交真实订单）"""
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_mock_rebalance(self):
+        """使用 AlpacaPaperExecutor(mock=True) + RebalanceManager 完成一次等权调仓"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import RebalanceManager
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = RebalanceManager(executor)
+        
+        target_positions = {
+            'AAPL': 20000,
+            'MSFT': 20000,
+            'NVDA': 20000,
+        }
+        
+        results = manager.rebalance(
+            target_positions,
+            max_position_pct=0.25,
+            confirm_fills=False,
+            enable_rollback=True,
+        )
+        
+        # 验证订单数量
+        successful = [r for r in results if r and r.get('status') == 'filled']
+        assert len(successful) == 3, f"应生成 3 笔买入订单，实际 {len(successful)}"
+        
+        # 验证持仓数量
+        positions = executor.get_positions()
+        assert len(positions) == 3, f"应持有 3 只股票，实际 {len(positions)}"
+        
+        # 验证账户权益和现金正常
+        account = executor.get_account()
+        assert account['equity'] > 0, "账户权益应大于 0"
+        assert account['cash'] > 0, "现金应大于 0"
+        
+        # 每只持仓市值应大于 0
+        for p in positions:
+            assert p['market_value'] > 0, f"{p['symbol']} 市值应大于 0"
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_mock_pdt_blocks_after_three_day_trades(self):
+        """模拟多次买入卖出触发 PDT，验证第四次开仓被阻止"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import RebalanceManager
+        import tempfile, os, shutil
+        
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(tmp_dir, 'data'), exist_ok=True)
+            executor = AlpacaPaperExecutor(
+                mock=True,
+                enable_pdt=True,
+                pdt_min_equity=2000000.0,  # 高于 mock 账户权益，确保 PDT 限制生效
+            )
+            if executor.pdt_tracker:
+                executor.pdt_tracker.state_file = os.path.join(tmp_dir, 'data', 'pdt_e2e.json')
+                executor.pdt_tracker.positions = {}
+                executor.pdt_tracker.day_trade_history = []
+                executor.pdt_tracker._today_sells = {}
+                executor.pdt_tracker._broker_daytrade_count = 0
+            
+            manager = RebalanceManager(executor)
+            
+            # 3 次不同股票的日内回转（每次先买后卖计 1 次 day trade）
+            for symbol in ['AAPL', 'MSFT', 'NVDA']:
+                manager.rebalance({symbol: 20000}, confirm_fills=True, max_wait_sec=1, poll_interval=0.1)
+                manager.rebalance({}, confirm_fills=True, max_wait_sec=1, poll_interval=0.1)
+            
+            # 第四次开仓应被阻止
+            results = manager.rebalance({'TSLA': 20000}, confirm_fills=True, max_wait_sec=1, poll_interval=0.1)
+            
+            successful = [r for r in results if r and r.get('status') in ('filled', 'partially_filled')]
+            assert len(successful) == 0, "第四次开仓应被 PDT 阻止"
+            
+            if executor.pdt_tracker:
+                status = executor.pdt_tracker.get_status()
+                assert status['day_trades_used'] == 3, f"应使用 3 次 day trade，实际 {status['day_trades_used']}"
+                assert status['day_trades_left'] == 0, "应无剩余 day trade 次数"
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_mock_emergency_liquidation(self):
+        """模拟 VIX 飙升触发 IntradayMonitor 紧急平仓，验证持仓清空"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import RebalanceManager
+        from intraday_monitor import IntradayMonitor
+        from risk_monitor import RiskMonitor
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = RebalanceManager(executor)
+        
+        # 先建立持仓
+        manager.rebalance({'AAPL': 20000, 'MSFT': 20000}, confirm_fills=False)
+        
+        positions_before = executor.get_positions()
+        assert len(positions_before) > 0, "应先有持仓"
+        
+        risk_monitor = RiskMonitor()
+        monitor = IntradayMonitor(
+            executor=executor,
+            risk_monitor=risk_monitor,
+            vix_emergency_level=5.0,
+        )
+        
+        # 模拟 VIX 飙升
+        monitor.on_vix_spike = None
+        monitor._get_latest_vix = lambda: 100.0
+        monitor._check_vix()
+        
+        positions_after = executor.get_positions()
+        assert len(positions_after) == 0, f"紧急平仓后应无持仓，实际 {len(positions_after)}"
+        assert monitor.trading_halted == True, "交易应已暂停"
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_idempotency_same_session(self):
+        """同一 session 内重复下单，验证返回已存在订单，不重复提交"""
+        from alpaca_executor import AlpacaPaperExecutor
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        executor.start_rebalance_session()
+        
+        order1 = executor.submit_order('AAPL', 10, 'buy')
+        order2 = executor.submit_order('AAPL', 10, 'buy')
+        
+        assert order1 is not None, "首次下单应成功"
+        assert order2 is not None, "重复下单应返回已存在订单"
+        assert order1['id'] == order2['id'], "同一 session 重复下单应返回相同订单 ID"
+    
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_partial_fill_topup(self):
+        """模拟部分成交，验证补单逻辑正常"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import RebalanceManager
+        
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = RebalanceManager(executor)
+        
+        call_count = [0]
+        def fake_submit_and_wait(symbol, qty, side, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1 and side == 'buy':
+                # 首次买入：50% 部分成交
+                return {
+                    'id': f'partial-{symbol}',
+                    'symbol': symbol,
+                    'status': 'partially_filled',
+                    'qty': qty,
+                    'filled_qty': qty // 2,
+                    'filled_avg_price': 100.0,
+                    'side': side,
+                }
+            # 补单或后续订单：完全成交
+            return {
+                'id': f'filled-{symbol}-{call_count[0]}',
+                'symbol': symbol,
+                'status': 'filled',
+                'qty': qty,
+                'filled_qty': qty,
+                'filled_avg_price': 100.0,
+                'side': side,
+            }
+        
+        manager.order_manager.submit_and_wait = fake_submit_and_wait
+        
+        results = manager.rebalance(
+            {'AAPL': 20000},
+            confirm_fills=True,
+            min_buy_fill_ratio=0.95,
+            topup_on_partial=True,
+            max_wait_sec=1,
+            poll_interval=0.1,
+        )
+        
+        # 补单后原始结果状态会被更新为 filled，因此通过调用次数判断补单发生
+        assert call_count[0] >= 2, f"应至少调用 2 次 submit_and_wait（部分成交 + 补单），实际 {call_count[0]}"
+        statuses = [r.get('status') for r in results if r and isinstance(r, dict)]
+        assert 'filled' in statuses, "应发生补单成交"
+
+
+# ============================================================
+# 13. 风控独立进程测试
+# ============================================================
+
+class TestRiskProcess:
+    """测试风控独立进程 risk_process.py"""
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_cli_parse_args(self):
+        """测试 risk_process.py 的 CLI 参数解析"""
+        from risk_process import parse_args
+
+        args = parse_args(['--paper', '--check-interval', '30', '--config-path', '/tmp/config.json'])
+        assert args.paper is True
+        assert args.live is None
+        assert args.mock is False
+        assert args.check_interval == 30
+        assert args.config_path == '/tmp/config.json'
+
+        args = parse_args(['--live'])
+        assert args.live is True
+        assert args.paper is None
+        assert args.mock is False
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_risk_process_init_with_mock_executor(self):
+        """测试独立进程初始化时使用 mock executor"""
+        from risk_process import RiskProcess, parse_args
+
+        args = parse_args(['--paper', '--check-interval', '5'])
+        mock_executor = MagicMock()
+        mock_executor.get_account.return_value = {'portfolio_value': 100000}
+        mock_executor.get_positions.return_value = []
+        mock_executor.market_is_open.return_value = True
+
+        def mock_executor_factory(paper):
+            return mock_executor
+
+        process = RiskProcess(args=args, executor_factory=mock_executor_factory)
+        process.initialize()
+
+        assert process.executor is mock_executor
+        assert process.risk_monitor is not None
+        assert process.intraday_monitor is not None
+        assert process.intraday_monitor.executor is mock_executor
+        assert process.intraday_monitor.check_interval == 5
+
+    def test_sigterm_handling(self):
+        """测试 SIGTERM 信号处理，验证进程优雅退出"""
+        workdir = os.path.dirname(os.path.abspath(__file__))
+        env = os.environ.copy()
+        env['ALPACA_API_KEY'] = 'PK_TEST123'
+        env['ALPACA_API_SECRET'] = 'SK_TEST456'
+        env['PYTHONPATH'] = workdir
+
+        script = """
+import sys
+sys.path.insert(0, '{}')
+from risk_process import RiskProcess, parse_args
+from unittest.mock import MagicMock
+
+args = parse_args(['--mock', '--check-interval', '1'])
+mock_executor = MagicMock()
+mock_executor.get_account.return_value = {{'portfolio_value': 100000}}
+mock_executor.get_positions.return_value = []
+mock_executor.market_is_open.return_value = True
+
+process = RiskProcess(args=args, executor_factory=lambda p: mock_executor)
+process.run()
+""".format(workdir)
+
+        proc = subprocess.Popen(
+            [sys.executable, '-c', script],
+            cwd=workdir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # 等待进程进入主循环
+        time.sleep(1.0)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            assert False, f"进程未在 SIGTERM 后退出，stdout: {stdout.decode()}, stderr: {stderr.decode()}"
+
+        assert proc.returncode == 0, f"退出码应为 0，实际 {proc.returncode}，stderr: {stderr.decode()}"
+
+
+# ============================================================
+# 14. 风控独立进程端到端场景测试
+# ============================================================
+
+class TestRiskProcessE2EScenarios:
+    """更严格的 Risk Process 端到端场景测试：模拟风险事件触发平仓"""
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_vix_spike_triggers_emergency_liquidation(self):
+        """模拟 VIX 飙升，验证触发紧急平仓"""
+        from risk_process import RiskProcess, parse_args
+        from intraday_monitor import IntradayMonitor
+
+        args = parse_args(['--mock', '--check-interval', '1'])
+        mock_executor = MagicMock()
+        mock_executor.get_account.return_value = {'portfolio_value': 100000}
+        mock_executor.get_positions.return_value = []
+        mock_executor.market_is_open.return_value = True
+
+        process = RiskProcess(args=args, executor_factory=lambda p: mock_executor)
+        process.initialize()
+
+        with patch.object(IntradayMonitor, '_get_latest_vix', return_value=50.0):
+            process.intraday_monitor.start(daemon=False)
+            time.sleep(2.5)
+            process.intraday_monitor.stop()
+
+        assert mock_executor.liquidate_all.called, "VIX 飙升应触发紧急平仓"
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_intraday_drawdown_triggers_liquidation(self):
+        """模拟日内回撤超限，验证触发紧急平仓"""
+        from risk_process import RiskProcess, parse_args
+
+        args = parse_args(['--mock', '--check-interval', '1'])
+        mock_executor = MagicMock()
+        mock_executor.get_positions.return_value = []
+        mock_executor.market_is_open.return_value = True
+
+        state = {'nav': 110000.0}
+        mock_executor.get_account.side_effect = lambda: {'portfolio_value': state['nav']}
+
+        process = RiskProcess(args=args, executor_factory=lambda p: mock_executor)
+        process.initialize()
+        process.intraday_monitor.start(daemon=False)
+
+        time.sleep(1.5)
+        state['nav'] = 90000.0
+        time.sleep(2.0)
+
+        process.intraday_monitor.stop()
+
+        assert mock_executor.liquidate_all.called, "日内回撤超限应触发紧急平仓"
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_single_stock_drop_triggers_liquidation(self):
+        """模拟单只股票暴跌，验证平仓该股票"""
+        from risk_process import RiskProcess, parse_args
+
+        args = parse_args(['--mock', '--check-interval', '1'])
+        mock_executor = MagicMock()
+        mock_executor.get_account.return_value = {'portfolio_value': 100000}
+        mock_executor.get_positions.return_value = [
+            {
+                'symbol': 'AAPL',
+                'qty': 100,
+                'current_price': 90.0,
+                'avg_entry_price': 100.0,
+                'market_value': 9000,
+            }
+        ]
+        mock_executor.market_is_open.return_value = True
+
+        process = RiskProcess(args=args, executor_factory=lambda p: mock_executor)
+        process.initialize()
+        process.intraday_monitor.start(daemon=False)
+        time.sleep(2.5)
+        process.intraday_monitor.stop()
+
+        calls = mock_executor.submit_order.call_args_list
+        assert any(c.args[0] == 'AAPL' for c in calls), "AAPL 暴跌应触发平仓"
+
+
+# ============================================================
+# 15. 版本追踪测试
+# ============================================================
+
+class TestVersion:
+    """测试版本追踪模块"""
+
+    def test_version_format(self):
+        """测试版本号格式正确"""
+        from version import get_version, version_info
+        version = get_version()
+        assert isinstance(version, str)
+        parts = version.split('.')
+        assert len(parts) == 3
+        assert all(p.isdigit() for p in parts)
+        info = version_info()
+        assert info['version'] == version
+        assert info['major'] == int(parts[0])
+        assert info['minor'] == int(parts[1])
+        assert info['patch'] == int(parts[2])
+
+    def test_version_in_risk_process(self):
+        """测试 risk_process 支持 --version"""
+        from risk_process import parse_args
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(['--version'])
+        assert exc_info.value.code == 0
+
+
+# ============================================================
 # 运行命令
 # ============================================================
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+

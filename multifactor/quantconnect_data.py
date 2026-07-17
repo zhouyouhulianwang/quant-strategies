@@ -14,6 +14,10 @@ import subprocess
 import zipfile
 import io
 
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
+
 logger = logging.getLogger('quantconnect_data')
 
 # Lean 数据目录
@@ -25,24 +29,146 @@ QC_MARKET = 'usa'
 QC_SECURITY_TYPE = 'equity'
 
 
+def _normalize_index(data):
+    """将时区感知索引统一为 naive 日期，保证多源数据对齐"""
+    if data is None or len(data) == 0:
+        return data
+    if hasattr(data.index, 'tz') and data.index.tz is not None:
+        data.index = data.index.tz_localize(None)
+    return data
+
+
+def _compute_rsi_wilder(prices, window=14):
+    """使用 Wilder 平滑（alpha=1/window）计算 RSI"""
+    delta = prices.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta.where(delta < 0, 0.0))
+
+    avg_gain = gain.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
+
+
+def _yahoo_end_inclusive(end_date):
+    """Yahoo Finance 的 history end 为右开区间，返回 end + 1 日"""
+    return (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+
+
+# ============================================================
+# Parquet 缓存基础设施（按 symbol 缓存完整历史）
+# ============================================================
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), 'data_cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_VERSION = 1
+CACHE_TTL_DAYS = 7
+
+
+def _get_cache_path(symbol):
+    """按 symbol 缓存完整历史，文件名统一为 {symbol}.parquet"""
+    return os.path.join(CACHE_DIR, f"{symbol}.parquet")
+
+
+def _decode_metadata(meta_dict):
+    """将 pyarrow 字节型 metadata 解码为字符串字典"""
+    if not meta_dict:
+        return {}
+    result = {}
+    for k, v in meta_dict.items():
+        if k == b'ARROW:schema' or k == b'pandas':
+            continue
+        key = k.decode('utf-8') if isinstance(k, bytes) else k
+        val = v.decode('utf-8') if isinstance(v, bytes) else v
+        result[key] = val
+    return result
+
+
+def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
+    """检查 parquet 缓存是否有效（版本号 + TTL）"""
+    if not os.path.exists(cache_path):
+        return False
+    try:
+        meta = pq.read_metadata(cache_path)
+        metadata = _decode_metadata(meta.metadata)
+        if metadata.get('cache_version') != str(CACHE_VERSION):
+            return False
+        downloaded_at = datetime.fromisoformat(metadata.get('downloaded_at'))
+        if datetime.now() - downloaded_at > timedelta(days=ttl_days):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _load_cache(cache_path):
+    """从 parquet 缓存读取数据，单列表自动还原为 Series"""
+    try:
+        df = pd.read_parquet(cache_path)
+        if isinstance(df, pd.DataFrame) and len(df.columns) == 1:
+            return df.iloc[:, 0]
+        return df
+    except Exception as e:
+        logger.warning(f"读取 parquet 缓存失败 {cache_path}: {e}")
+        return None
+
+
+def _save_cache(cache_path, data, source='QuantConnect', adjustment='adjusted'):
+    """保存数据及元数据到 parquet 缓存，失败不抛异常"""
+    try:
+        if data is None or (hasattr(data, '__len__') and len(data) == 0):
+            return False
+        if isinstance(data, pd.Series):
+            df = data.to_frame(name=data.name or 'value')
+        else:
+            df = data.copy()
+        if df.index.name is None:
+            df.index.name = 'date'
+        df = df[df.index.notna()]
+        if len(df) == 0:
+            return False
+        table = pa.Table.from_pandas(df)
+        existing = table.schema.metadata or {}
+        cache_metadata = {
+            'cache_version': str(CACHE_VERSION),
+            'downloaded_at': datetime.now().isoformat(),
+            'source': source,
+            'adjustment': adjustment,
+        }
+        new_metadata = {
+            **existing,
+            **{k.encode('utf-8'): v.encode('utf-8') for k, v in cache_metadata.items()}
+        }
+        table = table.replace_schema_metadata(new_metadata)
+        pq.write_table(table, cache_path)
+        return True
+    except Exception as e:
+        logger.warning(f"保存 parquet 缓存失败 {cache_path}: {e}")
+        return False
+
+
 class QuantConnectDataSource:
     """QuantConnect 数据源 - 通过 Lean CLI"""
-    
+
     def __init__(self, data_dir=None):
         """
         初始化 QC 数据源
-        
+
         参数:
             data_dir: str, Lean 数据目录
         """
         self.data_dir = data_dir or LEAN_DATA_DIR
         self.available = self._check_lean_available()
-        
+
         if self.available:
-            logger.info(f"✅ QuantConnect 数据源已初始化: {data_dir}")
+            logger.info(f"✅ QuantConnect 数据源已初始化: {self.data_dir}")
         else:
             logger.warning("⚠️ Lean CLI 数据不可用")
-    
+
     def _check_lean_available(self) -> bool:
         """检查 Lean CLI 是否可用"""
         try:
@@ -55,11 +181,11 @@ class QuantConnectDataSource:
             return result.returncode == 0
         except Exception:
             return False
-    
+
     def _get_data_path(self, symbol: str, resolution='daily') -> str:
         """
         获取 Lean 数据文件路径
-        
+
         Lean 数据结构:
         data/equity/usa/daily/{SYMBOL}.zip
         """
@@ -71,27 +197,27 @@ class QuantConnectDataSource:
             resolution,
             f"{symbol_upper}.zip"
         )
-    
-    def _download_via_lean(self, symbol: str, resolution='daily', 
+
+    def _download_via_lean(self, symbol: str, resolution='daily',
                            start_date=None, end_date=None) -> bool:
         """
         使用 lean data download 下载数据
-        
+
         参数:
             symbol: str
             resolution: str, daily/hour/minute
             start_date: str, 'YYYY-MM-DD'
             end_date: str, 'YYYY-MM-DD'
-        
+
         返回:
             bool: 是否成功
         """
         if not self.available:
             return False
-        
+
         try:
             logger.info(f"📥 通过 Lean CLI 下载 {symbol} {resolution} 数据...")
-            
+
             # 构建 lean 命令
             cmd = [
                 'lean', 'data', 'download',
@@ -101,48 +227,48 @@ class QuantConnectDataSource:
                 '--ticker', symbol.upper(),
                 '--market', QC_MARKET,
             ]
-            
+
             if start_date:
                 cmd.extend(['--start-date', start_date])
             if end_date:
                 cmd.extend(['--end-date', end_date])
-            
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=120
             )
-            
+
             if result.returncode == 0:
                 logger.info(f"✅ {symbol} 数据下载成功")
                 return True
             else:
                 logger.warning(f"⚠️ {symbol} 数据下载失败: {result.stderr}")
                 return False
-                
+
         except subprocess.TimeoutExpired:
             logger.error(f"⏱️ {symbol} 数据下载超时")
             return False
         except Exception as e:
             logger.error(f"❌ {symbol} 数据下载错误: {e}")
             return False
-    
+
     def _read_lean_data(self, symbol: str, resolution='daily') -> Optional[pd.DataFrame]:
         """
         读取 Lean 格式数据
-        
+
         Lean CSV 格式:
         date,open,high,low,close,volume
-        
+
         返回:
             DataFrame: 列=['Open','High','Low','Close','Volume'], 索引=日期
         """
         data_path = self._get_data_path(symbol, resolution)
-        
+
         if not os.path.exists(data_path):
             return None
-        
+
         try:
             # 读取 zip 文件中的 CSV
             with zipfile.ZipFile(data_path, 'r') as z:
@@ -154,66 +280,72 @@ class QuantConnectDataSource:
                         if name.endswith('.csv'):
                             csv_name = name
                             break
-                
+
                 with z.open(csv_name) as f:
                     df = pd.read_csv(
                         f,
                         header=None,
                         names=['date', 'open', 'high', 'low', 'close', 'volume']
                     )
-            
-            # 解析日期
-            df['date'] = pd.to_datetime(df['date'])
+
+            # 明确解析 Lean 日期格式（YYYYMMDD）
+            df['date'] = pd.to_datetime(df['date'].astype(str), format='%Y%m%d', errors='coerce')
+            df = df.dropna(subset=['date'])
             df.set_index('date', inplace=True)
             df.sort_index(inplace=True)
-            
+
             # 重命名列
             df.rename(columns={
                 'open': 'Open',
                 'high': 'High',
                 'low': 'Low',
-                'close': 'Close',
                 'volume': 'Volume'
             }, inplace=True)
-            
+
+            # 优先使用调整后的收盘价（如果存在），否则使用 close
+            if 'adjusted_close' in df.columns:
+                df['Close'] = df['adjusted_close']
+            else:
+                df['Close'] = df['close']
+
             return df
-            
+
         except Exception as e:
             logger.error(f"读取 {symbol} Lean 数据失败: {e}")
             return None
-    
+
     def get_price_data(self, symbols: List[str], start_date: str, end_date: str,
                        resolution='daily', auto_download=True) -> pd.DataFrame:
         """
         获取价格数据（QuantConnect 为主数据源）
-        
+
         参数:
             symbols: list, 股票代码列表
             start_date: str, 'YYYY-MM-DD'
             end_date: str, 'YYYY-MM-DD'
             resolution: str, 'daily' | 'hour' | 'minute'
             auto_download: bool, 自动下载缺失数据
-        
+
         返回:
             DataFrame: 索引=日期, 列=股票代码, 值=收盘价
         """
         price_df = pd.DataFrame()
-        
+
         for symbol in symbols:
             # 1. 尝试读取本地 Lean 数据
             df = self._read_lean_data(symbol, resolution)
-            
+
             # 2. 如果缺失且允许自动下载，尝试下载
             if df is None and auto_download and self.available:
                 if self._download_via_lean(symbol, resolution, start_date, end_date):
                     df = self._read_lean_data(symbol, resolution)
-            
+
             # 3. 检查数据是否满足日期范围
             if df is not None:
                 start_dt = pd.to_datetime(start_date)
                 end_dt = pd.to_datetime(end_date)
                 df = df[(df.index >= start_dt) & (df.index <= end_dt)]
-                
+
                 if len(df) > 0:
                     price_df[symbol] = df['Close']
                     logger.info(f"[QC] {symbol}: {len(df)} 条记录")
@@ -221,68 +353,77 @@ class QuantConnectDataSource:
                     logger.warning(f"[QC] {symbol} 数据日期范围不匹配")
             else:
                 logger.warning(f"[QC] {symbol} 数据不可用")
-        
+
         return price_df.dropna(how='all')
-    
+
     def get_vix_data(self, start_date: str, end_date: str) -> Optional[pd.Series]:
         """
         获取 VIX 数据
-        
+
         QuantConnect 中 VIX 的代码通常是 "VIX"
         """
         # VIX 在 QuantConnect 中作为指数
         vix_df = self.get_price_data(
             ['VIX'], start_date, end_date, auto_download=False
         )
-        
+
         if 'VIX' in vix_df.columns and len(vix_df) > 0:
             return vix_df['VIX']
-        
+
         return None
 
 
 class AlpacaMarketData:
     """Alpaca Market Data API - 作为 QuantConnect 的 fallback"""
-    
+
     def __init__(self, api_key=None, api_secret=None):
         """
         初始化 Alpaca Market Data
-        
+
         参数:
             api_key: str
             api_secret: str
         """
-        # 从 .env 读取
+        # 使用 dotenv_values 读取 .env，不污染全局环境变量
         env_path = os.path.join(os.path.dirname(__file__), '.env')
+        env_values = {}
         if os.path.exists(env_path):
-            with open(env_path, 'r') as f:
-                for line in f:
-                    if '=' in line and not line.startswith('#'):
-                        key, value = line.strip().split('=', 1)
-                        os.environ[key] = value
-        
-        self.api_key = api_key or os.getenv('ALPACA_API_KEY')
-        self.api_secret = api_secret or os.getenv('ALPACA_API_SECRET')
+            try:
+                from dotenv import dotenv_values
+                env_values = dotenv_values(env_path) or {}
+            except Exception as e:
+                logger.warning(f"读取 .env 失败: {e}")
+
+        self.api_key = (
+            api_key
+            or env_values.get('ALPACA_API_KEY')
+            or os.getenv('ALPACA_API_KEY')
+        )
+        self.api_secret = (
+            api_secret
+            or env_values.get('ALPACA_API_SECRET')
+            or os.getenv('ALPACA_API_SECRET')
+        )
         self.base_url = 'https://data.alpaca.markets'
-        
+
         if not self.api_key or not self.api_secret:
             logger.warning("⚠️ Alpaca Market Data API Key 未设置")
             self.available = False
         else:
             self.available = True
             logger.info("✅ Alpaca Market Data 已初始化")
-    
+
     def _request(self, endpoint: str, params: dict = None) -> dict:
         """发送请求到 Alpaca Data API"""
         import requests
-        
+
         headers = {
             'APCA-API-KEY-ID': self.api_key,
             'APCA-API-SECRET-KEY': self.api_secret
         }
-        
+
         url = f"{self.base_url}/v2/{endpoint}"
-        
+
         try:
             response = requests.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
@@ -290,28 +431,28 @@ class AlpacaMarketData:
         except Exception as e:
             logger.error(f"Alpaca API 请求失败: {e}")
             return {}
-    
-    def get_bars(self, symbol: str, start: str, end: str, 
+
+    def get_bars(self, symbol: str, start: str, end: str,
                  timeframe='1Day') -> Optional[pd.DataFrame]:
         """
-        获取历史 K 线
-        
+        获取历史 K 线（自动处理 next_page_token 分页）
+
         参数:
             symbol: str
             start: str, 'YYYY-MM-DD'
             end: str, 'YYYY-MM-DD'
             timeframe: str, '1Min' | '1Hour' | '1Day'
-        
+
         返回:
             DataFrame
         """
         if not self.available:
             return None
-        
+
         # 调整日期格式
         start_iso = f"{start}T00:00:00Z"
         end_iso = f"{end}T23:59:59Z"
-        
+
         endpoint = f"stocks/{symbol.upper()}/bars"
         params = {
             'start': start_iso,
@@ -320,41 +461,62 @@ class AlpacaMarketData:
             'limit': 10000,
             'adjustment': 'all'
         }
-        
-        data = self._request(endpoint, params)
-        
-        if not data or 'bars' not in data:
+
+        all_bars = []
+        while True:
+            data = self._request(endpoint, params)
+            if not data or 'bars' not in data:
+                break
+
+            all_bars.extend(data['bars'])
+
+            next_token = data.get('next_page_token')
+            if not next_token:
+                break
+
+            # 继续分页
+            params = {
+                'start': start_iso,
+                'end': end_iso,
+                'timeframe': timeframe,
+                'limit': 10000,
+                'adjustment': 'all',
+                'page_token': next_token,
+            }
+
+        if not all_bars:
             return None
-        
-        df = pd.DataFrame(data['bars'])
+
+        df = pd.DataFrame(all_bars)
         df['t'] = pd.to_datetime(df['t'])
+        df['t'] = df['t'].dt.tz_localize(None)
         df.set_index('t', inplace=True)
         df.rename(columns={
-            'o': 'Open', 'h': 'High', 'l': 'Low', 
+            'o': 'Open', 'h': 'High', 'l': 'Low',
             'c': 'Close', 'v': 'Volume', 'n': 'TradeCount', 'vw': 'VWAP'
         }, inplace=True)
-        
+
         return df
-    
+
     def get_latest_trade(self, symbol: str) -> Optional[float]:
         """获取最新成交价"""
         if not self.available:
             return None
-        
+
         data = self._request(f"stocks/{symbol.upper()}/trades/latest")
-        
+
         if data and 'trade' in data:
             return float(data['trade']['p'])
-        
+
         return None
-    
+
     def get_latest_quote(self, symbol: str) -> Optional[dict]:
         """获取最新报价"""
         if not self.available:
             return None
-        
+
         data = self._request(f"stocks/{symbol.upper()}/quotes/latest")
-        
+
         if data and 'quote' in data:
             return {
                 'bid': float(data['quote']['bp']),
@@ -362,7 +524,7 @@ class AlpacaMarketData:
                 'bid_size': int(data['quote']['bs']),
                 'ask_size': int(data['quote']['as']),
             }
-        
+
         return None
 
 
@@ -371,18 +533,18 @@ class HybridQCDataSource:
     混合数据源: QuantConnect → Alpaca → Yahoo Finance
     优先使用 QuantConnect/Lean 数据
     """
-    
+
     def __init__(self, alpaca_key=None, alpaca_secret=None):
         """
         初始化混合数据源
-        
+
         参数:
             alpaca_key: str, Alpaca API Key (fallback)
             alpaca_secret: str, Alpaca API Secret
         """
         self.qc = QuantConnectDataSource()
         self.alpaca = AlpacaMarketData(alpaca_key, alpaca_secret)
-        
+
         # Yahoo Finance 作为最终 fallback
         self._yahoo_available = False
         try:
@@ -390,97 +552,111 @@ class HybridQCDataSource:
             self._yahoo_available = True
         except ImportError:
             pass
-        
+
         logger.info("✅ 混合数据源已初始化 (QC → Alpaca → Yahoo)")
-    
+
     def get_prices(self, symbols: List[str], start_date: str, end_date: str,
                    resolution='daily') -> pd.DataFrame:
         """
-        获取价格数据
-        
+        获取价格数据（按 symbol 缓存完整历史，使用时按日期切片）
+
         优先级: QuantConnect → Alpaca → Yahoo Finance
         """
         price_df = pd.DataFrame()
-        missing_symbols = []
-        
-        # 1. 尝试 QuantConnect
-        if self.qc.available:
-            price_df = self.qc.get_price_data(
-                symbols, start_date, end_date, resolution, auto_download=True
-            )
-            
-            # 找出缺失的标的
-            for s in symbols:
-                if s not in price_df.columns or price_df[s].isna().all():
-                    missing_symbols.append(s)
-        else:
-            missing_symbols = symbols.copy()
-        
-        # 2. 回退到 Alpaca
-        if missing_symbols and self.alpaca.available:
-            logger.info(f"📡 {len(missing_symbols)} 只标的回退到 Alpaca")
-            
-            for symbol in missing_symbols:
+
+        for symbol in symbols:
+            cache_path = _get_cache_path(symbol)
+
+            # 1. 优先读取 parquet 缓存
+            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
                 try:
-                    timeframe = '1Day' if resolution == 'daily' else '1Hour'
-                    df = self.alpaca.get_bars(symbol, start_date, end_date, timeframe)
-                    
-                    if df is not None and len(df) > 0:
-                        price_df[symbol] = df['Close']
-                        logger.info(f"[Alpaca] {symbol}: {len(df)} 条")
+                    data = _load_cache(cache_path)
+                    data = _normalize_index(data)
+                    if isinstance(data, pd.DataFrame) and 'Close' in data.columns:
+                        series = data['Close']
+                    elif isinstance(data, pd.Series):
+                        series = data
                     else:
-                        # 3. 回退到 Yahoo
-                        if self._yahoo_available:
-                            self._fetch_from_yahoo(symbol, start_date, end_date, price_df)
-                            
+                        series = None
+                    if series is not None:
+                        series = series.loc[start_date:end_date]
+                        price_df[symbol] = series
+                        logger.info(f"[缓存] {symbol}: {len(series)} 条")
+                        continue
                 except Exception as e:
-                    logger.error(f"获取 {symbol} 失败: {e}")
-                    # 最终回退 Yahoo
-                    if self._yahoo_available:
-                        self._fetch_from_yahoo(symbol, start_date, end_date, price_df)
-        
-        # 如果 QC 不可用，全部走 Alpaca
-        elif not self.qc.available and self.alpaca.available:
-            logger.info("📡 QuantConnect 不可用，使用 Alpaca 数据源")
-            for symbol in symbols:
+                    logger.warning(f"缓存读取失败 {symbol}: {e}")
+
+            # 2. 缓存未命中：按优先级获取完整历史
+            full_series, source = self._fetch_single_symbol_full(symbol, start_date, end_date, resolution)
+            if full_series is not None and len(full_series) > 0:
+                # 保存完整历史到 parquet
+                _save_cache(cache_path, full_series, source=source, adjustment='adjusted')
                 try:
-                    df = self.alpaca.get_bars(symbol, start_date, end_date, '1Day')
-                    if df is not None and len(df) > 0:
-                        price_df[symbol] = df['Close']
+                    series = full_series.loc[start_date:end_date]
+                    price_df[symbol] = series
+                    logger.info(f"[{source}] {symbol}: {len(series)} 条")
                 except Exception as e:
-                    logger.error(f"Alpaca 获取 {symbol} 失败: {e}")
-        
+                    logger.warning(f"{symbol} 日期切片失败: {e}")
+
+        # P1修复: 按标的前向填充，不要按行 dropna(how='any') 删整行，避免幸存者偏差
+        price_df = price_df.dropna(how='all', axis=1)
+        price_df = price_df.ffill()
         return price_df.dropna(how='all')
-    
-    def _fetch_from_yahoo(self, symbol: str, start: str, end: str, 
-                          price_df: pd.DataFrame):
-        """从 Yahoo Finance 获取（最终回退）"""
-        try:
-            import yfinance as yf
-            data = yf.Ticker(symbol).history(start=start, end=end)
-            if len(data) > 0:
-                price_df[symbol] = data['Close']
-                logger.info(f"[Yahoo] {symbol}: {len(data)} 条")
-        except Exception as e:
-            logger.error(f"Yahoo 获取 {symbol} 失败: {e}")
-    
+
+    def _fetch_single_symbol_full(self, symbol: str, start_date: str, end_date: str,
+                                  resolution='daily'):
+        """获取单标的完整历史，返回 (series, source)，失败返回 (None, None)"""
+        # 1. QuantConnect（Lean 本地文件包含完整历史）
+        if self.qc.available:
+            try:
+                df = self.qc._read_lean_data(symbol, resolution)
+                if df is None and self.qc.available:
+                    self.qc._download_via_lean(symbol, resolution, start_date, end_date)
+                    df = self.qc._read_lean_data(symbol, resolution)
+                if df is not None and 'Close' in df.columns:
+                    return _normalize_index(df['Close']), 'QuantConnect'
+            except Exception as e:
+                logger.warning(f"QC 获取 {symbol} 失败: {e}")
+
+        # 2. Alpaca（回退）
+        if self.alpaca.available:
+            try:
+                timeframe = '1Day' if resolution == 'daily' else '1Hour'
+                df = self.alpaca.get_bars(symbol, start_date, end_date, timeframe)
+                if df is not None and len(df) > 0 and 'Close' in df.columns:
+                    return _normalize_index(df['Close']), 'Alpaca'
+            except Exception as e:
+                logger.warning(f"Alpaca 获取 {symbol} 失败: {e}")
+
+        # 3. Yahoo Finance（最终回退）
+        if self._yahoo_available:
+            try:
+                import yfinance as yf
+                data = yf.Ticker(symbol).history(period='max')['Close']
+                data = _normalize_index(data)
+                return data, 'Yahoo'
+            except Exception as e:
+                logger.warning(f"Yahoo 获取 {symbol} 失败: {e}")
+
+        return None, None
+
+
     def get_vix(self) -> Optional[float]:
         """
         获取 VIX
-        
+
         优先级: QuantConnect → Yahoo Finance
         (Alpaca 不提供 VIX 数据)
         """
         # 1. 尝试 QuantConnect
         if self.qc.available:
-            # VIX 在 QC 中的代码
             vix_series = self.qc.get_vix_data(
                 (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
                 datetime.now().strftime('%Y-%m-%d')
             )
             if vix_series is not None and len(vix_series) > 0:
                 return float(vix_series.iloc[-1])
-        
+
         # 2. 回退到 Yahoo
         if self._yahoo_available:
             try:
@@ -490,13 +666,13 @@ class HybridQCDataSource:
                     return float(vix_data['Close'].iloc[-1])
             except Exception:
                 pass
-        
+
         return None
-    
+
     def get_current_price(self, symbol: str) -> Optional[float]:
         """
         获取实时价格
-        
+
         优先级: Alpaca → Yahoo
         """
         # Alpaca 实时数据最快
@@ -504,7 +680,7 @@ class HybridQCDataSource:
             price = self.alpaca.get_latest_trade(symbol)
             if price:
                 return price
-        
+
         # 回退 Yahoo
         if self._yahoo_available:
             try:
@@ -514,72 +690,151 @@ class HybridQCDataSource:
                     return float(hist['Close'].iloc[-1])
             except Exception:
                 pass
-        
+
         return None
-    
-    def get_market_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+
+    def get_market_data(self, start_date: str, end_date: str,
+                        resolution='daily') -> pd.DataFrame:
         """
-        获取市场数据 (VIX + RSI proxy)
-        
+        获取市场数据 (VIX + RSI proxy)，按 symbol 缓存完整历史
+
         参数:
             start_date: str, 'YYYY-MM-DD'
             end_date: str, 'YYYY-MM-DD'
-        
+            resolution: str, 'daily' | 'hour'
+
         返回:
             DataFrame: 列=['VIX', 'RSI'], 索引=日期
         """
-        # VIX
-        vix_data = None
-        
+        # VIX 与 SPY 均优先使用 parquet 缓存
+        vix_data = self._get_vix_cached(start_date, end_date)
+        spy_full = self._get_spy_cached(start_date, end_date, resolution)
+
+        if spy_full is None or len(spy_full) == 0:
+            return pd.DataFrame()
+
+        base_index = spy_full.index
+        market_df = pd.DataFrame(index=base_index)
+
+        if vix_data is not None and len(vix_data) > 0:
+            market_df['VIX'] = vix_data.reindex(base_index)
+
+        spy_rsi = _compute_rsi_wilder(spy_full)
+        market_df['RSI'] = spy_rsi.reindex(base_index)
+
+        market_df = market_df.dropna(how='all')
+        return market_df
+
+    def _get_vix_cached(self, start_date: str, end_date: str):
+        """获取 VIX 数据（优先 parquet 缓存）"""
+        cache_path = _get_cache_path('VIX')
+        if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            try:
+                vix = _load_cache(cache_path)
+                vix = _normalize_index(vix)
+                return vix.loc[start_date:end_date]
+            except Exception as e:
+                logger.warning(f"VIX 缓存读取失败: {e}")
+
         # 尝试 QuantConnect
         if self.qc.available:
-            vix_data = self.qc.get_vix_data(start_date, end_date)
-        
-        # 回退 Yahoo
-        if vix_data is None and self._yahoo_available:
             try:
-                import yfinance as yf
-                vix = yf.Ticker('^VIX').history(start=start_date, end=end_date)['Close']
-                vix_data = vix
-            except Exception:
-                pass
-        
-        # SPY RSI 作为市场 RSI 代理
-        spy_rsi = None
+                vix = self.qc.get_vix_data(start_date, end_date)
+                if vix is not None and len(vix) > 0:
+                    _save_cache(cache_path, vix, source='QuantConnect', adjustment='unadjusted')
+                    return _normalize_index(vix.loc[start_date:end_date])
+            except Exception as e:
+                logger.warning(f"QC VIX 获取失败: {e}")
+
+        # 回退 Yahoo
         if self._yahoo_available:
             try:
                 import yfinance as yf
-                spy = yf.Ticker('SPY').history(start=start_date, end=end_date)['Close']
-                delta = spy.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                spy_rsi = 100 - (100 / (1 + rs))
-            except Exception:
-                pass
-        
-        # 合并
-        market_df = pd.DataFrame(index=vix_data.index if vix_data is not None else pd.DatetimeIndex([]))
-        
-        if vix_data is not None:
-            market_df['VIX'] = vix_data
-        
-        if spy_rsi is not None:
-            market_df['RSI'] = spy_rsi
-        
-        return market_df.dropna()
+                vix = yf.Ticker('^VIX').history(period='max')['Close']
+                vix = _normalize_index(vix)
+                _save_cache(cache_path, vix, source='Yahoo', adjustment='unadjusted')
+                return vix.loc[start_date:end_date]
+            except Exception as e:
+                logger.warning(f"Yahoo VIX 获取失败: {e}")
+
+        return None
+
+    def _get_spy_cached(self, start_date: str, end_date: str, resolution: str):
+        """获取 SPY 完整历史（优先 parquet 缓存）"""
+        cache_path = _get_cache_path('SPY')
+        if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            try:
+                spy = _load_cache(cache_path)
+                spy = _normalize_index(spy)
+                return spy.loc[start_date:end_date]
+            except Exception as e:
+                logger.warning(f"SPY 缓存读取失败: {e}")
+
+        # 尝试 QuantConnect
+        if self.qc.available:
+            try:
+                df = self.qc._read_lean_data('SPY', resolution)
+                if df is None and self.qc.available:
+                    self.qc._download_via_lean('SPY', resolution, start_date, end_date)
+                    df = self.qc._read_lean_data('SPY', resolution)
+                if df is not None and 'Close' in df.columns:
+                    spy = _normalize_index(df['Close'])
+                    _save_cache(cache_path, spy, source='QuantConnect', adjustment='adjusted')
+                    return spy.loc[start_date:end_date]
+            except Exception as e:
+                logger.warning(f"QC SPY 获取失败: {e}")
+
+        # 回退 Yahoo
+        if self._yahoo_available:
+            try:
+                import yfinance as yf
+                spy = yf.Ticker('SPY').history(period='max')['Close']
+                spy = _normalize_index(spy)
+                _save_cache(cache_path, spy, source='Yahoo', adjustment='adjusted')
+                return spy.loc[start_date:end_date]
+            except Exception as e:
+                logger.warning(f"Yahoo SPY 获取失败: {e}")
+
+        return None
+
+
+
+def _align_and_clean(price_df, market_df):
+    """取交易日交集并显式处理缺失值；P1修复: 按标的前向填充，避免按行 dropna 产生幸存者偏差"""
+    if price_df is None or market_df is None:
+        return price_df, market_df
+
+    if len(price_df) == 0 or len(market_df) == 0:
+        return price_df, market_df
+
+    common_dates = price_df.index.intersection(market_df.index)
+    price_df = price_df.reindex(common_dates)
+    market_df = market_df.reindex(common_dates)
+
+    price_df = price_df.dropna(how='all', axis=1)
+    market_df = market_df.dropna(how='all')
+
+    common_dates = price_df.index.intersection(market_df.index)
+    price_df = price_df.loc[common_dates]
+    market_df = market_df.loc[common_dates]
+
+    # P1修复: 按标的前向填充，不要按行 dropna(how='any')
+    price_df = price_df.ffill()
+    market_df = market_df.ffill()
+
+    return price_df, market_df
 
 
 def prepare_backtest_data_qc(tickers, start_date, end_date, resolution='daily'):
     """
     准备回测数据（QuantConnect 优先）
-    
+
     参数:
         tickers: list, 股票代码
         start_date: str, 'YYYY-MM-DD'
         end_date: str, 'YYYY-MM-DD'
         resolution: str, 'daily' | 'hour'
-    
+
     返回:
         tuple: (price_df, market_df)
     """
@@ -587,48 +842,73 @@ def prepare_backtest_data_qc(tickers, start_date, end_date, resolution='daily'):
     print(f"准备回测数据 (QuantConnect 优先)")
     print(f"{'='*60}")
     print(f"期间: {start_date} ~ {end_date}")
-    
+
     source = HybridQCDataSource()
-    
+
     # 获取价格数据
     price_df = source.get_prices(tickers, start_date, end_date, resolution)
-    
+
     # 获取市场数据
-    market_df = source.get_market_data(start_date, end_date)
-    
-    # 对齐日期
-    common_dates = price_df.index.intersection(market_df.index)
-    price_df = price_df.loc[common_dates]
-    market_df = market_df.loc[common_dates]
-    
+    market_df = source.get_market_data(start_date, end_date, resolution)
+
+    # 对齐日期并处理缺失值
+    price_df, market_df = _align_and_clean(price_df, market_df)
+
     print(f"\n[完成] 价格数据: {len(price_df)} 个交易日")
     print(f"[完成] 市场数据: {len(market_df)} 个交易日")
     print(f"[完成] 股票数量: {len(price_df.columns)}")
-    
+
     return price_df, market_df
 
 
 # ============================================================
-# 使用示例
+# 使用示例 - 展示 parquet 缓存行为（按 symbol 缓存完整历史）
 # ============================================================
 
 if __name__ == '__main__':
     from main import TICKERS
-    
+
     end = datetime.now().strftime('%Y-%m-%d')
     start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-    
+
     # 使用混合数据源
     source = HybridQCDataSource()
-    
-    # 测试价格获取
+
+    # 首次调用：下载并缓存为 parquet
+    print("\n首次调用 get_prices（预期下载并写入 parquet 缓存）")
     prices = source.get_prices(['AAPL', 'MSFT'], start, end)
     print(f"\n价格数据:\n{prices.tail()}")
-    
+
+    # 再次调用：命中 parquet 缓存
+    print("\n再次调用 get_prices（预期命中 parquet 缓存）")
+    prices = source.get_prices(['AAPL', 'MSFT'], start, end)
+    print(f"\n价格数据:\n{prices.tail()}")
+
+    # 展示缓存文件元数据
+    print("\n缓存文件元数据:")
+    for symbol in ['AAPL', 'MSFT', 'SPY', 'VIX']:
+        cache_path = _get_cache_path(symbol)
+        if os.path.exists(cache_path):
+            try:
+                meta = pq.read_metadata(cache_path)
+                metadata = _decode_metadata(meta.metadata)
+                print(f"  {os.path.basename(cache_path)}: "
+                      f"source={metadata.get('source')}, "
+                      f"adjustment={metadata.get('adjustment')}, "
+                      f"downloaded_at={metadata.get('downloaded_at')}, "
+                      f"version={metadata.get('cache_version')}")
+            except Exception as e:
+                print(f"  {os.path.basename(cache_path)}: 读取元数据失败 {e}")
+
+    # 测试市场数据（VIX + RSI）
+    print("\n测试市场数据（含缓存 VIX 与 SPY）")
+    market_df = source.get_market_data(start, end)
+    print(f"\n市场数据:\n{market_df.tail()}")
+
     # 测试 VIX
     vix = source.get_vix()
     print(f"\n当前 VIX: {vix}")
-    
+
     # 测试实时价格
     price = source.get_current_price('AAPL')
     print(f"\nAAPL 实时价格: ${price}")
