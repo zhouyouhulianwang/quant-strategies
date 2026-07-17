@@ -673,7 +673,7 @@ class HybridQCDataSource:
             DataFrame: 列=['VIX', 'RSI'], 索引=日期
         """
         # VIX 与 SPY 均优先使用 parquet 缓存
-        vix_data = self._get_vix_cached(start_date, end_date)
+        vix_data = self._get_vix_cached(start_date, end_date, resolution)
         spy_full = self._get_spy_cached(start_date, end_date, resolution)
 
         if spy_full is None or len(spy_full) == 0:
@@ -691,7 +691,7 @@ class HybridQCDataSource:
         market_df = market_df.dropna(how='all')
         return market_df
 
-    def _get_vix_cached(self, start_date: str, end_date: str):
+    def _get_vix_cached(self, start_date: str, end_date: str, resolution: str = 'daily'):
         """获取 VIX 数据（优先 source-specific parquet 缓存）"""
         # VIX 可能来自 QuantConnect 或 Yahoo，均使用 unadjusted
         qc_path = cache.get_path('VIX', source='QuantConnect', adjustment='unadjusted', frequency=resolution)
