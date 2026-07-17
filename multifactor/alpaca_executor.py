@@ -10,7 +10,7 @@ import uuid
 import math
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple, Union, Any
 import logging
 
 # P1 修复：引入 requests 异常类，避免裸 except Exception
@@ -30,6 +30,33 @@ try:
 except ImportError:
     PDT_AVAILABLE = False
 
+
+def adjust_for_split(symbol: str, ratio: float, lots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    按拆股比例更新本地 lot 数量
+
+    参数:
+        symbol: str, 股票代码
+        ratio: float, 拆股比例（例如 1:2 拆股为 2.0，反向拆股为 0.5）
+        lots: list, PDTTracker 仓位 lot 列表，每个 lot 为 {'entry_date': str, 'qty': int}
+
+    返回:
+        list: 更新后的 lot 列表（原地修改）
+    """
+    if not lots or ratio is None or ratio <= 0:
+        return lots
+
+    for lot in lots:
+        if lot.get('symbol', symbol) == symbol:
+            old_qty = int(lot.get('qty', 0))
+            new_qty = int(round(old_qty * ratio))
+            if new_qty != old_qty:
+                logger.info(f"📈 拆股调整: {symbol} {old_qty} -> {new_qty} (ratio={ratio})")
+                lot['qty'] = new_qty
+
+    return lots
+
+
 # P2修复：引入统一告警管理器
 try:
     from alert_manager import AlertManager
@@ -37,10 +64,48 @@ try:
 except ImportError:
     ALERT_MGR_AVAILABLE = False
 
+# 导入统一撮合参数（Critical #2 修复：回测与 live 共享执行假设）
+try:
+    from matching_engine import ExecutionParameters, from_config
+    MATCHING_ENGINE_AVAILABLE = True
+except ImportError:
+    MATCHING_ENGINE_AVAILABLE = False
+
 # 设置日志（P2修复：统一使用 logging_config 的格式）
 from logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger('alpaca_executor')
+
+
+def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = None,
+                             spread: Optional[float] = None, default_pct: float = 0.001) -> float:
+    """
+    计算动态限价单偏移比例。
+
+    参数:
+        symbol: 股票代码
+        price: 当前参考价格
+        atr: 可选 ATR 值；若提供，则使用 5% * (ATR / price) 作为偏移
+        spread: 可选买卖价差（绝对金额）；若提供，则确保偏移至少大于 half-spread
+        default_pct: 无 ATR 时的默认偏移比例
+
+    返回:
+        float: 建议的限价单偏移比例（例如 0.001 表示 0.1%）
+    """
+    if price <= 0:
+        raise ValueError(f"{symbol}: price 必须为正数")
+
+    if atr is not None and atr > 0:
+        offset = 0.05 * (atr / price)
+    else:
+        offset = default_pct
+
+    if spread is not None and spread > 0:
+        min_offset = (spread / 2.0) / price
+        if offset < min_offset:
+            offset = min_offset
+
+    return offset
 
 # 尝试导入新版 alpaca-py SDK
 # 先过滤 websockets.legacy 的弃用警告（alpaca-py 依赖的第三方库问题，不影响功能）
@@ -311,8 +376,9 @@ class AlpacaPaperExecutor:
         else:
             # P0-4 修复：非 mock 模式下 SDK 未安装时禁止静默 mock，必须显式抛错
             raise RuntimeError(
-                "alpaca-py SDK 未安装，非 mock 模式无法初始化。"
-                "请安装 SDK 或设置 mock=True / use_paper_trading=False"
+                "alpaca-py SDK 未安装，无法进入真实交易模式（paper/live）。"
+                "请执行 `pip install alpaca-py` 安装 SDK；"
+                "或显式设置 mock=True 以使用模拟执行器。"
             )
 
         # PDT 追踪器（按 account_id 和 paper/live 分文件）
@@ -547,7 +613,10 @@ class AlpacaPaperExecutor:
         if order_type.lower() == 'limit':
             if limit_price is None:
                 current_price = self._get_current_price(symbol)
-                offset = self.limit_order_offset_pct
+                offset = get_dynamic_limit_offset(
+                    symbol, current_price, atr=None, spread=None,
+                    default_pct=self.limit_order_offset_pct
+                )
                 if side.lower() == 'buy':
                     limit_price = current_price * (1 - offset)
                 else:
@@ -807,6 +876,42 @@ class AlpacaPaperExecutor:
         if self.pdt_tracker and filled_qty > 0:
             self.pdt_tracker.record_fill(symbol, side, filled_qty)
 
+    def sync_corporate_actions(self, symbols: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        同步公司行为（拆股），并调整本地 PDT lot 数量
+
+        参数:
+            symbols: list, 股票代码列表
+            start_date: str, 起始日期 'YYYY-MM-DD'（默认最近 7 天）
+            end_date: str, 结束日期 'YYYY-MM-DD'（默认今天）
+        """
+        if not self.pdt_tracker or not symbols:
+            return
+
+        try:
+            from data_source import get_corporate_actions
+
+            if end_date is None:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            if start_date is None:
+                start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+
+            actions = get_corporate_actions(symbols, start_date, end_date)
+            if actions is None or actions.empty:
+                return
+
+            # 只处理拆股事件
+            splits = actions[actions['split'] != 1.0]
+            for (date, symbol), row in splits.iterrows():
+                ratio = float(row['split'])
+                if symbol in self.pdt_tracker.positions:
+                    adjust_for_split(symbol, ratio, self.pdt_tracker.positions[symbol])
+
+            self.pdt_tracker._persist_state()
+            logger.info(f"🔄 公司行为同步完成: {len(splits)} 条拆股")
+        except Exception as e:
+            logger.warning(f"同步公司行为失败: {e}")
+
     def sync_positions(self):
         """与 Alpaca 持仓同步，用于 PDT 准确追踪"""
         if not self.pdt_tracker:
@@ -1063,6 +1168,10 @@ class V14AlpacaExecutor:
     def _get_current_price(self, symbol):
         return self.executor._get_current_price(symbol)
 
+    def sync_corporate_actions(self, symbols, start_date=None, end_date=None):
+        """透传到执行器：同步公司行为并调整本地 lot"""
+        return self.executor.sync_corporate_actions(symbols, start_date, end_date)
+
     def rebalance_portfolio(
         self,
         target_positions,
@@ -1085,6 +1194,9 @@ class V14AlpacaExecutor:
             limit_price: float, 限价（单只股票时有效，多只股票自动计算）
             enable_rollback: bool, 失败时是否回滚已卖出仓位
         """
+        # 每次调仓前同步公司行为（拆股调整）
+        self.sync_corporate_actions(list(target_positions.keys()))
+
         account = self.executor.get_account()
         if not account:
             logger.error("无法获取账户信息")

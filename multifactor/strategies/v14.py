@@ -705,6 +705,13 @@ class V14Strategy(BaseStrategy):
 
         self.executor.start_rebalance_session()
 
+        # 每次调仓前同步公司行为（拆股调整）
+        if self.use_paper_trading and self.executor:
+            try:
+                self.executor.sync_corporate_actions(list(self.generate_signals(live_mode=True).keys()))
+            except Exception as e:
+                logger.warning(f"⚠️ 调仓前公司行为同步失败: {e}，继续使用本地状态")
+
         # 每次调仓前同步 PDT 状态（High #8 修复）
         if self.use_paper_trading and self.executor:
             try:

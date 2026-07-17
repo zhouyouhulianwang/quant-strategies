@@ -9,15 +9,22 @@ import numpy as np
 from datetime import datetime, timedelta
 import os
 import pickle
-import pyarrow as pa
-import pyarrow.parquet as pq
+
+# 引入统一缓存模块
+from cache import (
+    is_cache_valid,
+    load_parquet_cache,
+    save_parquet_cache,
+    get_cache_metadata,
+    CACHE_VERSION as _CACHE_VERSION,
+)
 
 # 缓存目录
 CACHE_DIR = os.path.join(os.path.dirname(__file__), 'data_cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # 缓存版本号，用于兼容旧缓存和元数据校验
-CACHE_VERSION = 1
+CACHE_VERSION = _CACHE_VERSION
 # 缓存默认 TTL（7 天）
 CACHE_TTL_DAYS = 7
 # 价格数据 TTL（向后兼容别名）
@@ -37,90 +44,25 @@ def _get_pickle_path(symbol):
 
 
 def _decode_metadata(meta_dict):
-    """将 pyarrow 字节型 metadata 解码为字符串字典"""
-    if not meta_dict:
-        return {}
-    result = {}
-    for k, v in meta_dict.items():
-        if k == b'ARROW:schema' or k == b'pandas':
-            continue
-        key = k.decode('utf-8') if isinstance(k, bytes) else k
-        val = v.decode('utf-8') if isinstance(v, bytes) else v
-        result[key] = val
-    return result
+    """将 pyarrow 字节型 metadata 解码为字符串字典（委托 cache.py）"""
+    from cache import _decode_metadata as _cache_decode
+    return _cache_decode(meta_dict)
 
 
 def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
-    """检查 parquet 缓存是否有效（版本号 + TTL）"""
-    if not os.path.exists(cache_path):
-        return False
-
-    try:
-        meta = pq.read_metadata(cache_path)
-        metadata = _decode_metadata(meta.metadata)
-
-        if metadata.get('cache_version') != str(CACHE_VERSION):
-            return False
-
-        downloaded_at = datetime.fromisoformat(metadata.get('downloaded_at'))
-        if datetime.now() - downloaded_at > timedelta(days=ttl_days):
-            return False
-
-        return True
-    except Exception:
-        return False
+    """检查 parquet 缓存是否有效（版本号 + TTL，委托 cache.py）"""
+    return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
 
 
 def _load_cache(cache_path):
-    """从 parquet 缓存中读取数据对象，单列表自动还原为 Series"""
-    try:
-        df = pd.read_parquet(cache_path)
-        if isinstance(df, pd.DataFrame) and len(df.columns) == 1:
-            return df.iloc[:, 0]
-        return df
-    except Exception as e:
-        print(f"[警告] 读取 parquet 缓存失败 {cache_path}: {e}")
-        return None
+    """从 parquet 缓存中读取数据对象，单列表自动还原为 Series（委托 cache.py）"""
+    return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
 
 
 def _save_cache(cache_path, data, source='Yahoo', adjustment='adjusted'):
-    """保存数据及元数据到 parquet 缓存，写入失败不抛异常"""
-    try:
-        if data is None or (hasattr(data, '__len__') and len(data) == 0):
-            return False
-
-        # 统一转换为 DataFrame，保留索引
-        if isinstance(data, pd.Series):
-            df = data.to_frame(name=data.name or 'value')
-        else:
-            df = data.copy()
-
-        if df.index.name is None:
-            df.index.name = 'date'
-
-        # 丢弃索引为 NaT 的无效行，避免 parquet 写入失败
-        df = df[df.index.notna()]
-        if len(df) == 0:
-            return False
-
-        table = pa.Table.from_pandas(df)
-        existing_metadata = table.schema.metadata or {}
-        cache_metadata = {
-            'cache_version': str(CACHE_VERSION),
-            'downloaded_at': datetime.now().isoformat(),
-            'source': source,
-            'adjustment': adjustment,
-        }
-        new_metadata = {
-            **existing_metadata,
-            **{k.encode('utf-8'): v.encode('utf-8') for k, v in cache_metadata.items()}
-        }
-        table = table.replace_schema_metadata(new_metadata)
-        pq.write_table(table, cache_path)
-        return True
-    except Exception as e:
-        print(f"[警告] 保存 parquet 缓存失败 {cache_path}: {e}")
-        return False
+    """保存数据及元数据到 parquet 缓存，写入失败不抛异常（委托 cache.py）"""
+    metadata = {'source': source, 'adjustment': adjustment}
+    return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
 
 
 def _migrate_pickle_to_parquet(symbol, source='Yahoo', adjustment='adjusted'):
@@ -193,6 +135,65 @@ def _fetch_yahoo_series(symbol, full_history=True):
     except Exception as e:
         print(f"失败: {e}")
         return None
+
+
+def get_corporate_actions(symbols, start, end):
+    """
+    获取公司行为数据（拆股、分红、并购）
+
+    参数:
+        symbols: list, 股票代码列表
+        start: str, 'YYYY-MM-DD'
+        end: str, 'YYYY-MM-DD'
+
+    返回:
+        DataFrame: 索引=(date, symbol), 列=['split', 'dividend', 'merger']
+                 split 为拆股比例（如 1:2 拆股为 2.0），无事件为 1.0
+                 dividend 为每股分红金额，无为 0.0
+                 merger 为并购标志（1 表示并购，0 表示无）
+    """
+    start_dt = pd.to_datetime(start)
+    end_dt = pd.to_datetime(end)
+    records = []
+
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            actions = ticker.actions
+            if actions is None or actions.empty:
+                continue
+
+            actions = actions.copy()
+            actions.index = pd.to_datetime(actions.index)
+            if hasattr(actions.index, 'tz') and actions.index.tz is not None:
+                actions.index = actions.index.tz_localize(None)
+
+            actions = actions[(actions.index >= start_dt) & (actions.index <= end_dt)]
+
+            for date, row in actions.iterrows():
+                records.append({
+                    'date': date,
+                    'symbol': symbol,
+                    'split': float(row.get('Stock Splits', 0.0)) if row.get('Stock Splits', 0.0) != 0 else 1.0,
+                    'dividend': float(row.get('Dividends', 0.0)) if pd.notna(row.get('Dividends', 0.0)) else 0.0,
+                    'merger': 0,
+                })
+        except Exception as e:
+            print(f"[警告] 获取 {symbol} 公司行为失败: {e}")
+            continue
+
+    if not records:
+        return pd.DataFrame(
+            columns=['split', 'dividend', 'merger'],
+            index=pd.MultiIndex.from_arrays([[], []], names=['date', 'symbol'])
+        )
+
+    df = pd.DataFrame(records)
+    df.set_index(['date', 'symbol'], inplace=True)
+    df = df.sort_index()
+    return df
+
+
 
 
 def fetch_yahoo_data(symbols, start_date, end_date, use_cache=True):
@@ -459,8 +460,7 @@ if __name__ == '__main__':
         cache_path = _get_cache_path(symbol)
         if os.path.exists(cache_path):
             try:
-                meta = pq.read_metadata(cache_path)
-                metadata = _decode_metadata(meta.metadata)
+                metadata = get_cache_metadata(cache_path)
                 print(f"  {os.path.basename(cache_path)}: "
                       f"source={metadata.get('source')}, "
                       f"adjustment={metadata.get('adjustment')}, "

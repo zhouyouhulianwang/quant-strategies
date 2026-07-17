@@ -5,13 +5,16 @@ V14 MultiFactor Strategy - 入口封装
 具体实现已迁移至 strategies/v14.py，本文件仅保留：
 1. 顶层向后兼容的 V14Strategy 导出
 2. 命令行入口
+3. 启动时运行时文件清理（保留最近 30 天订单/告警/图表）
 """
 
 import argparse
 import logging
 
 from logging_config import setup_logging
+from runtime_cleanup import cleanup_old_files
 from strategies.v14 import V14Strategy
+from alpaca_executor import ALPACA_AVAILABLE
 
 # 向后兼容：保留顶层导入
 __all__ = ['V14Strategy']
@@ -20,11 +23,27 @@ setup_logging()
 logger = logging.getLogger('run_strategy')
 
 
+def cleanup_runtime_files():
+    """启动时清理超过 30 天的订单、告警和图表文件。"""
+    try:
+        for directory in ['orders', 'alerts', 'charts']:
+            cleanup_old_files(
+                directory,
+                max_age_days=30,
+                max_size_mb=1024,
+            )
+        logger.info('运行时文件清理完成（orders/alerts/charts 保留近 30 天）')
+    except Exception as e:
+        logger.warning(f"运行时清理失败: {e}")
+
+
 # ============================================================
 # 主入口
 # ============================================================
 
 if __name__ == '__main__':
+    cleanup_runtime_files()
+
     parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
     parser.add_argument('--backtest', action='store_true', help='运行回测')
     parser.add_argument('--live', action='store_true', help='运行实盘')
@@ -39,6 +58,13 @@ if __name__ == '__main__':
                        help='权重分配方法')
 
     args = parser.parse_args()
+
+    # 进入 paper/live 模式需要 alpaca-py SDK
+    if (args.paper or args.live) and not ALPACA_AVAILABLE:
+        raise RuntimeError(
+            "alpaca-py 未安装，无法进入 paper/live 模式。"
+            "请运行: pip install alpaca-py"
+        )
 
     # 初始化策略 - 默认使用真实数据，回测模式
     strategy = V14Strategy(

@@ -16,6 +16,42 @@ class RiskConfig(BaseModel):
     max_intraday_dd: float = Field(0.10, gt=0.0, le=0.5)
     single_stock_limit: float = Field(0.05, gt=0.0, le=0.5)
     
+    @field_validator('vix_panic_threshold', mode='before')
+    @classmethod
+    def _load_vix_threshold_from_env(cls, v):
+        """允许 VIX_PANIC_THRESHOLD 环境变量覆盖配置（环境变量优先）"""
+        env = os.environ.get('VIX_PANIC_THRESHOLD')
+        if env is not None:
+            try:
+                return float(env)
+            except ValueError:
+                raise ValueError(f"VIX_PANIC_THRESHOLD 必须是数值: {env}")
+        return v
+    
+    @field_validator('max_position_pct', mode='before')
+    @classmethod
+    def _load_max_position_pct_from_env(cls, v):
+        """允许 MAX_POSITION_PCT 环境变量覆盖配置（环境变量优先）"""
+        env = os.environ.get('MAX_POSITION_PCT')
+        if env is not None:
+            try:
+                return float(env)
+            except ValueError:
+                raise ValueError(f"MAX_POSITION_PCT 必须是数值: {env}")
+        return v
+    
+    @field_validator('max_intraday_dd', mode='before')
+    @classmethod
+    def _load_max_drawdown_limit_from_env(cls, v):
+        """允许 MAX_DRAWDOWN_LIMIT 环境变量覆盖配置（环境变量优先）"""
+        env = os.environ.get('MAX_DRAWDOWN_LIMIT')
+        if env is not None:
+            try:
+                return float(env)
+            except ValueError:
+                raise ValueError(f"MAX_DRAWDOWN_LIMIT 必须是数值: {env}")
+        return v
+    
     @field_validator('vix_panic_threshold')
     def vix_must_be_reasonable(cls, v):
         if v < 20:
@@ -83,7 +119,7 @@ class WeightConfig(BaseModel):
 
 class V14StrategyConfig(BaseModel):
     """V14 策略总配置"""
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra='ignore')
     
     risk: RiskConfig = RiskConfig()
     trading: TradingConfig = TradingConfig()

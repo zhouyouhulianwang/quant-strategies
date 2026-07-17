@@ -58,14 +58,20 @@ def _yahoo_end_inclusive(end_date):
 
 
 # ============================================================
-# Parquet 缓存基础设施（按 symbol 缓存完整历史）
+# Parquet 缓存基础设施（按 symbol 缓存完整历史，委托 cache.py）
 # ============================================================
-import pyarrow as pa
-import pyarrow.parquet as pq
+import os
+from cache import (
+    is_cache_valid,
+    load_parquet_cache,
+    save_parquet_cache,
+    get_cache_metadata,
+    CACHE_VERSION as _CACHE_VERSION,
+)
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), 'data_cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_VERSION = 1
+CACHE_VERSION = _CACHE_VERSION
 CACHE_TTL_DAYS = 7
 
 
@@ -75,80 +81,25 @@ def _get_cache_path(symbol):
 
 
 def _decode_metadata(meta_dict):
-    """将 pyarrow 字节型 metadata 解码为字符串字典"""
-    if not meta_dict:
-        return {}
-    result = {}
-    for k, v in meta_dict.items():
-        if k == b'ARROW:schema' or k == b'pandas':
-            continue
-        key = k.decode('utf-8') if isinstance(k, bytes) else k
-        val = v.decode('utf-8') if isinstance(v, bytes) else v
-        result[key] = val
-    return result
+    """将 pyarrow 字节型 metadata 解码为字符串字典（委托 cache.py）"""
+    from cache import _decode_metadata as _cache_decode
+    return _cache_decode(meta_dict)
 
 
 def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
-    """检查 parquet 缓存是否有效（版本号 + TTL）"""
-    if not os.path.exists(cache_path):
-        return False
-    try:
-        meta = pq.read_metadata(cache_path)
-        metadata = _decode_metadata(meta.metadata)
-        if metadata.get('cache_version') != str(CACHE_VERSION):
-            return False
-        downloaded_at = datetime.fromisoformat(metadata.get('downloaded_at'))
-        if datetime.now() - downloaded_at > timedelta(days=ttl_days):
-            return False
-        return True
-    except Exception:
-        return False
+    """检查 parquet 缓存是否有效（版本号 + TTL，委托 cache.py）"""
+    return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
 
 
 def _load_cache(cache_path):
-    """从 parquet 缓存读取数据，单列表自动还原为 Series"""
-    try:
-        df = pd.read_parquet(cache_path)
-        if isinstance(df, pd.DataFrame) and len(df.columns) == 1:
-            return df.iloc[:, 0]
-        return df
-    except Exception as e:
-        logger.warning(f"读取 parquet 缓存失败 {cache_path}: {e}")
-        return None
+    """从 parquet 缓存读取数据，单列表自动还原为 Series（委托 cache.py）"""
+    return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
 
 
 def _save_cache(cache_path, data, source='QuantConnect', adjustment='adjusted'):
-    """保存数据及元数据到 parquet 缓存，失败不抛异常"""
-    try:
-        if data is None or (hasattr(data, '__len__') and len(data) == 0):
-            return False
-        if isinstance(data, pd.Series):
-            df = data.to_frame(name=data.name or 'value')
-        else:
-            df = data.copy()
-        if df.index.name is None:
-            df.index.name = 'date'
-        df = df[df.index.notna()]
-        if len(df) == 0:
-            return False
-        table = pa.Table.from_pandas(df)
-        existing = table.schema.metadata or {}
-        cache_metadata = {
-            'cache_version': str(CACHE_VERSION),
-            'downloaded_at': datetime.now().isoformat(),
-            'source': source,
-            'adjustment': adjustment,
-        }
-        new_metadata = {
-            **existing,
-            **{k.encode('utf-8'): v.encode('utf-8') for k, v in cache_metadata.items()}
-        }
-        table = table.replace_schema_metadata(new_metadata)
-        pq.write_table(table, cache_path)
-        return True
-    except Exception as e:
-        logger.warning(f"保存 parquet 缓存失败 {cache_path}: {e}")
-        return False
+    """保存数据及元数据到 parquet 缓存，失败不抛异常（委托 cache.py）"""
+    metadata = {'source': source, 'adjustment': adjustment}
+    return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
 
 
 class QuantConnectDataSource:
@@ -890,8 +841,7 @@ if __name__ == '__main__':
         cache_path = _get_cache_path(symbol)
         if os.path.exists(cache_path):
             try:
-                meta = pq.read_metadata(cache_path)
-                metadata = _decode_metadata(meta.metadata)
+                metadata = get_cache_metadata(cache_path)
                 print(f"  {os.path.basename(cache_path)}: "
                       f"source={metadata.get('source')}, "
                       f"adjustment={metadata.get('adjustment')}, "

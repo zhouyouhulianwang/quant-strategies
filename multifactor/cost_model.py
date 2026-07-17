@@ -381,6 +381,13 @@ def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnov
     返回:
         DataFrame: 扣除成本后的结果
     """
+    # 统一使用 ExecutionParameters，确保回测与 live 成本假设一致
+    from matching_engine import ExecutionParameters
+    params = ExecutionParameters(
+        cost_per_turnover=cost_per_turnover,
+        spread_bps=spread_bps,
+    )
+
     if cost_model_instance is None:
         cost_model_instance = cost_model
 
@@ -426,8 +433,8 @@ def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnov
 
     result['turnover'] = turnovers
 
-    # 总交易成本 = 佣金/冲击 + bid-ask spread
-    total_cost_per_turnover = cost_per_turnover + spread_bps / 10000.0
+    # 总交易成本 = 佣金/冲击 + spread
+    total_cost_per_turnover = params.total_cost_per_turnover
 
     # 应用成本
     result['nav_after_cost'] = result['nav'].copy()

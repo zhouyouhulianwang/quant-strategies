@@ -19,6 +19,12 @@ import os
 
 from requests.exceptions import RequestException, ConnectionError, Timeout
 
+try:
+    from matching_engine import ExecutionParameters, default_execution_params
+    MATCHING_ENGINE_AVAILABLE = True
+except ImportError:
+    MATCHING_ENGINE_AVAILABLE = False
+
 # 订单日志目录
 ORDERS_DIR = os.path.join(os.path.dirname(__file__), 'orders')
 os.makedirs(ORDERS_DIR, exist_ok=True)
@@ -268,13 +274,20 @@ class OrderManager:
 class RebalanceManager:
     """再平衡管理器 - 带订单跟踪、成交确认、回滚机制的组合再平衡"""
     
-    def __init__(self, executor, alert_manager=None):
+    def __init__(self, executor, alert_manager=None, execution_params=None):
         self.executor = executor
         # P2修复：将告警管理器透传给 OrderManager
         self.order_manager = OrderManager(executor, alert_manager=alert_manager)
         self.alert_manager = alert_manager
         if self.alert_manager is None and ALERT_MGR_AVAILABLE:
             self.alert_manager = AlertManager(enabled=True)
+        # Critical #2 修复：统一使用 ExecutionParameters 对齐回测与 live 执行假设
+        if execution_params is not None:
+            self.execution_params = execution_params
+        elif MATCHING_ENGINE_AVAILABLE:
+            self.execution_params = default_execution_params
+        else:
+            self.execution_params = None
 
     def _send_alert(self, method, *args, **kwargs):
         """P2修复：统一封装告警调用"""
