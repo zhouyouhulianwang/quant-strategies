@@ -26,68 +26,68 @@ logger = logging.getLogger('v14_strategy')
 try:
     from quantconnect_data import prepare_backtest_data_qc, HybridQCDataSource
     QC_DATA_AVAILABLE = True
-    logger.info("✅ QuantConnect 数据源可用")
+    logger.info("[OK] QuantConnect data source available")
 except ImportError:
     QC_DATA_AVAILABLE = False
-    logger.warning("quantconnect_data 模块不可用")
+    logger.warning("quantconnect_data module unavailable")
 
 YAHOO_DATA_AVAILABLE = False
 
 try:
-    from alpaca_executor import AlpacaPaperExecutor, V14AlpacaExecutor
+    from alpaca_executor import AlpacaPaperExecutor, AlpacaExecutor
     ALPACA_AVAILABLE = True
 except ImportError:
     ALPACA_AVAILABLE = False
-    logger.warning("alpaca_executor 模块不可用")
+    logger.warning("alpaca_executor module unavailable")
 
 try:
     from order_manager import RebalanceManager
     ORDER_MGR_AVAILABLE = True
 except ImportError:
     ORDER_MGR_AVAILABLE = False
-    logger.warning("order_manager 模块不可用")
+    logger.warning("order_manager module unavailable")
 
 try:
     from cost_model import TradingCostModel, apply_costs_to_backtest
     COST_AVAILABLE = True
 except ImportError:
     COST_AVAILABLE = False
-    logger.warning("cost_model 模块不可用")
+    logger.warning("cost_model module unavailable")
 
 try:
     from visualization import generate_full_report
     VIZ_AVAILABLE = True
 except ImportError:
     VIZ_AVAILABLE = False
-    logger.warning("visualization 模块不可用")
+    logger.warning("visualization module unavailable")
 
 try:
     from risk_monitor import RiskMonitor
     RISK_AVAILABLE = True
 except ImportError:
     RISK_AVAILABLE = False
-    logger.warning("risk_monitor 模块不可用")
+    logger.warning("risk_monitor module unavailable")
 
 try:
     from intraday_monitor import IntradayMonitor
     INTRADAY_AVAILABLE = True
 except ImportError:
     INTRADAY_AVAILABLE = False
-    logger.warning("intraday_monitor 模块不可用")
+    logger.warning("intraday_monitor module unavailable")
 
 try:
     from weight_allocation import WeightAllocator, normalize_target_positions
     WEIGHT_ALLOC_AVAILABLE = True
 except ImportError:
     WEIGHT_ALLOC_AVAILABLE = False
-    logger.warning("weight_allocation 模块不可用")
+    logger.warning("weight_allocation module unavailable")
 
 try:
     from config import V14StrategyConfig, get_config
     CONFIG_AVAILABLE = True
 except ImportError:
     CONFIG_AVAILABLE = False
-    logger.warning("config 模块不可用")
+    logger.warning("config module unavailable")
 
 # 导入 V14 因子核心（策略模型层）
 from main import (
@@ -128,8 +128,8 @@ class V14Strategy(BaseStrategy):
         # 检查数据源可用性
         has_real_data = QC_DATA_AVAILABLE
         if use_real_data and not has_real_data:
-            logger.error("❌ 真实数据源不可用 (QuantConnect)")
-            logger.error("   请配置 QuantConnect Lean CLI")
+            logger.error("[ERROR] Real data source unavailable (QuantConnect)")
+            logger.error("   Please configure QuantConnect Lean CLI")
             self.use_real_data = False
         else:
             self.use_real_data = use_real_data and has_real_data
@@ -138,8 +138,8 @@ class V14Strategy(BaseStrategy):
         self.enable_risk_monitor = enable_risk_monitor and RISK_AVAILABLE
 
         if not self.use_real_data:
-            logger.warning("⚠️ 当前使用模拟数据，回测结果仅供测试参考")
-            logger.warning("   生产环境请确保真实数据源可用")
+            logger.warning("[WARN] Currently using mock data, backtest results are for reference only")
+            logger.warning("   Please ensure real data source is available in production")
 
         # 初始化各模块
         self.executor = None
@@ -158,23 +158,23 @@ class V14Strategy(BaseStrategy):
                     'use_limit_orders': self.config.trading.use_limit_orders,
                     'limit_order_offset_pct': self.config.trading.limit_order_offset_pct,
                 }
-                logger.info(f"💰 限价单: {self.config.trading.use_limit_orders}, "
+                logger.info(f"[LIMIT] Limit orders: {self.config.trading.use_limit_orders}, "
                            f"offset={self.config.trading.limit_order_offset_pct:.2%}")
-                logger.info(f"🛡️ PDT 检查: {self.config.trading.enable_pdt_check}, "
+                logger.info(f"[PDT] PDT check: {self.config.trading.enable_pdt_check}, "
                            f"min_equity=${self.config.trading.pdt_min_equity:,.0f}")
-                logger.info(f"⏱️ 订单超时: {self.config.trading.max_wait_sec}秒, "
-                           f"轮询间隔: {self.config.trading.poll_interval}秒")
+                logger.info(f"[TIMEOUT] Order timeout: {self.config.trading.max_wait_sec}s, "
+                           f"poll interval: {self.config.trading.poll_interval}s")
 
-            self.executor = V14AlpacaExecutor(**executor_kwargs)
-            logger.info("✅ Alpaca Paper Trading 已启用")
+            self.executor = AlpacaExecutor(**executor_kwargs)
+            logger.info("[OK] Alpaca Paper Trading enabled")
 
             if self.risk_monitor:
                 self.executor.set_risk_monitor(self.risk_monitor)
-                logger.info("✅ 风控状态已与执行器同步")
+                logger.info("[OK] Risk monitor state synced with executor")
 
         if self.enable_risk_monitor:
             self.risk_monitor = RiskMonitor()
-            logger.info("✅ 风险监控已启用")
+            logger.info("[OK] Risk monitor enabled")
 
         # 盘中监控
         if enable_intraday_monitor and INTRADAY_AVAILABLE and self.executor and self.risk_monitor:
@@ -211,7 +211,7 @@ class V14Strategy(BaseStrategy):
                             daily_return = (portfolio_value - inner_self._daily_baseline_nav) / inner_self._daily_baseline_nav
                             inner_self.risk_monitor.check_daily_loss(daily_return)
                     except Exception as e:
-                        logger.warning(f"盘中风控补充检查失败: {e}")
+                        logger.warning(f"Intraday risk supplement check failed: {e}")
 
             self.intraday_monitor = V14IntradayMonitor(
                 executor=self.executor,
@@ -221,14 +221,14 @@ class V14Strategy(BaseStrategy):
                 max_total_drawdown=max_total_drawdown
             )
             self.intraday_monitor.start()
-            logger.info("✅ 盘中监控已启用")
+            logger.info("[OK] Intraday monitor enabled")
 
         # 权重分配
         if WEIGHT_ALLOC_AVAILABLE:
             self.weight_allocator = WeightAllocator(method=weight_method)
-            logger.info(f"✅ 权重分配: {weight_method}")
+            logger.info(f"[OK] Weight allocation: {weight_method}")
 
-        logger.info("✅ V14 策略初始化完成")
+        logger.info("[OK] V14 strategy initialization complete")
 
     # ------------------------------------------------------------------
     # BaseStrategy implementation: backtest
@@ -257,10 +257,10 @@ class V14Strategy(BaseStrategy):
             end_date = end_date or default_end
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"V14 策略回测（统一信号逻辑）")
+        logger.info(f"V14 strategy backtest (unified signal logic)")
         logger.info(f"{'='*60}")
-        logger.info(f"期间: {start_date} ~ {end_date}")
-        logger.info(f"数据模式: {'真实数据' if self.use_real_data else '模拟数据'}")
+        logger.info(f"Period: {start_date} ~ {end_date}")
+        logger.info(f"Data mode: {'real data' if self.use_real_data else 'mock data'}")
 
         # 获取数据
         if self.use_real_data:
@@ -272,41 +272,41 @@ class V14Strategy(BaseStrategy):
                         TICKERS, start_date, end_date, resolution='daily'
                     )
                     if price_df is not None and len(price_df) > 0:
-                        logger.info(f"📊 数据源: QuantConnect (Lean)")
+                        logger.info(f"[DATA] Data source: QuantConnect (Lean)")
                     else:
-                        logger.warning("⚠️ QuantConnect 数据为空")
+                        logger.warning("[WARN] QuantConnect data is empty")
                         price_df, market_df = None, None
                 except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                    logger.warning(f"⚠️ QuantConnect 获取网络失败: {e}")
+                    logger.warning(f"[WARN] QuantConnect network failure: {e}")
                     price_df, market_df = None, None
                 except ValueError as e:
-                    logger.warning(f"⚠️ QuantConnect 数据错误: {e}")
+                    logger.warning(f"[WARN] QuantConnect data error: {e}")
                     price_df, market_df = None, None
 
             if price_df is None or len(price_df) == 0:
-                logger.warning("⚠️ 无可用真实数据，使用模拟数据")
+                logger.warning("[WARN] No real data available, using mock data")
                 price_df, market_df = self._generate_mock_data(start_date, end_date)
         else:
             price_df, market_df = self._generate_mock_data(start_date, end_date)
 
         # 检查数据有效性
         if price_df is None or len(price_df) == 0:
-            logger.error("❌ 无法获取任何数据，回测失败")
+            logger.error("[ERROR] Cannot get any data, backtest failed")
             return pd.DataFrame()
 
         if market_df is None or len(market_df) == 0:
-            logger.warning("⚠️ 市场数据为空，使用模拟 VIX")
+            logger.warning("[WARN] Market data empty, using mock VIX=20")
             market_df = pd.DataFrame({'VIX': [20.0] * len(price_df)}, index=price_df.index)
 
         # 使用统一信号逻辑进行回测
         result = self._run_backtest_unified(price_df, market_df)
 
         if result is None or len(result) == 0:
-            logger.error("❌ 回测失败，无结果数据")
+            logger.error("[ERROR] Backtest failed, no result data")
             return pd.DataFrame()
 
         if COST_AVAILABLE:
-            logger.info("应用交易成本...")
+            logger.info("Applying trading costs...")
             result = apply_costs_to_backtest(result)
 
         self.backtest_result = result
@@ -314,7 +314,7 @@ class V14Strategy(BaseStrategy):
         self._print_performance(result)
 
         if VIZ_AVAILABLE and len(result) > 0:
-            logger.info("\n生成可视化报告...")
+            logger.info("\nGenerating visualization report...")
             generate_full_report(result)
 
         return result
@@ -349,7 +349,7 @@ class V14Strategy(BaseStrategy):
         elif rebalance_frequency == 'quarterly':
             return price_df.groupby([price_df.index.year, price_df.index.quarter]).tail(1).index
         else:
-            logger.warning(f"⚠️ 未知调仓频率 '{rebalance_frequency}'，回退到 monthly")
+            logger.warning(f"[WARN] Unknown rebalance frequency '{rebalance_frequency}', falling back to monthly")
             return price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
 
     def _run_backtest_unified(self, price_df, market_df):
@@ -369,41 +369,41 @@ class V14Strategy(BaseStrategy):
         """
         # 空数据保护
         if price_df is None or len(price_df) == 0:
-            logger.error("❌ price_df 为空，无法回测")
+            logger.error("[ERROR] price_df is empty, cannot backtest")
             return pd.DataFrame()
 
         if not isinstance(price_df.index, pd.DatetimeIndex):
-            logger.info(f"🔄 转换索引为 DatetimeIndex: {type(price_df.index).__name__}")
+            logger.info(f"[CONVERT] Converting index to DatetimeIndex: {type(price_df.index).__name__}")
             try:
                 price_df.index = pd.to_datetime(price_df.index)
             except (ValueError, TypeError) as e:
-                logger.error(f"❌ 无法转换索引: {e}")
+                logger.error(f"[ERROR] Cannot convert index: {e}")
                 return pd.DataFrame()
 
         if market_df is None or len(market_df) == 0:
-            logger.warning("⚠️ market_df 为空，使用默认 VIX=20")
+            logger.warning("[WARN] market_df is empty, using default VIX=20")
             market_df = pd.DataFrame({'VIX': [20.0] * len(price_df)}, index=price_df.index)
         elif 'VIX' not in market_df.columns:
-            logger.warning("⚠️ market_df 缺少 VIX 列，使用默认 VIX=20")
+            logger.warning("[WARN] market_df missing VIX column, using default VIX=20")
             market_df['VIX'] = 20.0
 
         if not isinstance(market_df.index, pd.DatetimeIndex):
             try:
                 market_df.index = pd.to_datetime(market_df.index)
             except (ValueError, TypeError) as e:
-                logger.error(f"❌ 无法转换 market_df 索引: {e}")
+                logger.error(f"[ERROR] Cannot convert market_df index: {e}")
                 return pd.DataFrame()
 
         common_dates = price_df.index.intersection(market_df.index)
         if len(common_dates) == 0:
-            logger.error("❌ price_df 和 market_df 没有共同日期")
+            logger.error("[ERROR] price_df and market_df have no common dates")
             return pd.DataFrame()
 
         price_df = price_df.loc[common_dates]
         market_df = market_df.loc[common_dates]
 
         if len(price_df) < 252:
-            logger.warning(f"⚠️ 数据不足 252 日 ({len(price_df)} 日)，无法预热")
+            logger.warning(f"[WARN] Insufficient data 252 days ({len(price_df)} days), cannot warm up")
             return pd.DataFrame()
 
         rebalance_frequency = 'monthly'
@@ -413,10 +413,10 @@ class V14Strategy(BaseStrategy):
         rebalance_dates = rebalance_dates[rebalance_dates >= price_df.index[252]]
 
         if len(rebalance_dates) < 2:
-            logger.warning(f"⚠️ 调仓日不足 2 个 (frequency={rebalance_frequency})，无法回测")
+            logger.warning(f"[WARN] Insufficient rebalance dates (frequency={rebalance_frequency}), cannot backtest")
             return pd.DataFrame()
 
-        logger.info(f"📅 回测调仓频率: {rebalance_frequency} ({len(rebalance_dates)} 个调仓日)")
+        logger.info(f"[SCHEDULE] Backtest rebalance frequency: {rebalance_frequency} ({len(rebalance_dates)} rebalance dates)")
 
         # 辅助函数：根据目标金额和股价计算整数股数与现金
         INITIAL_CAPITAL = 1_000_000.0
@@ -483,7 +483,7 @@ class V14Strategy(BaseStrategy):
                     portfolio_value_end = stock_value_end + prev_cash
                     mr = portfolio_value_end / portfolio_value_start - 1 if portfolio_value_start > 0 else 0.0
                 except (KeyError, ValueError, TypeError) as e:
-                    logger.warning(f"⚠️ 收益计算错误: {e}, 使用 0")
+                    logger.warning(f"[WARN] Return calculation error: {e}, using 0")
                     mr = 0.0
             else:
                 mr = 0.0
@@ -542,34 +542,34 @@ class V14Strategy(BaseStrategy):
             start = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
 
             if QC_DATA_AVAILABLE:
-                logger.info("📊 信号生成数据源: QuantConnect")
+                logger.info("[DATA] Signal generation data source: QuantConnect")
                 price_df, market_df = prepare_backtest_data_qc(
                     TICKERS, start, end, resolution='daily'
                 )
                 if vix is None:
                     vix = market_df['VIX'].iloc[-1]
             else:
-                logger.error("无法获取数据，无可用数据源")
+                logger.error("Cannot get data, no data source available")
                 return {}
 
         if vix is None:
-            logger.error("VIX 数据缺失")
+            logger.error("VIX data missing")
             return {}
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"生成交易信号")
+        logger.info(f"Generating trading signals")
         logger.info(f"{'='*60}")
-        logger.info(f"当前 VIX: {vix:.2f}")
-        logger.info(f"数据日期: {price_df.index[-1]}")
+        logger.info(f"Current VIX: {vix:.2f}")
+        logger.info(f"Data date: {price_df.index[-1]}")
 
         if price_df is None or live_mode:
             freq_desc = ""
             if self.config and hasattr(self.config, 'trading'):
                 freq = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
-                freq_desc = f"({freq} 再平衡)"
-            logger.info(f"📌 信号基于历史 EOD 收盘价计算 {freq_desc}")
+                freq_desc = f"({freq} rebalance)"
+            logger.info(f"[NOTE] Signals based on historical EOD close prices {freq_desc}")
             if self.use_paper_trading:
-                logger.info("📌 实盘执行时将使用当前实时价格计算股数")
+                logger.info("[NOTE] Live execution will use current real-time prices to calculate shares")
 
         # 计算因子 (复用回测逻辑)
         price_slice = price_df.iloc[-252:]
@@ -578,7 +578,7 @@ class V14Strategy(BaseStrategy):
 
         # 仓位比例
         sc = v14_scale(vix)
-        logger.info(f"目标仓位: {sc:.1f}%")
+        logger.info(f"Target exposure: {sc:.1f}%")
 
         # NDX 比例
         ndx_mask = score.index.isin(NDX_SET)
@@ -601,9 +601,9 @@ class V14Strategy(BaseStrategy):
             list(non_sorted.index[:min(n_stocks - ndx_n, len(non_sorted))])
         )
 
-        logger.info(f"选股数量: {len(selected)} 只")
-        logger.info(f"NDX 比例: {ndx_ratio:.2%}")
-        logger.info(f"选中股票: {', '.join(selected[:10])}{'...' if len(selected) > 10 else ''}")
+        logger.info(f"Selected stocks: {len(selected)} symbols")
+        logger.info(f"NDX ratio: {ndx_ratio:.2%}")
+        logger.info(f"Selected stocks: {', '.join(selected[:10])}{'...' if len(selected) > 10 else ''}")
 
         # 获取账户价值
         if self.executor:
@@ -611,10 +611,10 @@ class V14Strategy(BaseStrategy):
                 account = self.executor.get_account()
                 portfolio_value = account['portfolio_value'] if account else 1000000
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                logger.warning(f"获取账户价值网络失败: {e}，使用默认值 $1M")
+                logger.warning(f"Failed to get account value network: {e}, using default $1M")
                 portfolio_value = 1000000
             except ValueError as e:
-                logger.warning(f"获取账户价值参数错误: {e}，使用默认值 $1M")
+                logger.warning(f"Account value parameter error: {e}, using default $1M")
                 portfolio_value = 1000000
         else:
             portfolio_value = 1000000
@@ -627,7 +627,7 @@ class V14Strategy(BaseStrategy):
                 target_value=portfolio_value * sc / 100
             )
             target_positions = weights
-            logger.info(f"权重分配: {self.weight_allocator.method}")
+            logger.info(f"Weight allocation: {self.weight_allocator.method}")
         else:
             target_value = (portfolio_value * sc / 100) / len(selected)
             target_positions = {s: target_value for s in selected}
@@ -635,7 +635,7 @@ class V14Strategy(BaseStrategy):
         # 确保目标持仓总金额不超过组合价值 * 仓位比例
         max_total_value = portfolio_value * sc / 100
         target_positions = normalize_target_positions(target_positions, max_total_value)
-        logger.info(f"📊 目标持仓总额: ${sum(target_positions.values()):,.0f} (上限: ${max_total_value:,.0f})")
+        logger.info(f"[PORTFOLIO] Total target positions: ${sum(target_positions.values()):,.0f} (cap: ${max_total_value:,.0f})")
 
         for s, v in sorted(target_positions.items(), key=lambda x: x[1], reverse=True)[:10]:
             logger.info(f"  {s}: ${v:,.0f}")
@@ -656,7 +656,7 @@ class V14Strategy(BaseStrategy):
             {symbol: target_value} 目标持仓。
         """
         if not QC_DATA_AVAILABLE:
-            logger.warning("⚠️ 无可用数据源，无法获取历史信号")
+            logger.warning("[WARN] No data source available, cannot get historical signals")
             return {}
 
         end = date.strftime('%Y-%m-%d')
@@ -671,7 +671,7 @@ class V14Strategy(BaseStrategy):
             vix = market_df['VIX'].iloc[-1]
             return self.generate_signals(price_df, vix=vix)
         except Exception as e:
-            logger.warning(f"获取 {date} 信号失败: {e}")
+            logger.warning(f"Failed to get {date} signals: {e}")
             return {}
 
     # ------------------------------------------------------------------
@@ -681,12 +681,12 @@ class V14Strategy(BaseStrategy):
     def run_live_rebalance(self):
         """运行实盘再平衡 - 全自动流程。"""
         if not self.executor:
-            logger.error("未启用 Alpaca Paper Trading")
+            logger.error("Alpaca Paper Trading not enabled")
             return
 
         if not self.executor.market_is_open():
-            logger.warning("⚠️ 市场未开盘，跳过本次实盘调仓")
-            logger.warning("   V14 是月末 EOD 策略，建议在开盘后执行")
+            logger.warning("[WARN] Market not open, skipping this live rebalance")
+            logger.warning("   V14 is an end-of-month EOD strategy, recommended to run after market open")
             return
 
         cutoff_minutes = 15
@@ -700,7 +700,7 @@ class V14Strategy(BaseStrategy):
         except Exception:
             now = datetime.now()
         if now.hour > cutoff_hour or (now.hour == cutoff_hour and now.minute >= cutoff_minute):
-            logger.warning(f"⚠️ 已过收盘前保护时间 {cutoff_hour:02d}:{cutoff_minute:02d} ET，拒绝启动新调仓")
+            logger.warning(f"[WARN] Past market-close protection time {cutoff_hour:02d}:{cutoff_minute:02d} ET, rejecting new rebalance")
             return
 
         self.executor.start_rebalance_session()
@@ -710,20 +710,20 @@ class V14Strategy(BaseStrategy):
             try:
                 self.executor.sync_corporate_actions(list(self.generate_signals(live_mode=True).keys()))
             except Exception as e:
-                logger.warning(f"⚠️ 调仓前公司行为同步失败: {e}，继续使用本地状态")
+                logger.warning(f"[WARN] Pre-rebalance corporate action sync failed: {e}, continuing with local state")
 
         # 每次调仓前同步 PDT 状态（High #8 修复）
         if self.use_paper_trading and self.executor:
             try:
                 self.executor.sync_positions()
-                logger.info("🔄 调仓前 PDT 状态已同步")
+                logger.info("[PDT] Pre-rebalance PDT state synced")
             except Exception as e:
-                logger.warning(f"⚠️ 调仓前 PDT 同步失败: {e}，继续使用本地状态")
+                logger.warning(f"[WARN] Pre-rebalance PDT sync failed: {e}, continuing with local state")
 
         target_positions = self.generate_signals(live_mode=True)
 
         if not target_positions:
-            logger.error("信号生成失败，跳过交易")
+            logger.error("Signal generation failed, skipping trade")
             return
 
         if self.risk_monitor:
@@ -732,12 +732,12 @@ class V14Strategy(BaseStrategy):
                 self.risk_monitor.check_vix_level(vix)
 
             if self.risk_monitor.trading_halted:
-                logger.warning("⚠️ 交易已暂停（风险监控触发）")
+                logger.warning("[WARN] Trading halted (risk monitor triggered)")
                 return
 
         self.live_trade(target_positions)
 
-        logger.info("✅ 实盘再平衡完成")
+        logger.info("[OK] Live rebalance completed")
 
     def live_trade(self, target_positions, confirm_fills=True):
         """实盘交易（Paper Trading）。
@@ -750,23 +750,23 @@ class V14Strategy(BaseStrategy):
             是否等待成交确认。
         """
         if not self.executor:
-            logger.error("未启用 Alpaca Paper Trading")
+            logger.error("Alpaca Paper Trading not enabled")
             return
 
         if self.risk_monitor and self.risk_monitor.trading_halted:
-            logger.warning("⚠️ 交易已暂停（风险监控触发）")
+            logger.warning("[WARN] Trading halted (risk monitor triggered)")
             return
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"执行实盘交易")
+        logger.info(f"Executing live trades")
         logger.info(f"{'='*60}")
 
         account = self.executor.get_account()
         if account:
-            logger.info(f"账户现金: ${account['cash']:,.2f}")
-            logger.info(f"组合价值: ${account['portfolio_value']:,.2f}")
+            logger.info(f"Account cash: ${account['cash']:,.2f}")
+            logger.info(f"Portfolio value: ${account['portfolio_value']:,.2f}")
         else:
-            logger.error("无法获取账户信息，暂停交易")
+            logger.error("Cannot get account info, trading paused")
             return
 
         portfolio_value = account['portfolio_value']
@@ -777,13 +777,13 @@ class V14Strategy(BaseStrategy):
                 daily_return = (portfolio_value - self._last_live_portfolio_value) / self._last_live_portfolio_value
                 self.risk_monitor.check_daily_loss(daily_return)
             if self.risk_monitor.trading_halted:
-                logger.warning("⚠️ 交易已暂停（风险监控触发）")
+                logger.warning("[WARN] Trading halted (risk monitor triggered)")
                 return
 
         total_target = sum(target_positions.values())
         buying_power = account.get('buying_power', 0.0)
         if total_target > buying_power:
-            logger.error(f"目标总金额 ${total_target:,.2f} 超过购买力 ${buying_power:,.2f}，暂停交易")
+            logger.error(f"Total target amount ${total_target:,.2f} exceeds buying power ${buying_power:,.2f}, trading paused")
             return
 
         if ORDER_MGR_AVAILABLE:
@@ -807,7 +807,7 @@ class V14Strategy(BaseStrategy):
                 cost = TradingCostModel().estimate_portfolio_cost(
                     target_positions, current_positions
                 )
-                logger.info(f"\n预估交易成本: ${cost['total_cost']:.2f}")
+                logger.info(f"\nEstimated trading cost: ${cost['total_cost']:.2f}")
         else:
             self.executor.rebalance_portfolio(target_positions)
 
@@ -839,23 +839,23 @@ class V14Strategy(BaseStrategy):
         if not self.risk_monitor:
             return
 
-        logger.info("\n风险检查:")
+        logger.info("\nRisk check:")
 
         if nav is not None:
             self.risk_monitor.check_drawdown(nav)
 
         if vix is not None:
             level = self.risk_monitor.check_vix_level(vix)
-            logger.info(f"  VIX 水平: {vix:.1f} (风险等级: {level})")
+            logger.info(f"  VIX level: {vix:.1f} (risk level: {level})")
 
         if positions and portfolio_value:
             alerts = self.risk_monitor.check_position_limits(positions, portfolio_value)
             if alerts:
-                logger.warning(f"  触发 {len(alerts)} 个仓位告警")
+                logger.warning(f"  Triggered {len(alerts)} position alerts")
 
         summary = self.risk_monitor.get_risk_summary()
-        logger.info(f"  风险等级: {summary['risk_level']}")
-        logger.info(f"  交易暂停: {summary['trading_halted']}")
+        logger.info(f"  Risk level: {summary['risk_level']}")
+        logger.info(f"  Trading halted: {summary['trading_halted']}")
 
     def get_status(self):
         """获取策略状态。
@@ -898,16 +898,16 @@ class V14Strategy(BaseStrategy):
                 if vix:
                     return vix
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                logger.warning(f"QuantConnect 获取 VIX 网络错误: {e}")
+                logger.warning(f"QuantConnect VIX network error: {e}")
             except ValueError as e:
-                logger.warning(f"QuantConnect 获取 VIX 数据错误: {e}")
+                logger.warning(f"QuantConnect VIX data error: {e}")
 
-        logger.warning("⚠️ 无法获取 VIX，风控使用默认状态")
+        logger.warning("[WARN] Cannot get VIX, risk monitor using default state")
         return None
 
     def _generate_mock_data(self, start_date, end_date):
         """生成模拟数据。"""
-        logger.info("生成模拟数据...")
+        logger.info("Generating mock data...")
 
         dates = pd.bdate_range(start_date, end_date)
         n_days = len(dates)
@@ -941,7 +941,7 @@ class V14Strategy(BaseStrategy):
     def _print_performance(self, result):
         """打印绩效。"""
         if len(result) == 0:
-            logger.warning("回测结果为空")
+            logger.warning("Backtest result is empty")
             return
 
         # 优先使用扣除交易成本后的 NAV
@@ -969,15 +969,15 @@ class V14Strategy(BaseStrategy):
         maxdd = ((nav / nav.cummax()) - 1).min()
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"回测绩效")
+        logger.info(f"Backtest performance")
         logger.info(f"{'='*60}")
-        logger.info(f"  期间: {result['date'].iloc[0]} ~ {result['date'].iloc[-1]}")
-        logger.info(f"  调仓频率: {rebalance_frequency}")
-        logger.info(f"  调仓次数: {len(result)}")
-        logger.info(f"  NAV 列: {nav_col}")
+        logger.info(f"  Period: {result['date'].iloc[0]} ~ {result['date'].iloc[-1]}")
+        logger.info(f"  Rebalance frequency: {rebalance_frequency}")
+        logger.info(f"  Rebalance count: {len(result)}")
+        logger.info(f"  NAV column: {nav_col}")
         logger.info(f"  Final NAV: {nav.iloc[-1]:.4f}")
         logger.info(f"  CAGR: {cagr:.2%}")
         logger.info(f"  Sharpe: {sharpe:.3f}")
         logger.info(f"  MaxDD: {maxdd:.2%}")
-        logger.info(f"  波动率: {vol:.2%}")
-        logger.info(f"  胜率: {(returns > 0).mean():.1%}")
+        logger.info(f"  Volatility: {vol:.2%}")
+        logger.info(f"  Win rate: {(returns > 0).mean():.1%}")

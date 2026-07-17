@@ -32,9 +32,9 @@ def cleanup_runtime_files():
                 max_age_days=30,
                 max_size_mb=1024,
             )
-        logger.info('运行时文件清理完成（orders/alerts/charts 保留近 30 天）')
+        logger.info('Runtime files cleanup completed (orders/alerts/charts kept for 30 days)')
     except Exception as e:
-        logger.warning(f"运行时清理失败: {e}")
+        logger.warning(f"Runtime cleanup failed: {e}")
 
 
 # ============================================================
@@ -45,25 +45,25 @@ if __name__ == '__main__':
     cleanup_runtime_files()
 
     parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
-    parser.add_argument('--backtest', action='store_true', help='运行回测')
-    parser.add_argument('--live', action='store_true', help='运行实盘')
-    parser.add_argument('--real-data', action='store_true', help='使用真实数据')
-    parser.add_argument('--paper', action='store_true', help='使用 Paper Trading')
-    parser.add_argument('--start', type=str, help='开始日期 YYYY-MM-DD')
-    parser.add_argument('--end', type=str, help='结束日期 YYYY-MM-DD')
+    parser.add_argument('--backtest', action='store_true', help='Run backtest')
+    parser.add_argument('--live', action='store_true', help='Run live')
+    parser.add_argument('--real-data', action='store_true', help='Use real data')
+    parser.add_argument('--paper', action='store_true', help='Use Paper Trading')
+    parser.add_argument('--start', type=str, help='Start date YYYY-MM-DD')
+    parser.add_argument('--end', type=str, help='End date YYYY-MM-DD')
 
-    parser.add_argument('--monitor', action='store_true', help='启用盘中监控')
+    parser.add_argument('--monitor', action='store_true', help='Enable intraday monitor')
     parser.add_argument('--weight-method', type=str, default='equal',
                        choices=['equal', 'risk_parity', 'momentum_weighted'],
-                       help='权重分配方法')
+                       help='Weight allocation method')
 
     args = parser.parse_args()
 
     # 进入 paper/live 模式需要 alpaca-py SDK
     if (args.paper or args.live) and not ALPACA_AVAILABLE:
         raise RuntimeError(
-            "alpaca-py 未安装，无法进入 paper/live 模式。"
-            "请运行: pip install alpaca-py"
+            "alpaca-py is not installed, cannot enter paper/live mode."
+            "Run: pip install alpaca-py"
         )
 
     # 初始化策略 - 默认使用真实数据，回测模式
@@ -77,23 +77,23 @@ if __name__ == '__main__':
 
     # 检查数据可用性
     if not strategy.use_real_data:
-        logger.error("❌ 真实数据不可用，请检查网络连接或数据源配置")
-        logger.error("   请配置 QuantConnect Lean CLI")
-        logger.error("   回测已中止，未使用模拟数据")
+        logger.error("[ERROR] Real data unavailable, please check network connection or data source configuration")
+        logger.error("   Please configure QuantConnect Lean CLI")
+        logger.error("   Backtest aborted, mock data not used")
         exit(1)
 
     if args.backtest or not args.live:
         # 运行回测
         result = strategy.run_backtest(args.start, args.end)
         if len(result) == 0:
-            logger.error("❌ 回测失败: 无数据或数据不足")
+            logger.error("[ERROR] Backtest failed: no data or insufficient data")
             exit(1)
 
     if args.live:
         # 检查是否启用了 Paper Trading
         if not strategy.use_paper_trading:
-            logger.error("❌ 实盘模式需要 --paper 参数启用 Paper Trading")
-            logger.error("   运行: python run_strategy.py --live --paper")
+            logger.error("[ERROR] Live mode requires --paper to enable Paper Trading")
+            logger.error("   Run: python run_strategy.py --live --paper")
             exit(1)
 
         # 全自动实盘再平衡
@@ -101,4 +101,4 @@ if __name__ == '__main__':
 
     # 打印状态
     status = strategy.get_status()
-    logger.info(f"\n策略状态: {status}")
+    logger.info(f"\nStrategy status: {status}")

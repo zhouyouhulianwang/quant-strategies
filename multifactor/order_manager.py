@@ -78,7 +78,7 @@ class OrderManager:
             try:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
-                logger.debug(f"告警发送失败: {e}")
+                logger.debug(f"Alert send failed: {e}")
     
     def submit_and_wait(self, symbol, qty, side, order_type='market', 
                         time_in_force='day', limit_price=None, max_wait_sec=None,
@@ -111,12 +111,12 @@ class OrderManager:
         )
         
         if not order:
-            logger.error(f"❌ {symbol} 订单提交失败")
+            logger.error(f"❌ {symbol} order submission failed")
             self._send_alert('order_failed', symbol, side, qty, 'submit_failed')
             return {'status': 'FAILED', 'symbol': symbol, 'reason': 'submit_failed'}
         
         order_id = order['id']
-        logger.info(f"📋 订单已提交: {order_id} {side} {qty} {symbol}")
+        logger.info(f"[ORDER] Order submitted: {order_id} {side} {qty} {symbol}")
         
         # 2. 轮询等待成交
         start_time = time.time()
@@ -127,7 +127,7 @@ class OrderManager:
             status = self._get_order_status(order_id)
             
             if status:
-                logger.debug(f"  订单状态: {order_id} = {status['status']}")
+                logger.debug(f"  Order status: {order_id} = {status['status']}")
                 
                 # 检查是否完成
                 if status['status'] in ['filled', 'partially_filled', 'canceled', 'rejected', 'expired']:
@@ -140,38 +140,38 @@ class OrderManager:
         if final_status:
             filled_qty = int(final_status.get('filled_qty', 0))
             if final_status['status'] == 'filled':
-                logger.info(f"✅ 订单成交: {symbol} {filled_qty} 股 @ ${final_status.get('filled_avg_price', 'N/A')}")
+                logger.info(f"[OK] Order filled: {symbol} {filled_qty} shares @ ${final_status.get('filled_avg_price', 'N/A')}")
                 # 记录 PDT 成交
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
             elif final_status['status'] == 'partially_filled':
-                logger.warning(f"⚠️ 部分成交: {symbol} {filled_qty}/{qty}")
+                logger.warning(f"[PARTIAL] Partial fill: {symbol} {filled_qty}/{qty}")
                 # P2修复：部分成交发送告警
                 self._send_alert('order_partial_fill', symbol, side, filled_qty, qty, order_id)
                 # 部分成交也记录
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
             elif final_status['status'] == 'rejected':
-                logger.error(f"❌ 订单被拒: {symbol} - {final_status.get('reason', 'Unknown')}")
+                logger.error(f"[ERROR] Order rejected: {symbol} - {final_status.get('reason', 'Unknown')}")
                 # P2修复：订单被拒发送告警
                 self._send_alert('order_rejected', symbol, side, qty, final_status.get('reason', 'Unknown'), order_id)
             else:
-                logger.warning(f"⚠️ 订单 {final_status['status']}: {symbol}")
+                logger.warning(f"[WARN] Order {final_status['status']}: {symbol}")
             
             # 记录日志
             self._log_order(final_status)
             return final_status
         else:
             # 超时：尝试撤销订单
-            logger.error(f"⏱️ 订单超时: {symbol} (等待 {max_wait} 秒)，尝试撤销...")
+            logger.error(f"[TIMEOUT] Order timeout: {symbol} (waited {max_wait} s), attempting cancel...")
             if hasattr(self.executor, 'cancel_order'):
                 try:
                     self.executor.cancel_order(order_id)
-                    logger.info(f"✅ 已撤销超时订单: {order_id}")
+                    logger.info(f"[OK] Canceled timed-out order: {order_id}")
                 except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                    logger.error(f"撤销超时订单 {order_id} 网络失败: {e}")
+                    logger.error(f"Cancel timed-out order {order_id} network failed: {e}")
                 except ValueError as e:
-                    logger.error(f"撤销超时订单 {order_id} 参数错误: {e}")
+                    logger.error(f"Cancel timed-out order {order_id} parameter error: {e}")
             self._log_order({
                 'order_id': order_id,
                 'symbol': symbol,
@@ -205,9 +205,9 @@ class OrderManager:
                     'qty': int(float(order.qty)) if order.qty is not None else 0,
                 }
         except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-            logger.warning(f"获取订单 {order_id} 状态网络错误: {e}")
+            logger.warning(f"Get order {order_id} status network error: {e}")
         except ValueError as e:
-            logger.warning(f"获取订单 {order_id} 状态参数错误: {e}")
+            logger.warning(f"Get order {order_id} status parameter error: {e}")
 
         return None
     
@@ -251,9 +251,9 @@ class OrderManager:
                     order_id=order_info.get('order_id', order_info.get('id'))
                 )
             except (ValueError, TypeError) as e:
-                logger.debug(f"结构化日志记录失败: {e}")
+                logger.debug(f"Structured log record failed: {e}")
             except (OSError, IOError) as e:
-                logger.debug(f"结构化日志写入失败: {e}")
+                logger.debug(f"Structured log write failed: {e}")
     
     def get_order_history(self, date=None):
         """获取订单历史"""
@@ -295,7 +295,7 @@ class RebalanceManager:
             try:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
-                logger.debug(f"告警发送失败: {e}")
+                logger.debug(f"Alert send failed: {e}")
     
     def rebalance(self, target_positions: Dict[str, float], 
                   max_position_pct=0.20,
@@ -328,7 +328,7 @@ class RebalanceManager:
         """
         account = self.executor.get_account()
         if not account:
-            logger.error("无法获取账户信息")
+            logger.error("Cannot get account info")
             return []
         
         portfolio_value = account['portfolio_value']
@@ -338,7 +338,7 @@ class RebalanceManager:
             original_total = sum(target_positions.values())
             target_positions = normalize_target_positions(target_positions, portfolio_value)
             if abs(original_total - sum(target_positions.values())) > 1:
-                logger.info(f"📊 目标持仓已归一化: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
+                logger.info(f"[PORTFOLIO] Target positions normalized: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
         
         current_positions = {p['symbol']: p for p in self.executor.get_positions()}
         
@@ -347,9 +347,9 @@ class RebalanceManager:
         executed_buy_orders = []   # 记录已执行的买入订单（失败时可能需要卖出）
         
         logger.info(f"\n{'='*60}")
-        logger.info(f"组合再平衡")
+        logger.info(f"Portfolio rebalance")
         logger.info(f"{'='*60}")
-        logger.info(f"组合价值: ${portfolio_value:,.2f}")
+        logger.info(f"Portfolio value: ${portfolio_value:,.2f}")
         
         # 1. 先卖出不在目标列表中的持仓
         sell_orders = []
@@ -375,10 +375,10 @@ class RebalanceManager:
                 
                 results.append(result)
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                logger.error(f"卖出网络异常 {order['symbol']}: {e}")
+                logger.error(f"Sell network error {order['symbol']}: {e}")
                 results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
             except ValueError as e:
-                logger.error(f"卖出参数错误 {order['symbol']}: {e}")
+                logger.error(f"Sell parameter error {order['symbol']}: {e}")
                 results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
         
         # 2. 买入/调整目标持仓
@@ -389,7 +389,7 @@ class RebalanceManager:
             try:
                 current_price = self._get_current_price(symbol)
             except RuntimeError as e:
-                logger.error(f"无法获取价格 {symbol}: {e}")
+                logger.error(f"Cannot get price {symbol}: {e}")
                 results.append({'status': 'ERROR', 'symbol': symbol, 'error': str(e)})
                 continue
             target_qty = self._calculate_qty(target_value, current_price, symbol=symbol)
@@ -402,7 +402,7 @@ class RebalanceManager:
                 qty = abs(diff)
                 notional = qty * current_price
                 if notional < min_notional:
-                    logger.warning(f"{symbol} 订单名义金额 ${notional:.2f} 小于最小 ${min_notional}，跳过")
+                    logger.warning(f"{symbol} order notional ${notional:.2f} below minimum ${min_notional}, skipping")
                     continue
                 buy_orders.append({
                     'symbol': symbol, 'qty': qty, 'side': side,
@@ -417,7 +417,7 @@ class RebalanceManager:
                 if order['side'] == 'buy':
                     account = self.executor.get_account()
                     if account and order['qty'] * order['current_price'] > account.get('buying_power', 0):
-                        logger.error(f"购买力不足，跳过 {order['symbol']}")
+                        logger.error(f"Insufficient buying power, skipping {order['symbol']}")
                         # P2修复：购买力不足发送告警
                         self._send_alert('order_failed', order['symbol'], order['side'], order['qty'], 'insufficient_buying_power')
                         failed_buy = True
@@ -454,8 +454,8 @@ class RebalanceManager:
                         # P1-3 修复：部分成交时优先补单，避免直接全仓回滚
                         remaining_qty = ordered_qty - filled_qty
                         logger.warning(
-                            f"⚠️ 部分成交 {order['symbol']} {fill_ratio:.1%} < {min_buy_fill_ratio:.0%}，"
-                            f"尝试补单 {remaining_qty} 股"
+                            f"[PARTIAL] Partial fill {order['symbol']} {fill_ratio:.1%} < {min_buy_fill_ratio:.0%}，"
+                            f"attempting top-up {remaining_qty} shares"
                         )
                         topup = self.order_manager.submit_and_wait(
                             order['symbol'], remaining_qty, 'buy',
@@ -472,31 +472,31 @@ class RebalanceManager:
                                 executed_buy_orders.append(topup)
                             fill_ratio = total_filled / ordered_qty if ordered_qty > 0 else 1.0
                             if fill_ratio >= min_buy_fill_ratio:
-                                logger.info(f"✅ 补单后 {order['symbol']} 合计成交 {fill_ratio:.1%}")
+                                logger.info(f"[OK] After top-up {order['symbol']} total filled {fill_ratio:.1%}")
                             else:
                                 failed_buy = True
                                 reason = f"partially_filled_topup_failed ({fill_ratio:.1%} < {min_buy_fill_ratio:.0%})"
-                                logger.error(f"❌ 买入失败 {order['symbol']} (原因: {reason})，触发回滚...")
+                                logger.error(f"[ERROR] Buy failed {order['symbol']} (reason: {reason}), triggering rollback...")
                                 break
                         else:
                             failed_buy = True
                             reason = f"partially_filled_topup_submit_failed ({fill_ratio:.1%})"
-                            logger.error(f"❌ 买入失败 {order['symbol']} (原因: {reason})，触发回滚...")
+                            logger.error(f"[ERROR] Buy failed {order['symbol']} (reason: {reason}), triggering rollback...")
                             break
                     elif is_failed or is_insufficient_fill:
                         failed_buy = True
                         reason = status if is_failed else f"partially_filled ({fill_ratio:.1%} < {min_buy_fill_ratio:.0%})"
-                        logger.error(f"❌ 买入失败 {order['symbol']} (原因: {reason})，触发回滚...")
+                        logger.error(f"[ERROR] Buy failed {order['symbol']} (reason: {reason}), triggering rollback...")
                         break
                         
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                logger.error(f"买入网络异常 {order['symbol']}: {e}")
+                logger.error(f"Buy network error {order['symbol']}: {e}")
                 results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
                 if order['side'] == 'buy':
                     failed_buy = True
                     break
             except ValueError as e:
-                logger.error(f"买入参数错误 {order['symbol']}: {e}")
+                logger.error(f"Buy parameter error {order['symbol']}: {e}")
                 results.append({'status': 'ERROR', 'symbol': order['symbol'], 'error': str(e)})
                 if order['side'] == 'buy':
                     failed_buy = True
@@ -505,22 +505,22 @@ class RebalanceManager:
         # 回滚：如果买入失败，撤销已执行的卖出（重新买回）
         if failed_buy and enable_rollback:
             # P2修复：买入失败触发回滚时发送告警
-            self._send_alert('risk_triggered', 'REBALANCE_ROLLBACK', f"买入失败，触发回滚", {'results_count': len(results)})
+            self._send_alert('risk_triggered', 'REBALANCE_ROLLBACK', f"Buy failed, triggering rollback", {'results_count': len(results)})
             # P0 修复：回滚卖出仓位（重新买回）
             if executed_sell_orders:
-                logger.warning(f"🔄 执行回滚: {len(executed_sell_orders)} 笔卖出")
+                logger.warning(f"[ROLLBACK] Executing rollback: {len(executed_sell_orders)} sell(s)")
                 for sell_result in executed_sell_orders:
                     symbol = sell_result.get('symbol')
                     qty = sell_result.get('filled_qty', sell_result.get('qty', 0))
                     if qty > 0 and symbol:
                         try:
-                            logger.info(f"🔄 回滚: 买回 {symbol} x {qty}")
+                            logger.info(f"[ROLLBACK] Rollback: buy back {symbol} x {qty}")
                             self.executor.submit_order(symbol, qty, 'buy')
                         except (ConnectionError, TimeoutError, Timeout, RequestException, ValueError) as e:
-                            logger.error(f"回滚失败 {symbol}: {e}")
+                            logger.error(f"Rollback failed {symbol}: {e}")
             # P0 修复：撤销已买入但目标未达成的新仓位
             if executed_buy_orders:
-                logger.warning(f"🔄 撤销已买入: {len(executed_buy_orders)} 笔买入")
+                logger.warning(f"[ROLLBACK] Canceling bought positions: {len(executed_buy_orders)} buy(s)")
                 for buy_result in executed_buy_orders:
                     try:
                         order_id = buy_result.get('id')
@@ -531,9 +531,9 @@ class RebalanceManager:
                         if filled_qty > 0:
                             self.executor.submit_order(buy_result['symbol'], filled_qty, 'sell')
                     except (ConnectionError, TimeoutError, Timeout, RequestException, ValueError) as e:
-                        logger.error(f"撤销买入失败 {buy_result.get('symbol')}: {e}")
+                        logger.error(f"Failed to cancel buy {buy_result.get('symbol')}: {e}")
         
-        logger.info(f"✅ 再平衡完成，共 {len(results)} 笔订单")
+        logger.info(f"[OK] Rebalance completed, total {len(results)} orders")
         
         # P2 修复：结构化日志记录组合快照
         if JSON_LOGGER_AVAILABLE:
@@ -547,11 +547,11 @@ class RebalanceManager:
                         positions_count=len(positions)
                     )
             except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
-                logger.debug(f"组合快照日志失败: {e}")
+                logger.debug(f"Portfolio snapshot log failed: {e}")
             except (ValueError, TypeError) as e:
-                logger.debug(f"组合快照日志参数错误: {e}")
+                logger.debug(f"Portfolio snapshot log parameter error: {e}")
             except (OSError, IOError) as e:
-                logger.debug(f"组合快照日志写入失败: {e}")
+                logger.debug(f"Portfolio snapshot log write failed: {e}")
         
         return results
     
@@ -568,7 +568,7 @@ class RebalanceManager:
     
     def _get_current_price(self, symbol):
         """获取当前价格（使用 executor 的方法）"""
-        # 尝试从 V14AlpacaExecutor 获取
+        # 尝试从 AlpacaExecutor 获取
         if hasattr(self.executor, '_get_current_price'):
             return self.executor._get_current_price(symbol)
         
@@ -579,7 +579,7 @@ class RebalanceManager:
                 return p['current_price']
         
         # P1 修复：不再兜底 100，价格不可用时显式报错
-        raise RuntimeError(f"无法获取 {symbol} 当前价格，暂停交易")
+        raise RuntimeError(f"Cannot get {symbol} current price, trading paused")
 
 
 # ============================================================
@@ -596,4 +596,4 @@ if __name__ == '__main__':
     targets = {'AAPL': 20000, 'MSFT': 20000}
     results = manager.rebalance(targets, confirm_fills=False)
     
-    print(f"\n订单结果: {len(results)} 笔")
+    print(f"\nOrder results: {len(results)} orders")

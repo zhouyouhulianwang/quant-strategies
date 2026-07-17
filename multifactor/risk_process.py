@@ -36,7 +36,7 @@ logger = logging.getLogger('risk_process')
 from version import get_version
 
 # 复用现有模块，不引入新依赖
-from alpaca_executor import V14AlpacaExecutor
+from alpaca_executor import AlpacaExecutor
 from risk_monitor import RiskMonitor
 from intraday_monitor import IntradayMonitor
 from config import V14StrategyConfig, get_config, set_config
@@ -45,32 +45,32 @@ from config import V14StrategyConfig, get_config, set_config
 def parse_args(argv=None):
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description='Multifactor 盘中风控独立进程'
+        description='Multifactor Intraday Risk Process'
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         '--paper', action='store_true', default=None,
-        help='使用 Alpaca Paper 交易（默认）'
+        help='Use Alpaca Paper trading (default)'
     )
     mode.add_argument(
         '--live', action='store_true', default=None,
-        help='使用 Alpaca Live 实盘交易'
+        help='Use Alpaca Live trading'
     )
     parser.add_argument(
         '--mock', action='store_true', default=False,
-        help='使用模拟执行器（不连接真实 API，仅用于测试）'
+        help='Use mock executor (no real API connection, for testing only)'
     )
     parser.add_argument(
         '--check-interval', type=int, default=None,
-        help='监控检查间隔（秒）'
+        help='Monitoring check interval (seconds)'
     )
     parser.add_argument(
         '--config-path', type=str, default=None,
-        help='配置文件路径（JSON 格式）'
+        help='Config file path (JSON format)'
     )
     parser.add_argument(
         '--version', action='version', version=f'%(prog)s {get_version()}',
-        help='显示版本号并退出'
+        help='Show version and exit'
     )
     return parser.parse_args(argv)
 
@@ -99,7 +99,7 @@ class RiskProcess:
         """注册 SIGTERM / SIGINT 信号处理器，实现优雅退出。"""
         def _on_signal(signum, frame):
             signame = signal.Signals(signum).name
-            logger.info(f"收到 {signame}，开始优雅退出...")
+            logger.info(f"Received {signame}, starting graceful shutdown...")
             self.shutdown_event.set()
 
         signal.signal(signal.SIGTERM, _on_signal)
@@ -121,14 +121,14 @@ class RiskProcess:
         return config
 
     def _default_executor_factory(self, paper):
-        """默认 executor 工厂：从环境变量读取凭证并创建 V14AlpacaExecutor。"""
+        """默认 executor 工厂：从环境变量读取凭证并创建 AlpacaExecutor。"""
         api_key = os.getenv('ALPACA_API_KEY')
         api_secret = os.getenv('ALPACA_API_SECRET')
         base_url = os.getenv('ALPACA_BASE_URL')
         if not base_url:
             base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
 
-        return V14AlpacaExecutor(
+        return AlpacaExecutor(
             api_key=api_key,
             api_secret=api_secret,
             base_url=base_url,
@@ -173,7 +173,7 @@ class RiskProcess:
             self.executor, config
         )
         logger.info(
-            f"风控进程初始化完成: paper={paper}, mock={self.args.mock}, "
+            f"Risk process initialized: paper={paper}, mock={self.args.mock}, "
             f"check_interval={config.trading.check_interval}s"
         )
 
@@ -184,7 +184,7 @@ class RiskProcess:
         status = self.intraday_monitor.get_status()
         risk_summary = self.risk_monitor.get_risk_summary()
         logger.info(
-            f"风控状态 | monitoring={status['monitoring']} "
+            f"Risk status | monitoring={status['monitoring']} "
             f"risk_level={risk_summary['risk_level']} "
             f"trading_halted={risk_summary['trading_halted']} "
             f"alerts={risk_summary['total_alerts']} "
@@ -197,18 +197,18 @@ class RiskProcess:
             self.initialize()
             # 使用非 daemon 方式运行监控循环，确保进程持续运行
             self.intraday_monitor.start(daemon=False)
-            logger.info("🟢 风控监控循环已启动（非 daemon）")
+            logger.info("[START] Risk monitor loop started (non-daemon)")
 
             while not self.shutdown_event.is_set():
                 self._print_status()
                 self.shutdown_event.wait(self.intraday_monitor.check_interval)
 
-            logger.info("🔴 正在停止监控...")
+            logger.info("[STOP] Stopping monitor...")
             self.intraday_monitor.stop()
-            logger.info("✅ 风控进程已退出")
+            logger.info("[OK] Risk process exited")
             return 0
         except Exception as e:
-            logger.exception(f"风控进程异常: {e}")
+            logger.exception(f"Risk process exception: {e}")
             return 1
 
 

@@ -43,7 +43,7 @@ class IntradayMonitor:
         初始化盘中监控
         
         参数:
-            executor: V14AlpacaExecutor
+            executor: AlpacaExecutor
             risk_monitor: RiskMonitor
             check_interval: int, 检查间隔（秒）
             vix_emergency_level: float, VIX 紧急平仓阈值
@@ -79,10 +79,10 @@ class IntradayMonitor:
         self.on_drawdown: Optional[Callable] = None
         self.on_single_stock_drop: Optional[Callable] = None
         
-        logger.info("✅ 盘中监控器已初始化")
-        logger.info(f"   VIX 紧急阈值: {vix_emergency_level}")
-        logger.info(f"   日内回撤限制: {max_intraday_dd:.1%}")
-        logger.info(f"   累计回撤限制: {max_total_drawdown:.1%}")
+        logger.info("[OK] Intraday monitor initialized")
+        logger.info(f"   VIX emergency threshold: {vix_emergency_level}")
+        logger.info(f"   Intraday drawdown limit: {max_intraday_dd:.1%}")
+        logger.info(f"   Total drawdown limit: {max_total_drawdown:.1%}")
     
     @property
     def trading_halted(self):
@@ -107,14 +107,14 @@ class IntradayMonitor:
                    独立进程中建议传入 False，以保证进程不随主线程退出。
         """
         if self.monitoring:
-            logger.warning("监控已在运行")
+            logger.warning("Monitor already running")
             return
         
         self.monitoring = True
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=daemon)
         self.monitor_thread.start()
         
-        logger.info(f"🟢 盘中监控已启动 (daemon={daemon})")
+        logger.info(f"[START] Intraday monitor started (daemon={daemon})")
     
     def join(self, timeout=None):
         """等待监控线程结束
@@ -135,7 +135,7 @@ class IntradayMonitor:
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
         
-        logger.info("🔴 盘中监控已停止")
+        logger.info("[STOP] Intraday monitor stopped")
     
     def _monitor_loop(self):
         """监控循环"""
@@ -146,7 +146,7 @@ class IntradayMonitor:
                 if self._current_date != today:
                     self._current_date = today
                     self.reset_daily_high()
-                    logger.info(f"📅 新的一天，日内高点已重置: {today}")
+                    logger.info(f"[NEW_DAY] New day, intraday high reset: {today}")
 
                 # P1修复: 若收盘期间触发了强平但市场关闭，开盘后执行
                 if self._pending_liquidation_reason:
@@ -157,11 +157,11 @@ class IntradayMonitor:
                     if market_open:
                         self._execute_pending_liquidation()
                     else:
-                        logger.info(f"⏳ 待平仓原因: {self._pending_liquidation_reason}，等待市场开盘...")
+                        logger.info(f"[PENDING] Pending liquidation reason: {self._pending_liquidation_reason}, waiting for market open...")
 
                 self._check_all()
             except Exception as e:
-                logger.error(f"监控循环错误: {e}")
+                logger.error(f"Monitor loop error: {e}")
 
             time.sleep(self.check_interval)
     
@@ -191,14 +191,14 @@ class IntradayMonitor:
             if vix is None:
                 return
             
-            logger.debug(f"当前 VIX: {vix:.2f}")
+            logger.debug(f"Current VIX: {vix:.2f}")
             
             # 检查是否超过紧急阈值
             if vix >= self.vix_emergency_level:
-                logger.critical(f"🚨 VIX 紧急预警: {vix:.2f} (阈值: {self.vix_emergency_level})")
+                logger.critical(f"[ALERT] VIX emergency alert: {vix:.2f} (threshold: {self.vix_emergency_level})")
                 
                 # 触发紧急平仓
-                self._emergency_liquidation(f"VIX飙升至 {vix:.2f}")
+                self._emergency_liquidation(f"VIX spiked to {vix:.2f}")
                 
                 if self.on_vix_spike:
                     self.on_vix_spike(vix)
@@ -208,9 +208,9 @@ class IntradayMonitor:
                 self.risk_monitor.check_vix_level(vix)
                 
         except (ConnectionError, TimeoutError) as e:
-            logger.error(f"VIX 检查网络错误: {e}")
+            logger.error(f"VIX check network error: {e}")
         except Exception as e:
-            logger.error(f"VIX 检查失败: {e}")
+            logger.error(f"VIX check failed: {e}")
     
     def _check_intraday_drawdown(self):
         """检查日内回撤"""
@@ -233,23 +233,23 @@ class IntradayMonitor:
             if self.daily_high_nav > 0:
                 drawdown = (current_nav - self.daily_high_nav) / self.daily_high_nav
                 
-                logger.debug(f"日内回撤: {drawdown:.2%}")
+                logger.debug(f"Intraday drawdown: {drawdown:.2%}")
                 
                 if drawdown <= -self.max_intraday_dd:
                     logger.critical(
-                        f"🚨 日内回撤超限: {drawdown:.2%} "
-                        f"(限制: {-self.max_intraday_dd:.1%})"
+                        f"[ALERT] Intraday drawdown exceeded: {drawdown:.2%} "
+                        f"(limit: {-self.max_intraday_dd:.1%})"
                     )
                     
-                    self._emergency_liquidation(f"日内回撤 {drawdown:.2%}")
+                    self._emergency_liquidation(f"Intraday drawdown {drawdown:.2%}")
                     
                     if self.on_drawdown:
                         self.on_drawdown(drawdown)
                         
         except (ConnectionError, TimeoutError) as e:
-            logger.error(f"回撤检查网络错误: {e}")
+            logger.error(f"Drawdown check network error: {e}")
         except Exception as e:
-            logger.error(f"回撤检查失败: {e}")
+            logger.error(f"Drawdown check failed: {e}")
     
     def _check_total_drawdown(self):
         """检查累计回撤（P1 修复）"""
@@ -267,23 +267,23 @@ class IntradayMonitor:
             if self.peak_nav > 0:
                 drawdown = (current_nav - self.peak_nav) / self.peak_nav
                 
-                logger.debug(f"累计回撤: {drawdown:.2%}")
+                logger.debug(f"Total drawdown: {drawdown:.2%}")
                 
                 if drawdown <= -self.max_total_drawdown:
                     logger.critical(
-                        f"🚨 累计回撤超限: {drawdown:.2%} "
-                        f"(限制: {-self.max_total_drawdown:.1%})"
+                        f"[ALERT] Total drawdown exceeded: {drawdown:.2%} "
+                        f"(limit: {-self.max_total_drawdown:.1%})"
                     )
                     
-                    self._emergency_liquidation(f"累计回撤 {drawdown:.2%}")
+                    self._emergency_liquidation(f"Total drawdown {drawdown:.2%}")
                     
                     if self.on_drawdown:
                         self.on_drawdown(drawdown)
                         
         except (ConnectionError, TimeoutError) as e:
-            logger.error(f"累计回撤检查网络错误: {e}")
+            logger.error(f"Total drawdown check network error: {e}")
         except Exception as e:
-            logger.error(f"累计回撤检查失败: {e}")
+            logger.error(f"Total drawdown check failed: {e}")
 
     def _check_single_stocks(self):
         """检查单只股票跌幅"""
@@ -300,20 +300,20 @@ class IntradayMonitor:
                     
                     if pnl_pct <= -self.single_stock_limit:
                         logger.critical(
-                            f"🚨 单只股票暴跌: {symbol} "
-                            f"跌幅 {pnl_pct:.2%} (限制: {-self.single_stock_limit:.1%})"
+                            f"[ALERT] Single-stock crash: {symbol} "
+                            f"Drop {pnl_pct:.2%} (limit: {-self.single_stock_limit:.1%})"
                         )
                         
                         # 仅平仓该股票
-                        self._liquidate_symbol(symbol, f"跌幅 {pnl_pct:.2%}")
+                        self._liquidate_symbol(symbol, f"Drop {pnl_pct:.2%}")
                         
                         if self.on_single_stock_drop:
                             self.on_single_stock_drop(symbol, pnl_pct)
                             
         except (ConnectionError, TimeoutError) as e:
-            logger.error(f"个股检查网络错误: {e}")
+            logger.error(f"Single-stock check network error: {e}")
         except Exception as e:
-            logger.error(f"个股检查失败: {e}")
+            logger.error(f"Single-stock check failed: {e}")
     
     def _get_latest_vix(self):
         """获取最新 VIX"""
@@ -335,7 +335,7 @@ class IntradayMonitor:
                 return float(vix_data['Close'].iloc[-1])
                 
         except Exception as e:
-            logger.warning(f"获取 VIX 失败: {e}")
+            logger.warning(f"Failed to get VIX: {e}")
         
         return None
     
@@ -349,10 +349,10 @@ class IntradayMonitor:
         self._pending_liquidation_reason = None
         try:
             count = self.executor.liquidate_all()
-            logger.critical(f"✅ 已执行待处理强平: {count} 个持仓，原因: {reason}")
-            self._send_emergency_alert(f"开盘后执行待处理强平: {reason}")
+            logger.critical(f"[OK] Executed pending liquidation: {count} positions, reason: {reason}")
+            self._send_emergency_alert(f"Executed pending liquidation after market open: {reason}")
         except Exception as e:
-            logger.critical(f"❌ 待处理强平执行失败: {e}")
+            logger.critical(f"[ERROR] Pending liquidation execution failed: {e}")
             # 失败时重新标记待处理，下次循环再试
             self._pending_liquidation_reason = reason
 
@@ -365,8 +365,8 @@ class IntradayMonitor:
             reason: str, 触发原因
         """
         logger.critical(f"\n{'='*60}")
-        logger.critical(f"🚨 紧急平仓触发")
-        logger.critical(f"原因: {reason}")
+        logger.critical(f"[ALERT] Emergency liquidation triggered")
+        logger.critical(f"Reason: {reason}")
         logger.critical(f"{'='*60}")
 
         try:
@@ -382,26 +382,26 @@ class IntradayMonitor:
             if not market_open:
                 # P1修复: 市场关闭时记录待平仓，不提交订单，避免挂单到次日开盘
                 self._pending_liquidation_reason = reason
-                logger.critical("⏳ 市场已收盘，强平已记录待执行，将在下次开盘触发")
-                logger.critical("   已暂停交易，请检查账户状态")
-                logger.critical("⚠️ 交易已暂停，请手动检查并恢复")
+                logger.critical("[PENDING] Market closed, liquidation recorded and will trigger on next open")
+                logger.critical("   Trading paused, please check account status")
+                logger.critical("[WARN] Trading paused, please manually check and resume")
                 # 发送告警
                 self._send_emergency_alert(reason)
                 return
 
             # 2. 市场开盘，立即平掉所有持仓
             count = self.executor.liquidate_all()
-            logger.critical(f"✅ 已平掉 {count} 个持仓")
+            logger.critical(f"[OK] Liquidated {count} positions")
 
-            logger.critical("⚠️ 交易已暂停，请手动检查并恢复")
+            logger.critical("[WARN] Trading paused, please manually check and resume")
             
             # 3. 发送告警（如果配置了）
             self._send_emergency_alert(reason)
             
         except ConnectionError as e:
-            logger.critical(f"❌ 紧急平仓网络错误: {e}")
+            logger.critical(f"[ERROR] Emergency liquidation network error: {e}")
         except Exception as e:
-            logger.critical(f"❌ 紧急平仓失败: {e}")
+            logger.critical(f"[ERROR] Emergency liquidation failed: {e}")
     
     def _liquidate_symbol(self, symbol, reason):
         """
@@ -412,7 +412,7 @@ class IntradayMonitor:
             symbol: str
             reason: str
         """
-        logger.critical(f"🚨 平仓 {symbol}: {reason}")
+        logger.critical(f"[ALERT] Liquidate {symbol}: {reason}")
         
         try:
             # P0 修复：市场关闭时记录告警
@@ -425,17 +425,17 @@ class IntradayMonitor:
                 # P1修复: 收盘时记录整体待平仓，不提交订单，避免挂单到次日开盘
                 if not self._pending_liquidation_reason:
                     self._pending_liquidation_reason = f"{symbol} {reason}"
-                logger.critical(f"⏳ 市场未开盘，{symbol} 平仓已记录待执行，将在开盘后触发")
+                logger.critical(f"[PENDING] Market not open, {symbol} liquidation recorded and will trigger after open")
                 return
 
             positions = self.executor.get_positions()
             for pos in positions:
                 if pos['symbol'] == symbol:
                     self.executor.submit_order(symbol, pos['qty'], 'sell')
-                    logger.critical(f"✅ 已提交平仓 {symbol} x {pos['qty']}")
+                    logger.critical(f"[OK] Submitted liquidation {symbol} x {pos['qty']}")
                     break
         except Exception as e:
-            logger.error(f"平仓 {symbol} 失败: {e}")
+            logger.error(f"Liquidate {symbol} failed: {e}")
     
     def _send_emergency_alert(self, reason):
         """发送紧急告警"""
@@ -444,7 +444,7 @@ class IntradayMonitor:
             if self.risk_monitor and hasattr(self.risk_monitor, '_trigger_alert'):
                 self.risk_monitor._trigger_alert(
                     'EMERGENCY_LIQUIDATION',
-                    f'紧急平仓: {reason}',
+                    f'Emergency liquidation: {reason}',
                     {'reason': reason, 'timestamp': datetime.now().isoformat()}
                 )
         except Exception:
@@ -453,7 +453,7 @@ class IntradayMonitor:
     def reset_daily_high(self):
         """重置日内高点（每天开盘调用）"""
         self.daily_high_nav = None
-        logger.info("📊 日内高点已重置")
+        logger.info("[RESET] Intraday high reset")
     
     def get_status(self):
         """获取监控状态"""
@@ -485,7 +485,7 @@ class IntradayMonitor:
             if hasattr(self.executor, 'market_is_open') and not self.executor.market_is_open():
                 return {'can_resume': False, 'reason': 'market_closed'}
         except Exception as e:
-            logger.warning(f"恢复检查市场状态失败: {e}")
+            logger.warning(f"Failed to check market status for recovery: {e}")
 
         # 3. VIX 回落到阈值以下（如果提供）
         if vix is not None:
@@ -502,7 +502,7 @@ class IntradayMonitor:
 
     def resume_trading(self):
         """手动/自动恢复交易，重置暂停状态。"""
-        logger.warning("🟢 手动恢复交易")
+        logger.warning("[RESUME] Trading manually resumed")
         self.trading_halted = False
         self._pending_liquidation_reason = None
         return {'status': 'RESUMED', 'trading_halted': False}
@@ -511,9 +511,9 @@ class IntradayMonitor:
         """如果满足恢复条件，自动恢复交易。"""
         recovery = self.check_recovery(vix=vix, current_nav=current_nav)
         if recovery['can_resume']:
-            logger.warning(f"🟢 自动恢复交易: {recovery['reason']}")
+            logger.warning(f"[RESUME] Trading auto-resumed: {recovery['reason']}")
             return self.resume_trading()
-        logger.info(f"⏳ 不满足恢复条件: {recovery['reason']}")
+        logger.info(f"[PENDING] Recovery conditions not met: {recovery['reason']}")
         return {'status': 'STAY_HALTED', 'reason': recovery['reason']}
 
 
@@ -538,12 +538,12 @@ if __name__ == '__main__':
     
     # 设置回调
     def on_vix_spike(vix):
-        print(f"回调: VIX 飙升至 {vix}")
+        print(f"Callback: VIX spiked to {vix}")
     
     monitor.on_vix_spike = on_vix_spike
     
     # 启动监控
-    print("启动监控（测试模式，按 Ctrl+C 停止）...")
+    print("Starting monitor (test mode, press Ctrl+C to stop)...")
     monitor.start()
     
     try:
@@ -551,4 +551,4 @@ if __name__ == '__main__':
             time.sleep(1)
     except KeyboardInterrupt:
         monitor.stop()
-        print("\n监控已停止")
+        print("\nMonitor stopped")

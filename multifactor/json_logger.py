@@ -98,7 +98,7 @@ def log_risk_event(event_type: str, level: str, value: float, action: str):
     """
     logger = _ensure_json_logger()
     logger.warning(
-        f"风控触发: {event_type}={value:.2f} -> {action}",
+        f"Risk triggered: {event_type}={value:.2f} -> {action}",
         extra={
             'event': 'risk_triggered',
             'type': event_type,
@@ -127,7 +127,7 @@ def log_portfolio_snapshot(cash: float, portfolio_value: float, positions_count:
         extra['drawdown'] = drawdown
 
     logger.info(
-        f"组合快照: NAV=${portfolio_value:,.2f}, Cash=${cash:,.2f}, Positions={positions_count}",
+        f"Portfolio snapshot: NAV=${portfolio_value:,.2f}, Cash=${cash:,.2f}, Positions={positions_count}",
         extra=extra,
     )
 
@@ -138,7 +138,7 @@ def log_portfolio_snapshot(cash: float, portfolio_value: float, positions_count:
 if __name__ == '__main__':
     # 示例 1: 普通结构化日志
     logger = StructuredLogger('test')
-    logger.info('系统启动', event='system_start', data={'version': '1.0.0'})
+    logger.info('System started', event='system_start', data={'version': '1.0.0'})
 
     # 示例 2: 交易事件
     log_trade_event('AAPL', 'buy', 100, 150.25, 'filled', 'order-12345')

@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from alpaca_executor import ALPACA_AVAILABLE, V14AlpacaExecutor, OrderSide, OrderType, TimeInForce
+from alpaca_executor import ALPACA_AVAILABLE, AlpacaExecutor, OrderSide, OrderType, TimeInForce
 
 
 def _confirm_live() -> bool:
@@ -58,7 +58,7 @@ def main() -> int:
     paper = args.paper or True  # default to paper for safety
     print(f"  Using paper endpoint: {paper}")
 
-    executor = V14AlpacaExecutor(
+    executor = AlpacaExecutor(
         api_key=api_key,
         secret_key=secret_key,
         paper=paper,

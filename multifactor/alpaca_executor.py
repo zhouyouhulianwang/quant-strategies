@@ -51,7 +51,7 @@ def adjust_for_split(symbol: str, ratio: float, lots: List[Dict[str, Any]]) -> L
             old_qty = int(lot.get('qty', 0))
             new_qty = int(round(old_qty * ratio))
             if new_qty != old_qty:
-                logger.info(f"📈 拆股调整: {symbol} {old_qty} -> {new_qty} (ratio={ratio})")
+                logger.info(f"[SPLIT] Stock split adjustment: {symbol} {old_qty} -> {new_qty} (ratio={ratio})")
                 lot['qty'] = new_qty
 
     return lots
@@ -93,7 +93,7 @@ def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = N
         float: 建议的限价单偏移比例（例如 0.001 表示 0.1%）
     """
     if price <= 0:
-        raise ValueError(f"{symbol}: price 必须为正数")
+        raise ValueError(f"{symbol}: price must be positive")
 
     if atr is not None and atr > 0:
         offset = 0.05 * (atr / price)
@@ -134,7 +134,7 @@ try:
     from alpaca.common.exceptions import APIError
     ALPACA_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"alpaca-py 未安装: {e}，使用模拟模式")
+    logger.warning(f"alpaca-py not installed: {e}, using mock mode")
     ALPACA_AVAILABLE = False
 
 
@@ -323,7 +323,7 @@ class AlpacaPaperExecutor:
         # P0 修复：先校验 API Key/Secret 存在性，再进入 live 确认；mock 模式使用假凭证
         if not self.api_key or not self.api_secret:
             if not mock:
-                raise ValueError("请提供 Alpaca API Key 和 Secret，或在 .env 文件中设置")
+                raise ValueError("Please provide Alpaca API Key and Secret, or set them in .env")
             self.api_key = self.api_key or 'MOCK-KEY'
             self.api_secret = self.api_secret or 'MOCK-SECRET'
 
@@ -332,18 +332,18 @@ class AlpacaPaperExecutor:
             self.base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
         if self.base_url not in ('https://paper-api.alpaca.markets', 'https://api.alpaca.markets'):
             raise ValueError(
-                f"非法的 Alpaca base_url: {self.base_url}，"
+                f"Invalid Alpaca base_url: {self.base_url}，"
                 "仅允许 https://paper-api.alpaca.markets 或 https://api.alpaca.markets"
             )
 
         # 实盘模式二次确认（P0 修复：支持 ALPACA_LIVE_CONFIRMED=1 环境变量跳过交互）
         if not paper and not mock and require_live_confirmation:
             if os.getenv('ALPACA_LIVE_CONFIRMED') == '1':
-                logger.critical("✅ 通过 ALPACA_LIVE_CONFIRMED=1 跳过实盘交互确认")
+                logger.critical("[OK] Skipping live confirmation via ALPACA_LIVE_CONFIRMED=1")
             else:
                 confirmed = self._confirm_live_mode()
                 if not confirmed:
-                    raise RuntimeError("用户未确认实盘模式，已中止")
+                    raise RuntimeError("User did not confirm live mode, aborted")
 
         # 初始化 API
         self.trading_client = None
@@ -351,7 +351,7 @@ class AlpacaPaperExecutor:
         if mock:
             # P0 修复：mock 模式使用基于 SDK 对象的 fake client，避免过度短路真实路径
             self.trading_client = _FakeAlpacaClient()
-            logger.warning("⚠️ 使用模拟模式（fake client，不连接真实 API）")
+            logger.warning("[WARN] Using mock mode (fake client, not connecting to real API)")
         elif ALPACA_AVAILABLE:
             raw_trading_client = TradingClient(
                 api_key=self.api_key,
@@ -368,17 +368,17 @@ class AlpacaPaperExecutor:
                 from rate_limiter import RateLimitedAPI
                 self.trading_client = RateLimitedAPI(raw_trading_client, rate_per_min=200)
                 self.data_client = RateLimitedAPI(raw_data_client, rate_per_min=200)
-                logger.info("✅ Alpaca API 已连接并启用速率限制 (200/min)")
+                logger.info("[OK] Alpaca API connected with rate limiting (200/min)")
             except ImportError:
                 self.trading_client = raw_trading_client
                 self.data_client = raw_data_client
-                logger.info(f"✅ Alpaca API 已连接: {self.base_url}")
+                logger.info(f"[OK] Alpaca API connected: {self.base_url}")
         else:
             # P0-4 修复：非 mock 模式下 SDK 未安装时禁止静默 mock，必须显式抛错
             raise RuntimeError(
-                "alpaca-py SDK 未安装，无法进入真实交易模式（paper/live）。"
-                "请执行 `pip install alpaca-py` 安装 SDK；"
-                "或显式设置 mock=True 以使用模拟执行器。"
+                "alpaca-py SDK is not installed, cannot enter real trading mode (paper/live)."
+                "Run `pip install alpaca-py` to install the SDK;"
+                "or explicitly set mock=True to use the mock executor."
             )
 
         # PDT 追踪器（按 account_id 和 paper/live 分文件）
@@ -427,30 +427,30 @@ class AlpacaPaperExecutor:
             try:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
-                logger.debug(f"告警发送失败: {e}")
+                logger.debug(f"Alert send failed: {e}")
 
     def start_rebalance_session(self):
         """开始新的调仓会话，生成唯一 ID"""
         self.rebalance_session = uuid.uuid4().hex[:8]
-        logger.info(f"🔄 开始调仓会话: {self.rebalance_session}")
+        logger.info(f"[ROLLBACK] Starting rebalance session: {self.rebalance_session}")
         return self.rebalance_session
 
     def _confirm_live_mode(self) -> bool:
         """实盘模式二次确认（P0 修复：日志不打印任何 Key 片段）"""
         import sys
-        logger.critical("🚨🚨🚨 正在初始化实盘（LIVE）模式！🚨🚨🚨")
-        logger.critical("   将连接真实资金账户并执行交易。")
-        logger.critical("   请确认 API Key/Secret 已配置且为 LIVE 账户。")
+        logger.critical("[ALERT] [ALERT] [ALERT] Initializing LIVE trading mode! [ALERT] [ALERT] [ALERT]")
+        logger.critical("   Will connect to real money account and execute trades.")
+        logger.critical("   Please confirm API Key/Secret are configured for a LIVE account.")
         try:
-            answer = input("请输入 'LIVE' 以确认实盘模式（其他输入将中止）: ")
+            answer = input("Enter 'LIVE' to confirm live mode (other input will abort): ")
         except EOFError:
             # 非交互环境（如 CI、自动化脚本）默认拒绝
-            logger.error("非交互环境，无法确认实盘模式，已中止")
+            logger.error("Non-interactive environment, cannot confirm live mode, aborted")
             return False
         if answer.strip() == 'LIVE':
-            logger.critical("✅ 已确认实盘模式，继续初始化")
+            logger.critical("[OK] Live mode confirmed, continuing initialization")
             return True
-        logger.critical("❌ 未确认实盘模式，已中止")
+        logger.critical("[ERROR] Live mode not confirmed, aborted")
         return False
 
     def _get_account_id(self) -> str:
@@ -461,7 +461,7 @@ class AlpacaPaperExecutor:
             account = self.trading_client.get_account()
             return str(getattr(account, 'id', 'unknown'))
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.warning(f"获取账户 ID 失败: {e}")
+            logger.warning(f"Failed to get account ID: {e}")
             return 'paper' if self.paper else 'live'
 
     def _sync_pdt_tracker(self):
@@ -479,7 +479,7 @@ class AlpacaPaperExecutor:
                 account_id=account_id,
             )
         except Exception as e:
-            logger.warning(f"同步 PDT 追踪器失败: {e}，将使用默认账户继续")
+            logger.warning(f"Failed to sync PDT tracker: {e}, will continue with default account")
 
     @property
     def api(self):
@@ -495,7 +495,7 @@ class AlpacaPaperExecutor:
             account = self.trading_client.get_account()
             return self._account_to_dict(account)
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"获取账户信息失败: {e}")
+            logger.error(f"Failed to get account info: {e}")
             return None
 
     def _account_to_dict(self, account) -> Dict:
@@ -531,7 +531,7 @@ class AlpacaPaperExecutor:
             positions = self.trading_client.get_all_positions()
             return [self._position_to_dict(p) for p in positions]
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"获取持仓失败: {e}")
+            logger.error(f"Failed to get positions: {e}")
             return []
 
     def _position_to_dict(self, p) -> Dict:
@@ -576,7 +576,7 @@ class AlpacaPaperExecutor:
         account = self._get_account_raw()
         if not account:
             # P1-6 修复：账户 API 不可用时默认拒绝交易，防止在未知 PDT 状态下下单
-            logger.warning(f"⚠️ 账户信息不可用，默认拒绝 {symbol} {side} 交易")
+            logger.warning(f"[WARN] Account info unavailable, rejecting {symbol} {side} trade")
             return {'allowed': False, 'reason': 'account_unavailable'}
 
         return self.pdt_tracker.can_open_position(
@@ -621,7 +621,7 @@ class AlpacaPaperExecutor:
                     limit_price = current_price * (1 - offset)
                 else:
                     limit_price = current_price * (1 + offset)
-                logger.info(f"💰 自动计算限价: {symbol} {side} @ ${limit_price:.4f}")
+                logger.info(f"[LIMIT] Auto-calculated limit price: {symbol} {side} @ ${limit_price:.4f}")
 
             # P1 修复：按最小价格增量（tick size）规整限价
             limit_price = round(math.floor(limit_price / self.tick_size) * self.tick_size, 4)
@@ -668,27 +668,27 @@ class AlpacaPaperExecutor:
         """
         # 参数基本校验
         if not symbol or not isinstance(symbol, str):
-            logger.error("symbol 必须是非空字符串")
+            logger.error("symbol must be a non-empty string")
             self._send_alert('order_failed', symbol or 'UNKNOWN', side, qty, 'invalid_symbol')
             return None
         try:
             qty = float(qty)
         except (TypeError, ValueError):
-            logger.error(f"qty 必须是数值: {qty}")
+            logger.error(f"qty must be numeric: {qty}")
             self._send_alert('order_failed', symbol, side, qty, 'invalid_qty')
             return None
         if qty <= 0:
-            logger.error(f"qty 必须大于 0: {qty}")
+            logger.error(f"qty must be greater than 0: {qty}")
             self._send_alert('order_failed', symbol, side, qty, 'qty_non_positive')
             return None
         if side.lower() not in ('buy', 'sell'):
-            logger.error(f"side 必须是 buy/sell: {side}")
+            logger.error(f"side must be buy/sell: {side}")
             self._send_alert('order_failed', symbol, side, qty, 'invalid_side')
             return None
 
         # 全局交易开关检查（风控/人工紧急停止）
         if self.trading_halted or (self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False)):
-            logger.error(f"❌ 交易已暂停，拒绝提交订单: {symbol} {side}")
+            logger.error(f"[ERROR] Trading halted, rejecting order submission: {symbol} {side}")
             self._send_alert('order_failed', symbol, side, qty, 'trading_halted')
             return None
 
@@ -700,13 +700,13 @@ class AlpacaPaperExecutor:
 
         existing = self._find_order_by_client_id(client_order_id)
         if existing:
-            logger.info(f"🔄 发现同会话订单，跳过重复提交: {client_order_id}")
+            logger.info(f"[ROLLBACK] Duplicate order found in same session, skipping: {client_order_id}")
             return existing
 
         # P0 修复：PDT 检查覆盖卖出侧（sell 也可能构成 day trade），mock 模式也检查
         pdt_check = self._check_pdt(symbol, side)
         if not pdt_check['allowed']:
-            logger.error(f"❌ PDT 阻止开仓: {symbol} ({pdt_check['reason']})")
+            logger.error(f"[ERROR] PDT blocked opening: {symbol} ({pdt_check['reason']})")
             self._send_alert('pdt_blocked', symbol, side, pdt_check.get('reason', 'unknown'))
             return None
 
@@ -721,7 +721,7 @@ class AlpacaPaperExecutor:
         current_price = self._get_current_price(symbol)
         notional = qty * current_price
         if notional < self.min_notional:
-            logger.error(f"订单名义金额过小: {symbol} ${notional:.2f} < ${self.min_notional}")
+            logger.error(f"Order notional too small: {symbol} ${notional:.2f} < ${self.min_notional}")
             self._send_alert('order_failed', symbol, side, qty, 'notional_too_small', order_id=client_order_id)
             return None
 
@@ -731,14 +731,14 @@ class AlpacaPaperExecutor:
             if account:
                 bp = account.get('buying_power', 0.0)
                 if notional > bp:
-                    logger.error(f"❌ 购买力不足: {symbol} 需要 ${notional:.2f}, 可用 ${bp:.2f}")
+                    logger.error(f"[ERROR] Insufficient buying power: {symbol} needs ${notional:.2f}, available ${bp:.2f}")
                     self._send_alert('order_failed', symbol, side, qty, 'insufficient_buying_power', order_id=client_order_id)
                     return None
 
         # 如果未指定限价单价格，但配置为限价模式，则转限价单
         if self.use_limit_orders and order_type.lower() == 'market':
             order_type = 'limit'
-            logger.info(f"💰 配置为限价模式，将 {symbol} 转为限价单")
+            logger.info(f"[LIMIT] Configured limit-order mode, converting {symbol} to limit order")
 
         try:
             order_request = self._build_order_request(
@@ -747,21 +747,21 @@ class AlpacaPaperExecutor:
             )
             order = self.trading_client.submit_order(order_request)
 
-            logger.info(f"✅ 订单已提交: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
+            logger.info(f"[OK] Order submitted: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
             result = self._order_to_dict(order)
             result['client_order_id'] = client_order_id
 
             return result
         except APIError as e:
-            logger.error(f"Alpaca API 错误，提交订单失败: {e}")
+            logger.error(f"Alpaca API error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'api_error: {e}', order_id=client_order_id)
             return None
         except (RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"网络错误，提交订单失败: {e}")
+            logger.error(f"Network error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'network_error: {e}', order_id=client_order_id)
             return None
         except ValueError as e:
-            logger.error(f"参数错误，提交订单失败: {e}")
+            logger.error(f"Parameter error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'value_error: {e}', order_id=client_order_id)
             return None
 
@@ -785,7 +785,7 @@ class AlpacaPaperExecutor:
                 if o_dict.get('client_order_id') == client_order_id:
                     return o_dict
         except (APIError, RequestException, ConnectionError, Timeout, NameError) as e:
-            logger.warning(f"查找 client_order_id 订单失败: {e}")
+            logger.warning(f"Failed to find order by client_order_id: {e}")
 
         return None
 
@@ -796,10 +796,10 @@ class AlpacaPaperExecutor:
 
         try:
             self.trading_client.cancel_orders()
-            logger.info("✅ 所有订单已取消")
+            logger.info("[OK] All orders canceled")
             return True
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"取消订单失败: {e}")
+            logger.error(f"Failed to cancel orders: {e}")
             return False
 
     def get_orders(self, status='open'):
@@ -813,7 +813,7 @@ class AlpacaPaperExecutor:
             orders = self.trading_client.get_orders(request)
             return [self._order_to_dict(o) for o in orders]
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"获取订单失败: {e}")
+            logger.error(f"Failed to get orders: {e}")
             return []
 
     def get_order_by_id(self, order_id: str) -> Optional[Dict]:
@@ -825,7 +825,7 @@ class AlpacaPaperExecutor:
             order = self.trading_client.get_order_by_id(order_id)
             return self._order_to_dict(order)
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.warning(f"获取订单 {order_id} 失败: {e}")
+            logger.warning(f"Get order {order_id} failed: {e}")
             return None
 
     def market_is_open(self):
@@ -837,7 +837,7 @@ class AlpacaPaperExecutor:
             clock = self.trading_client.get_clock()
             return bool(getattr(clock, 'is_open', False))
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"获取市场状态失败: {e}")
+            logger.error(f"Failed to get market status: {e}")
             return False
 
     def liquidate_all(self):
@@ -853,7 +853,7 @@ class AlpacaPaperExecutor:
             # P0 修复：在清空前缓存持仓，避免 get_positions 返回空导致无法记录 PDT
             cached_positions = positions
             self.trading_client.close_all_positions()
-            logger.info("✅ 已平掉所有持仓")
+            logger.info("[OK] All positions liquidated")
 
             # 记录 PDT 平仓（按缓存的持仓记录）
             if self.pdt_tracker:
@@ -861,7 +861,7 @@ class AlpacaPaperExecutor:
                     self.pdt_tracker.record_fill(pos['symbol'], 'sell', pos['qty'])
             return 1
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"平仓失败: {e}")
+            logger.error(f"Liquidation failed: {e}")
             # P2修复：平仓失败发送告警
             self._send_alert('execution_error', 'liquidate_all', str(e))
             # 回退到逐个卖出
@@ -908,9 +908,9 @@ class AlpacaPaperExecutor:
                     adjust_for_split(symbol, ratio, self.pdt_tracker.positions[symbol])
 
             self.pdt_tracker._persist_state()
-            logger.info(f"🔄 公司行为同步完成: {len(splits)} 条拆股")
+            logger.info(f"[SPLIT] Corporate action sync completed: {len(splits)} split(s)")
         except Exception as e:
-            logger.warning(f"同步公司行为失败: {e}")
+            logger.warning(f"Failed to sync corporate actions: {e}")
 
     def sync_positions(self):
         """与 Alpaca 持仓同步，用于 PDT 准确追踪"""
@@ -918,7 +918,7 @@ class AlpacaPaperExecutor:
             return
         positions = self.get_positions()
         self.pdt_tracker.sync_positions(positions)
-        logger.info(f"🔄 PDT 持仓已同步 [{self.pdt_tracker.account_id}]: {len(positions)} 个持仓")
+        logger.info(f"[PDT] Positions synced [{self.pdt_tracker.account_id}]: {len(positions)} positions")
 
     def _calculate_qty(self, target_value, current_price, symbol=None):
         """使用 Decimal 精度计算股数（P1 修复：int 截断时累计误差补偿）"""
@@ -964,7 +964,7 @@ class AlpacaPaperExecutor:
                 report['cash']['diff'] = broker_cash - expected_cash
                 if abs(report['cash']['diff']) > 1.0:
                     report['ok'] = False
-                    logger.warning(f"💰 现金差异: 本地 ${expected_cash:,.2f} vs 券商 ${broker_cash:,.2f}")
+                    logger.warning(f"[CASH] Cash mismatch: local ${expected_cash:,.2f} vs broker ${broker_cash:,.2f}")
         
         # 2. 持仓对账
         broker_positions = {p['symbol']: int(p.get('qty', 0)) for p in self.get_positions() if p.get('qty', 0) > 0}
@@ -989,23 +989,23 @@ class AlpacaPaperExecutor:
                 report['ok'] = False
         
         if not report['ok']:
-            logger.warning(f"⚠️ 对账发现差异: {report}")
+            logger.warning(f"[WARN] Reconciliation mismatch: {report}")
         else:
-            logger.info(f"✅ 对账一致 [{report['account_id']}]: {len(broker_positions)} 个持仓")
+            logger.info(f"[OK] Reconciliation consistent [{report['account_id']}]: {len(broker_positions)} positions")
         
         return report
 
     def cancel_order(self, order_id: str) -> bool:
         """撤销指定订单"""
         if not self.trading_client:
-            logger.warning(f"模拟模式：无法撤销订单 {order_id}")
+            logger.warning(f"Mock mode: cannot cancel order {order_id}")
             return True
         try:
             self.trading_client.cancel_order_by_id(order_id)
-            logger.info(f"✅ 订单已撤销: {order_id}")
+            logger.info(f"[OK] Order canceled: {order_id}")
             return True
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"撤销订单 {order_id} 失败: {e}")
+            logger.error(f"Failed to cancel order {order_id} failed: {e}")
             return False
 
     def _mock_account(self):
@@ -1048,7 +1048,7 @@ class AlpacaPaperExecutor:
             return self._order_to_dict(order)
 
         # 无 fake client 兜底
-        logger.info(f"[模拟] {side.upper()} {qty} {symbol} (订单ID: {order_id})")
+        logger.info(f"[MOCK] {side.upper()} {qty} {symbol} (orderID: {order_id})")
         return {
             'id': order_id,
             'symbol': symbol,
@@ -1079,7 +1079,7 @@ class AlpacaPaperExecutor:
                 self._price_cache[cache_key] = default_price
                 self._price_cache_time[cache_key] = now
                 return default_price
-            raise RuntimeError(f"无可用价格源，无法获取 {symbol} 价格，暂停交易")
+            raise RuntimeError(f"No price source available, cannot get {symbol} price, trading paused")
 
         try:
             # P1 修复：优先使用报价（quote）而非成交价（trade），更反映当前市场
@@ -1095,10 +1095,10 @@ class AlpacaPaperExecutor:
                 self._price_cache_time[cache_key] = now
                 return price
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.warning(f"Alpaca 获取 {symbol} 报价失败: {e}")
+            logger.warning(f"Alpaca failed to get {symbol} quote failed: {e}")
 
         # 明确报错，不再回退
-        raise RuntimeError(f"无法获取 {symbol} 当前价格，暂停交易")
+        raise RuntimeError(f"Cannot get {symbol} current price, trading paused")
 
     def close_all_positions(self):
         """平掉所有持仓（兼容 Alpaca SDK 方法名）"""
@@ -1118,7 +1118,7 @@ class AlpacaPaperExecutor:
         }
 
 
-class V14AlpacaExecutor:
+class AlpacaExecutor:
     """V14 策略专用 Alpaca 执行器
 
     新增功能:
@@ -1199,24 +1199,24 @@ class V14AlpacaExecutor:
 
         account = self.executor.get_account()
         if not account:
-            logger.error("无法获取账户信息")
+            logger.error("Cannot get account info")
             return {'status': 'FAILED', 'reason': 'no_account'}
 
         portfolio_value = account['portfolio_value']
         current_positions = {p['symbol']: p for p in self.executor.get_positions()}
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"组合再平衡")
+        logger.info(f"Portfolio rebalance")
         logger.info(f"{'='*60}")
-        logger.info(f"组合价值: ${portfolio_value:,.2f}")
-        logger.info(f"目标持仓: {len(target_positions)} 只")
+        logger.info(f"Portfolio value: ${portfolio_value:,.2f}")
+        logger.info(f"Target positions: {len(target_positions)} symbols")
 
         # 归一化目标持仓
         if WEIGHT_ALLOC_NORM_AVAILABLE:
             original_total = sum(target_positions.values())
             target_positions = normalize_target_positions(target_positions, portfolio_value)
             if abs(original_total - sum(target_positions.values())) > 1:
-                logger.info(f"📊 目标持仓已归一化: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
+                logger.info(f"[PORTFOLIO] Target positions normalized: ${original_total:,.0f} → ${sum(target_positions.values()):,.0f}")
 
         # Atomic 预检查
         if atomic_check:
@@ -1225,10 +1225,10 @@ class V14AlpacaExecutor:
                 portfolio_value, max_position_pct, min_liquidity_ratio
             )
             if not precheck['pass']:
-                logger.error(f"❌ Atomic 预检查失败: {precheck['reason']}")
+                logger.error(f"[ERROR] Atomic pre-check failed: {precheck['reason']}")
                 self.executor._send_alert('execution_error', 'atomic_precheck', precheck['reason'])
                 return {'status': 'PRECHECK_FAILED', **precheck}
-            logger.info(f"✅ Atomic 预检查通过 ({precheck['orders_count']} 笔订单)")
+            logger.info(f"[OK] Atomic pre-check passed ({precheck['orders_count']} orders)")
 
         # 记录调仓前状态
         pre_state = {
@@ -1248,7 +1248,7 @@ class V14AlpacaExecutor:
                 pdt_check = self.executor._check_pdt(symbol, 'sell')
                 if not pdt_check['allowed']:
                     failed_orders.append({'symbol': symbol, 'side': 'sell', 'reason': pdt_check['reason']})
-                    logger.error(f"❌ PDT 阻止卖出: {symbol} ({pdt_check['reason']})")
+                    logger.error(f"[ERROR] PDT blocked sell: {symbol} ({pdt_check['reason']})")
                     continue
                 try:
                     result = self.executor.submit_order(symbol, pos['qty'], 'sell', order_type=order_type)
@@ -1256,13 +1256,13 @@ class V14AlpacaExecutor:
                         executed_orders.append(result)
                         sold_positions.append({'symbol': symbol, 'qty': result.get('filled_qty', pos['qty'])})
                         self.executor.record_fill(symbol, 'sell', result.get('filled_qty', pos['qty']))
-                        logger.info(f"🔄 卖出: {symbol} x {pos['qty']}")
+                        logger.info(f"[SELL] Selling: {symbol} x {pos['qty']}")
                     else:
                         failed_orders.append({'symbol': symbol, 'side': 'sell', 'reason': 'submit_failed'})
-                        logger.error(f"❌ 卖出失败: {symbol}")
+                        logger.error(f"[ERROR] Sell failed: {symbol}")
                 except (APIError, RequestException, ConnectionError, Timeout, ValueError) as e:
                     failed_orders.append({'symbol': symbol, 'side': 'sell', 'reason': str(e)})
-                    logger.error(f"❌ 卖出异常: {symbol}: {e}")
+                    logger.error(f"[ERROR] Sell exception: {symbol}: {e}")
 
         # 阶段 2: 买入/调整目标持仓
         for symbol, target_value in target_positions.items():
@@ -1271,7 +1271,7 @@ class V14AlpacaExecutor:
                 current_price = self._get_current_price(symbol)
             except RuntimeError as e:
                 failed_orders.append({'symbol': symbol, 'side': 'buy', 'reason': str(e)})
-                logger.error(f"❌ 无法获取价格: {symbol}: {e}")
+                logger.error(f"[ERROR] Cannot get price: {symbol}: {e}")
                 continue
 
             target_qty = self.executor._calculate_qty(target_value, current_price, symbol=symbol)
@@ -1286,10 +1286,10 @@ class V14AlpacaExecutor:
                 pdt_check = self.executor._check_pdt(symbol, side)
                 if not pdt_check['allowed']:
                     failed_orders.append({'symbol': symbol, 'side': side, 'reason': pdt_check['reason']})
-                    logger.error(f"❌ PDT 阻止 {side}: {symbol} ({pdt_check['reason']})")
+                    logger.error(f"[ERROR] PDT blocked {side}: {symbol} ({pdt_check['reason']})")
                     continue
 
-                logger.info(f"🔄 {side.upper()}: {symbol} x {qty} (目标: ${target_value:,.0f})")
+                logger.info(f"[ROLLBACK] {side.upper()}: {symbol} x {qty} (target: ${target_value:,.0f})")
 
                 try:
                     result = self.executor.submit_order(symbol, qty, side, order_type=order_type)
@@ -1298,7 +1298,7 @@ class V14AlpacaExecutor:
                         self.executor.record_fill(symbol, side, result.get('filled_qty', qty))
                     else:
                         failed_orders.append({'symbol': symbol, 'side': side, 'reason': 'submit_failed'})
-                        logger.error(f"❌ 订单失败: {symbol} {side}")
+                        logger.error(f"[ERROR] Order failed: {symbol} {side}")
                         # P0 修复：买入失败时回滚已卖出仓位
                         if side == 'buy' and enable_rollback and sold_positions:
                             self._rollback_sells(sold_positions)
@@ -1310,7 +1310,7 @@ class V14AlpacaExecutor:
                             }
                 except (APIError, RequestException, ConnectionError, Timeout, ValueError) as e:
                     failed_orders.append({'symbol': symbol, 'side': side, 'reason': str(e)})
-                    logger.error(f"❌ 订单异常: {symbol}: {e}")
+                    logger.error(f"[ERROR] Order exception: {symbol}: {e}")
                     if side == 'buy' and enable_rollback and sold_positions:
                         self._rollback_sells(sold_positions)
                         return {
@@ -1320,7 +1320,7 @@ class V14AlpacaExecutor:
                             'pre_state': pre_state,
                         }
 
-        logger.info(f"✅ 再平衡完成: {len(executed_orders)} 笔成功, {len(failed_orders)} 笔失败")
+        logger.info(f"[OK] Rebalance completed: {len(executed_orders)} success, {len(failed_orders)} failed")
 
         return {
             'status': 'COMPLETED' if not failed_orders else 'PARTIAL',
@@ -1331,16 +1331,16 @@ class V14AlpacaExecutor:
 
     def _rollback_sells(self, sold_positions):
         """P0 修复：回滚已卖出仓位（买入失败时买回）"""
-        logger.warning(f"🔄 执行回滚: {len(sold_positions)} 笔卖出")
+        logger.warning(f"[ROLLBACK] Executing rollback: {len(sold_positions)} sell(s)")
         for sold in sold_positions:
             symbol = sold.get('symbol')
             qty = sold.get('qty', 0)
             if qty > 0 and symbol:
                 try:
-                    logger.info(f"🔄 回滚: 买回 {symbol} x {qty}")
+                    logger.info(f"[ROLLBACK] Rollback: buy back {symbol} x {qty}")
                     self.executor.submit_order(symbol, qty, 'buy')
                 except (APIError, RequestException, ConnectionError, Timeout, ValueError) as e:
-                    logger.error(f"回滚失败 {symbol}: {e}")
+                    logger.error(f"Rollback failed {symbol}: {e}")
 
     def _atomic_precheck(self, target_positions, current_positions,
                          portfolio_value, max_position_pct, min_liquidity_ratio):
@@ -1439,7 +1439,7 @@ class V14AlpacaExecutor:
                 }
 
         except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.warning(f"流动性检查失败 {symbol}: {e}")
+            logger.warning(f"Liquidity check failed {symbol}: {e}")
             return {'sufficient': True, 'reason': 'check_failed_assuming_ok'}
 
     def _calculate_qty(self, target_value, current_price, symbol=None):
@@ -1457,19 +1457,19 @@ if __name__ == '__main__':
 
     # 获取账户信息
     account = executor.get_account()
-    print(f"\n账户信息:")
-    print(f"  现金: ${account['cash']:,.2f}")
-    print(f"  组合价值: ${account['portfolio_value']:,.2f}")
-    print(f"  购买力: ${account['buying_power']:,.2f}")
-    print(f"  账户类型: {account.get('account_type', 'MARGIN')}")
-    print(f"  5日 daytrade 数: {account.get('daytrade_count', 0)}")
+    print(f"\nAccount info:")
+    print(f"  Cash: ${account['cash']:,.2f}")
+    print(f"  Portfolio value: ${account['portfolio_value']:,.2f}")
+    print(f"  Buying power: ${account['buying_power']:,.2f}")
+    print(f"  Account type: {account.get('account_type', 'MARGIN')}")
+    print(f"  5-day daytrade count: {account.get('daytrade_count', 0)}")
 
     # 获取持仓
     positions = executor.get_positions()
-    print(f"\n当前持仓 ({len(positions)}):")
+    print(f"\nCurrent positions ({len(positions)}):")
     for p in positions:
-        print(f"  {p['symbol']}: {p['qty']} 股, 市值 ${p['market_value']:,.2f}")
+        print(f"  {p['symbol']}: {p['qty']} shares, market value ${p['market_value']:,.2f}")
 
     # 检查市场状态
     is_open = executor.market_is_open()
-    print(f"\n市场状态: {'开盘' if is_open else '收盘'}")
+    print(f"\nMarket status: {'open' if is_open else 'closed'}")

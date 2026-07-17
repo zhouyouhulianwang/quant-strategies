@@ -487,17 +487,17 @@ class TestExecutor:
         'ALPACA_API_SECRET': 'SK_TEST456'
     })
     def test_v14_executor_wrappers(self):
-        """测试 V14AlpacaExecutor 包装方法（P0 修复）"""
-        from alpaca_executor import V14AlpacaExecutor
+        """测试 AlpacaExecutor 包装方法（P0 修复）"""
+        from alpaca_executor import AlpacaExecutor
 
-        v14 = V14AlpacaExecutor(mock=True)
+        v14 = AlpacaExecutor(mock=True)
 
         # 包装方法应正确透传到底层 executor
-        assert hasattr(v14, 'market_is_open'), "V14AlpacaExecutor 应有 market_is_open 方法"
-        assert hasattr(v14, 'liquidate_all'), "V14AlpacaExecutor 应有 liquidate_all 方法"
-        assert hasattr(v14, 'submit_order'), "V14AlpacaExecutor 应有 submit_order 方法"
-        assert hasattr(v14, 'get_account'), "V14AlpacaExecutor 应有 get_account 方法"
-        assert hasattr(v14, 'get_positions'), "V14AlpacaExecutor 应有 get_positions 方法"
+        assert hasattr(v14, 'market_is_open'), "AlpacaExecutor 应有 market_is_open 方法"
+        assert hasattr(v14, 'liquidate_all'), "AlpacaExecutor 应有 liquidate_all 方法"
+        assert hasattr(v14, 'submit_order'), "AlpacaExecutor 应有 submit_order 方法"
+        assert hasattr(v14, 'get_account'), "AlpacaExecutor 应有 get_account 方法"
+        assert hasattr(v14, 'get_positions'), "AlpacaExecutor 应有 get_positions 方法"
 
         # mock 模式下 market_is_open 应返回 True
         assert v14.market_is_open() == True, "mock 模式下市场应视为开盘"

@@ -78,7 +78,7 @@ class AlertManager:
             with open(self.alert_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(alert, ensure_ascii=False, default=str) + '\n')
         except (OSError, IOError) as e:
-            logger.error(f"告警写入文件失败: {e}")
+            logger.error(f"Alert write to file failed: {e}")
 
     def send_alert(self, level: str, category: str, message: str, context: Optional[Dict[str, Any]] = None):
         """发送通用告警"""
@@ -92,7 +92,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_CRITICAL,
             'ORDER_FAILED',
-            f"订单提交失败 {symbol} {side} {qty}: {reason}",
+            f"Order submission failed {symbol} {side} {qty}: {reason}",
             {'symbol': symbol, 'side': side, 'qty': qty, 'reason': reason, 'order_id': order_id},
         )
 
@@ -101,7 +101,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_CRITICAL,
             'ORDER_REJECTED',
-            f"订单被拒绝 {symbol} {side} {qty}: {reason}",
+            f"Order rejected {symbol} {side} {qty}: {reason}",
             {'symbol': symbol, 'side': side, 'qty': qty, 'reason': reason, 'order_id': order_id},
         )
 
@@ -110,7 +110,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_WARNING,
             'ORDER_TIMEOUT',
-            f"订单超时 {symbol} {side} {qty}",
+            f"Order timeout {symbol} {side} {qty}",
             {'symbol': symbol, 'side': side, 'qty': qty, 'order_id': order_id},
         )
 
@@ -119,7 +119,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_WARNING,
             'ORDER_PARTIAL_FILL',
-            f"订单部分成交 {symbol} {side}: {filled_qty}/{ordered_qty}",
+            f"Order partial fill {symbol} {side}: {filled_qty}/{ordered_qty}",
             {'symbol': symbol, 'side': side, 'filled_qty': filled_qty, 'ordered_qty': ordered_qty, 'order_id': order_id},
         )
 
@@ -131,7 +131,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_CRITICAL,
             'RISK_TRIGGERED',
-            f"风控触发 [{risk_type}]: {message}",
+            f"Risk triggered [{risk_type}]: {message}",
             {'risk_type': risk_type, **(context or {})},
         )
 
@@ -140,7 +140,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_CRITICAL,
             'EMERGENCY_LIQUIDATION',
-            f"紧急平仓: {reason}",
+            f"Emergency liquidation: {reason}",
             context or {},
         )
 
@@ -152,7 +152,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_CRITICAL,
             'EXECUTION_ERROR',
-            f"执行错误 [{operation}]: {error}",
+            f"Execution error [{operation}]: {error}",
             {'operation': operation, 'error': error, **(context or {})},
         )
 
@@ -161,7 +161,7 @@ class AlertManager:
         self._write_alert(
             LEVEL_WARNING,
             'PDT_BLOCKED',
-            f"PDT 阻止 {symbol} {side}: {reason}",
+            f"PDT blocked {symbol} {side}: {reason}",
             {'symbol': symbol, 'side': side, 'reason': reason},
         )
 
@@ -190,5 +190,5 @@ if __name__ == '__main__':
     # 简单测试
     mgr = AlertManager()
     mgr.order_failed('AAPL', 'buy', 100, 'insufficient_buying_power', 'order-123')
-    mgr.risk_triggered('DRAWDOWN', '累计回撤超过 15%', {'current_nav': 0.85})
-    print(f"告警已写入: {mgr.alert_file}")
+    mgr.risk_triggered('DRAWDOWN', 'Cumulative drawdown exceeded 15%', {'current_nav': 0.85})
+    print(f"Alerts written: {mgr.alert_file}")

@@ -71,10 +71,10 @@ class RiskMonitor:
         self.risk_level = 'NORMAL'  # NORMAL, ELEVATED, HIGH, CRITICAL
         self.trading_halted = False
         
-        logger.info(f"✅ 风险监控器已启动")
-        logger.info(f"   最大回撤限制: {max_drawdown_limit:.1%}")
-        logger.info(f"   单仓上限: {max_position_pct:.1%}")
-        logger.info(f"   VIX暂停水平: {vix_pause_level}")
+        logger.info(f"[OK] Risk monitor started")
+        logger.info(f"   Max drawdown limit: {max_drawdown_limit:.1%}")
+        logger.info(f"   Max position limit: {max_position_pct:.1%}")
+        logger.info(f"   VIX pause level: {vix_pause_level}")
     
     def check_drawdown(self, current_nav):
         """
@@ -102,7 +102,7 @@ class RiskMonitor:
         if drawdown <= -self.limits['max_drawdown']:
             self._trigger_alert(
                 'DRAWDOWN',
-                f'回撤超限: {drawdown:.2%} (限制: {-self.limits["max_drawdown"]:.1%})',
+                f'Drawdown exceeded: {drawdown:.2%} (limit: {-self.limits["max_drawdown"]:.1%})',
                 {'current_nav': current_nav, 'peak': peak, 'drawdown': drawdown}
             )
             return True
@@ -132,7 +132,7 @@ class RiskMonitor:
                     'symbol': symbol,
                     'weight': weight,
                     'limit': self.limits['max_position'],
-                    'message': f'{symbol} 仓位超限: {weight:.1%} (限制: {self.limits["max_position"]:.1%})'
+                    'message': f'{symbol} position limit exceeded: {weight:.1%} (limit: {self.limits["max_position"]:.1%})'
                 })
         
         # 检查行业集中度
@@ -144,7 +144,7 @@ class RiskMonitor:
                     'sector': sector,
                     'weight': weight,
                     'limit': self.limits['max_sector'],
-                    'message': f'{sector} 行业集中度过高: {weight:.1%}'
+                    'message': f'{sector} sector concentration too high: {weight:.1%}'
                 })
         
         # 触发告警
@@ -167,13 +167,13 @@ class RiskMonitor:
         try:
             daily_return = float(daily_return)
         except (TypeError, ValueError):
-            logger.warning(f"check_daily_loss 收到非数值输入: {daily_return}")
+            logger.warning(f"check_daily_loss received non-numeric input: {daily_return}")
             return False
         
         if daily_return <= -self.limits['daily_loss']:
             self._trigger_alert(
                 'DAILY_LOSS',
-                f'日亏损超限: {daily_return:.2%} (限制: {-self.limits["daily_loss"]:.1%})',
+                f'Daily loss exceeded: {daily_return:.2%} (limit: {-self.limits["daily_loss"]:.1%})',
                 {'daily_return': daily_return}
             )
             return True
@@ -194,14 +194,14 @@ class RiskMonitor:
             self.trading_halted = True
             self._trigger_alert(
                 'VIX_HIGH',
-                f'VIX 极高: {vix_value:.1f} (暂停交易: {self.limits["vix_pause"]})',
+                f'VIX extremely high: {vix_value:.1f} (trading paused: {self.limits["vix_pause"]})',
                 {'vix': vix_value, 'trading_halted': True}
             )
         elif vix_value >= 30:
             self.risk_level = 'HIGH'
             self._trigger_alert(
                 'VIX_ELEVATED',
-                f'VIX 偏高: {vix_value:.1f}',
+                f'VIX elevated: {vix_value:.1f}',
                 {'vix': vix_value}
             )
         elif vix_value >= 25:
@@ -246,7 +246,7 @@ class RiskMonitor:
         if hh_index > 0.15:  # 高度集中
             self._trigger_alert(
                 'CONCENTRATION',
-                f'持仓高度集中: HHI={hh_index:.3f}',
+                f'High concentration: HHI={hh_index:.3f}',
                 metrics
             )
         
@@ -279,7 +279,7 @@ class RiskMonitor:
             try:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
-                logger.debug(f"告警发送失败: {e}")
+                logger.debug(f"Alert send failed: {e}")
 
     def _trigger_alert(self, alert_type, message, data):
         """触发告警"""
@@ -294,7 +294,7 @@ class RiskMonitor:
         self.alerts_history.append(alert)
         
         # 记录日志
-        logger.warning(f"🚨 [{alert_type}] {message}")
+        logger.warning(f"[ALERT] [{alert_type}] {message}")
         
         # P2修复：通过统一告警管理器发送风控告警
         self._send_alert('risk_triggered', alert_type, message, data)
@@ -304,7 +304,7 @@ class RiskMonitor:
             try:
                 callback(alert)
             except Exception as e:
-                logger.error(f"告警回调失败: {e}")
+                logger.error(f"Alert callback failed: {e}")
         
         # 保存到文件
         self._save_alert(alert)
@@ -323,10 +323,10 @@ class RiskMonitor:
                     if not isinstance(alerts, list):
                         alerts = []
             except json.JSONDecodeError:
-                logger.warning(f"告警文件 {filepath} 损坏，将重置")
+                logger.warning(f"Alert file {filepath} corrupted, will reset")
                 alerts = []
             except Exception as e:
-                logger.warning(f"读取告警文件失败: {e}")
+                logger.warning(f"Failed to read alert file: {e}")
                 alerts = []
 
         alerts.append(alert)
@@ -336,7 +336,7 @@ class RiskMonitor:
             with open(filepath, 'w') as f:
                 json.dump(alerts, f, indent=2, default=str)
         except Exception as e:
-            logger.error(f"保存告警文件失败: {e}")
+            logger.error(f"Failed to save alert file: {e}")
     
     def get_risk_summary(self):
         """获取风险摘要"""
@@ -371,7 +371,7 @@ class RiskMonitor:
         with open(filepath, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
-        logger.info(f"✅ 风险报告已生成: {filepath}")
+        logger.info(f"[OK] Risk report generated: {filepath}")
         return report
 
 
@@ -392,16 +392,16 @@ if __name__ == '__main__':
     portfolio_value = 100000
     
     # 检查风险
-    print("\n风险检查示例:")
+    print("\nRisk check example:")
     monitor.check_drawdown(nav)
     monitor.check_position_limits(positions, portfolio_value)
     monitor.check_vix_level(40)
     
     # 打印摘要
     summary = monitor.get_risk_summary()
-    print(f"\n风险等级: {summary['risk_level']}")
-    print(f"交易暂停: {summary['trading_halted']}")
-    print(f"告警数量: {summary['total_alerts']}")
+    print(f"\nRisk level: {summary['risk_level']}")
+    print(f"Trading halted: {summary['trading_halted']}")
+    print(f"Total alerts: {summary['total_alerts']}")
     
     # 生成报告
     monitor.generate_risk_report()
