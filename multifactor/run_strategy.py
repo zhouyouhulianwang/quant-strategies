@@ -44,7 +44,7 @@ def cleanup_runtime_files():
 if __name__ == '__main__':
     cleanup_runtime_files()
 
-   parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
+    parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--backtest', action='store_true', help='Run backtest')
     group.add_argument('--paper', action='store_true', help='Run Alpaca Paper Trading')
