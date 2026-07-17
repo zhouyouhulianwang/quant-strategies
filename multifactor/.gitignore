@@ -24,4 +24,6 @@ optimization/
 
 # 本地运行时配置（可包含用户特定设置，如调仓频率）
 config.json
+local.json
+logs/
 
