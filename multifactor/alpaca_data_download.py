@@ -14,9 +14,7 @@ from alpaca_trade_api import REST, TimeFrame
 import logging
 
 # 设置日志（P2修复：统一使用 logging_config 的格式）
-from logging_config import setup_logging
-setup_logging()
-logger = logging.getLogger('alpaca_data_download')
+logger = logging.getLogger(__name__)
 
 # 股票列表（从 main.py 导入，支持 config.json 配置化）
 from main import TICKERS

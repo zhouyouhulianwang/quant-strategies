@@ -17,10 +17,8 @@ from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
 
-logger = logging.getLogger('pdt_tracker')
+logger = logging.getLogger(__name__)
 
 
 class PDTTracker:
@@ -194,15 +192,16 @@ class PDTTracker:
         if broker_daytrade_count is not None:
             self._broker_daytrade_count = int(broker_daytrade_count)
 
-        # 简单同步：用当前日期作为未知 entry_date 的 lot 日期
-        # 生产环境下建议从 Alpaca 的成交记录反推 entry_date
+        # P0-5 修复：未知 entry_date 的持仓不要默认设为今天， conservatively 不计为 day trade
         self.positions.clear()
         for pos in positions:
             symbol = pos.get('symbol')
             qty = int(pos.get('qty', 0))
             if qty == 0 or not symbol:
                 continue
-            entry_date = pos.get('entry_date') or today
+            entry_date = pos.get('entry_date')
+            if not entry_date:
+                entry_date = None  # 未知建仓日
             self.positions[symbol].append({'entry_date': entry_date, 'qty': qty})
 
         self._persist_state()
@@ -244,24 +243,26 @@ class PDTTracker:
 
             while remaining > 0 and lots:
                 lot = lots[0]
+                lot_entry = lot['entry_date']
                 if lot['qty'] <= remaining:
                     # 整个 lot 被平掉
-                    if lot['entry_date'] == today:
+                    # P0-5 修复：未知建仓日（None/UNKNOWN）conservatively 不计为 day trade
+                    if lot_entry == today:
                         day_trade_qty += lot['qty']
                     remaining -= lot['qty']
                     lots.pop(0)
                 else:
                     # 部分平仓
-                    if lot['entry_date'] == today:
+                    if lot_entry == today:
                         day_trade_qty += remaining
                     lot['qty'] -= remaining
                     remaining = 0
 
             if remaining > 0:
                 # 卖出数量超过本地记录（可能是 short selling 或数据未同步）
-                logger.warning(f"PDT 卖出 {symbol} {filled_qty} 超出本地持仓记录，假设超卖部分为当日开仓")
-                day_trade_qty += remaining
-                # P0 修复：记录超卖部分，后续买入可据此判断 day trade
+                # P0-5 修复：超卖部分 conservatively 不计为 day trade
+                logger.warning(f"PDT 卖出 {symbol} {filled_qty} 超出本地持仓记录，超卖部分不记为 day trade")
+                # 记录超卖部分，后续买入可据此判断 day trade
                 self._today_sells[symbol] = self._today_sells.get(symbol, 0) + remaining
 
             if day_trade_qty > 0:

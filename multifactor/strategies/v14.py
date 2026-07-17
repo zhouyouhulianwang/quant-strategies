@@ -16,12 +16,9 @@ import logging
 
 from requests.exceptions import RequestException, ConnectionError, Timeout
 
-from logging_config import setup_logging
 from strategies.base import BaseStrategy
 
-# 尝试导入各基础设施模块（保持与 run_strategy.py 相同的容错导入）
-setup_logging()
-logger = logging.getLogger('v14_strategy')
+logger = logging.getLogger(__name__)
 
 try:
     from quantconnect_data import prepare_backtest_data_qc, HybridQCDataSource
@@ -48,7 +45,7 @@ except ImportError:
     logger.warning("order_manager module unavailable")
 
 try:
-    from cost_model import TradingCostModel, apply_costs_to_backtest
+    from cost_model import TradingCostModel
     COST_AVAILABLE = True
 except ImportError:
     COST_AVAILABLE = False
@@ -157,36 +154,8 @@ class V14Strategy(BaseStrategy):
         self.signal_data_source = 'QuantConnect'
         self.signal_adjustment = 'adjusted'
         logger.info(f"[DATA] Unified signal data source: {self.signal_data_source} ({self.signal_adjustment})")
-        if self.use_paper_trading:
-            executor_kwargs = {}
-            if self.config:
-                executor_kwargs = {
-                    'paper': paper,
-                    'enable_pdt': self.config.trading.enable_pdt_check,
-                    'pdt_min_equity': self.config.trading.pdt_min_equity,
-                    'use_limit_orders': self.config.trading.use_limit_orders,
-                    'limit_order_offset_pct': self.config.trading.limit_order_offset_pct,
-                }
-            else:
-                executor_kwargs = {'paper': paper}
-                logger.info(f"[LIMIT] Limit orders: {self.config.trading.use_limit_orders}, "
-                           f"offset={self.config.trading.limit_order_offset_pct:.2%}")
-                logger.info(f"[PDT] PDT check: {self.config.trading.enable_pdt_check}, "
-                           f"min_equity=${self.config.trading.pdt_min_equity:,.0f}")
-                logger.info(f"[TIMEOUT] Order timeout: {self.config.trading.max_wait_sec}s, "
-                           f"poll interval: {self.config.trading.poll_interval}s")
-
-            self.executor = AlpacaExecutor(**executor_kwargs)
-            logger.info("[OK] Alpaca Paper Trading enabled")
-            if not paper:
-                logger.critical("[ALERT] Live trading mode initialized")
-
-            if self.risk_monitor:
-                self.executor.set_risk_monitor(self.risk_monitor)
-                logger.info("[OK] Risk monitor state synced with executor")
-
+        # P0: 先创建风控器，再创建执行器，确保执行器初始化时可关联风控器
         if self.enable_risk_monitor:
-            # P1: 使用 config.risk 驱动风控器
             risk_kwargs = {}
             if self.config and hasattr(self.config, 'risk'):
                 risk_config = self.config.risk
@@ -202,6 +171,34 @@ class V14Strategy(BaseStrategy):
                     risk_kwargs['daily_loss_limit'] = risk_config.max_intraday_dd
             self.risk_monitor = RiskMonitor(**risk_kwargs)
             logger.info("[OK] Risk monitor enabled")
+
+        if self.use_paper_trading:
+            executor_kwargs = {}
+            if self.config:
+                executor_kwargs = {
+                    'paper': paper,
+                    'enable_pdt': self.config.trading.enable_pdt_check,
+                    'pdt_min_equity': self.config.trading.pdt_min_equity,
+                    'use_limit_orders': self.config.trading.use_limit_orders,
+                    'limit_order_offset_pct': self.config.trading.limit_order_offset_pct,
+                }
+                logger.info(f"[LIMIT] Limit orders: {self.config.trading.use_limit_orders}, "
+                           f"offset={self.config.trading.limit_order_offset_pct:.2%}")
+                logger.info(f"[PDT] PDT check: {self.config.trading.enable_pdt_check}, "
+                           f"min_equity=${self.config.trading.pdt_min_equity:,.0f}")
+                logger.info(f"[TIMEOUT] Order timeout: {self.config.trading.max_wait_sec}s, "
+                           f"poll interval: {self.config.trading.poll_interval}s")
+            else:
+                executor_kwargs = {'paper': paper}
+
+            self.executor = AlpacaExecutor(**executor_kwargs)
+            logger.info("[OK] Alpaca Paper Trading enabled")
+            if not paper:
+                logger.critical("[ALERT] Live trading mode initialized")
+
+            if self.risk_monitor:
+                self.executor.set_risk_monitor(self.risk_monitor)
+                logger.info("[OK] Risk monitor state synced with executor")
 
         # 盘中监控
         if enable_intraday_monitor and INTRADAY_AVAILABLE and self.executor and self.risk_monitor:
@@ -257,6 +254,7 @@ class V14Strategy(BaseStrategy):
         # 权重分配
         if WEIGHT_ALLOC_AVAILABLE:
             self.weight_allocator = WeightAllocator(method=weight_method)
+            self.weight_method = weight_method
             logger.info(f"[OK] Weight allocation: {weight_method}")
 
         logger.info("[OK] V14 strategy initialization complete")
@@ -336,10 +334,7 @@ class V14Strategy(BaseStrategy):
             logger.error("[ERROR] Backtest failed, no result data")
             return pd.DataFrame()
 
-        if COST_AVAILABLE:
-            logger.info("Applying trading costs...")
-            result = apply_costs_to_backtest(result)
-
+        # P0/P1修复：统一回测引擎由 main.run_v14 完成真实成本与交易日历，不再二次估算成本
         self.backtest_result = result
 
         self._print_performance(result)
@@ -350,41 +345,8 @@ class V14Strategy(BaseStrategy):
 
         return result
 
-    def _get_rebalance_dates(self, price_df, rebalance_frequency):
-        """根据调仓频率生成调仓日期序列。
-
-        Parameters
-        ----------
-        price_df : pd.DataFrame
-            价格数据（必须有 DatetimeIndex）。
-        rebalance_frequency : str
-            'daily' | 'weekly' | 'monthly' | 'bimonthly' | 'quarterly'。
-
-        Returns
-        -------
-        pd.DatetimeIndex
-            调仓日期序列。
-        """
-        if rebalance_frequency == 'daily':
-            return price_df.index.copy()
-        elif rebalance_frequency == 'weekly':
-            return price_df.groupby([price_df.index.year, price_df.index.isocalendar().week]).tail(1).index
-        elif rebalance_frequency == 'monthly':
-            return price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
-        elif rebalance_frequency == 'bimonthly':
-            # 每两个月最后一个交易日：1,3,5,7,9,11 月末
-            mask = price_df.index.month.isin([1, 3, 5, 7, 9, 11])
-            if not mask.any():
-                return pd.DatetimeIndex([], tz=price_df.index.tz)
-            return price_df[mask].groupby([price_df[mask].index.year, price_df[mask].index.month]).tail(1).index
-        elif rebalance_frequency == 'quarterly':
-            return price_df.groupby([price_df.index.year, price_df.index.quarter]).tail(1).index
-        else:
-            logger.warning(f"[WARN] Unknown rebalance frequency '{rebalance_frequency}', falling back to monthly")
-            return price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
-
     def _run_backtest_unified(self, price_df, market_df):
-        """统一回测引擎 - 使用与实盘相同的 generate_signals 逻辑。
+        """统一回测引擎 - 复用 main.run_v14，确保交易日历与成本模型一致。
 
         Parameters
         ----------
@@ -411,8 +373,8 @@ class V14Strategy(BaseStrategy):
                 logger.error(f"[ERROR] Cannot convert index: {e}")
                 return pd.DataFrame()
 
-        if market_df is None or len(market_df) == 0:
-            logger.warning("[WARN] market_df is empty, using default VIX=20")
+        if market_df is None or len(market_df) == 0 or 'VIX' not in market_df.columns:
+            logger.warning("[WARN] market_df empty or missing VIX, using default VIX=20")
             market_df = pd.DataFrame({'VIX': [20.0] * len(price_df)}, index=price_df.index)
         elif 'VIX' not in market_df.columns:
             logger.warning("[WARN] market_df missing VIX column, using default VIX=20")
@@ -437,119 +399,12 @@ class V14Strategy(BaseStrategy):
             logger.warning(f"[WARN] Insufficient data 252 days ({len(price_df)} days), cannot warm up")
             return pd.DataFrame()
 
-        rebalance_frequency = 'monthly'
-        if self.config and hasattr(self.config, 'trading'):
-            rebalance_frequency = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
-        rebalance_dates = self._get_rebalance_dates(price_df, rebalance_frequency)
-        rebalance_dates = rebalance_dates[rebalance_dates >= price_df.index[252]]
-
-        if len(rebalance_dates) < 2:
-            logger.warning(f"[WARN] Insufficient rebalance dates (frequency={rebalance_frequency}), cannot backtest")
-            return pd.DataFrame()
-
-        logger.info(f"[SCHEDULE] Backtest rebalance frequency: {rebalance_frequency} ({len(rebalance_dates)} rebalance dates)")
-
-        # 辅助函数：根据目标金额和股价计算整数股数与现金
-        INITIAL_CAPITAL = 1_000_000.0
-
-        def build_portfolio(target_positions, nav_multiple, rebalance_d):
-            portfolio_value = nav_multiple * INITIAL_CAPITAL
-            selected = list(target_positions.keys()) if target_positions else []
-            total_target = sum(target_positions.values()) if target_positions else 0.0
-            curr_weights = {}
-            curr_quantities = {}
-            curr_invested = 0.0
-            if total_target > 0 and selected:
-                # generate_signals 默认基于 $1M 组合生成目标金额，按当前组合价值缩放
-                scale = portfolio_value / 1_000_000.0
-                for s in selected:
-                    if s in price_df.columns:
-                        price = float(price_df.loc[rebalance_d, s])
-                        target_value = target_positions[s] * scale
-                        qty = int(target_value / price)
-                        if qty > 0:
-                            curr_quantities[s] = qty
-                            curr_weights[s] = target_positions[s] / total_target
-                            curr_invested += qty * price
-            curr_cash = max(0.0, portfolio_value - curr_invested)
-            return selected, curr_weights, curr_quantities, curr_invested, curr_cash
-
-        nav = 1.0
-        records = []
-
-        # 预热期后的第一个调仓日生成初始持仓，避免丢失首个持有期收益
-        first_d = rebalance_dates[0]
-        try:
-            vix_first = float(market_df.loc[first_d, 'VIX'])
-        except (KeyError, TypeError, ValueError):
-            vix_first = 20.0
-        price_slice_first = price_df.loc[:first_d].iloc[-252:]
-        target_positions_first = self.generate_signals(price_slice_first, vix_first)
-        # P0修复: 首个信号在 first_d 生成，在下一交易日 first_exec_d 执行，避免 lookahead
-        first_exec_d = _get_next_trading_day(price_df, first_d)
-        selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
-            target_positions_first, nav, first_exec_d
+        # P0/P1修复：统一使用 main.run_v14 的 XNYS 交易日历与真实成本模型
+        return run_v14(
+            price_df, market_df, NDX_SET,
+            weight_method=self.weight_method,
+            initial_capital=1_000_000.0
         )
-        prev_holdings = selected
-        prev_quantities = curr_quantities
-        prev_cash = curr_cash
-
-        for i in range(1, len(rebalance_dates)):
-            prev_d, curr_d = rebalance_dates[i-1], rebalance_dates[i]
-            # P0修复: 在下一交易日执行，避免使用 signal 日当天收盘价同日复权执行
-            prev_exec_d = _get_next_trading_day(price_df, prev_d)
-            curr_exec_d = _get_next_trading_day(price_df, curr_d)
-
-            try:
-                vix_v = float(market_df.loc[prev_d, 'VIX'])
-            except (KeyError, TypeError, ValueError):
-                vix_v = 20.0
-
-            # 计算上一期持仓收益（使用整数股数与现金）
-            if prev_holdings and prev_quantities:
-                try:
-                    stock_value_start = 0.0
-                    stock_value_end = 0.0
-                    for s, qty in prev_quantities.items():
-                        p_start = float(price_df.loc[prev_exec_d, s])
-                        p_end = float(price_df.loc[curr_exec_d, s])
-                        stock_value_start += qty * p_start
-                        stock_value_end += qty * p_end
-                    portfolio_value_start = stock_value_start + prev_cash
-                    portfolio_value_end = stock_value_end + prev_cash
-                    mr = portfolio_value_end / portfolio_value_start - 1 if portfolio_value_start > 0 else 0.0
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.warning(f"[WARN] Return calculation error: {e}, using 0")
-                    mr = 0.0
-            else:
-                mr = 0.0
-
-            nav *= (1 + mr)
-
-            # 生成新的目标持仓并模拟整数截断
-            price_slice = price_df.loc[:prev_d].iloc[-252:]  # P0修复: 使用 prev_d 收盘前数据生成信号
-            target_positions = self.generate_signals(price_slice, vix_v)
-            selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
-                target_positions, nav, curr_exec_d  # P0修复: 在下一交易日执行
-            )
-
-            records.append({
-                'date': curr_exec_d,
-                'nav': nav,
-                'mr': mr,
-                'vix': vix_v,
-                'n': len(selected),
-                'holdings': selected,
-                'weights': curr_weights,
-                'quantities': curr_quantities,
-                'cash': curr_cash,
-                'invested': curr_invested,
-            })
-            prev_holdings = selected
-            prev_quantities = curr_quantities
-            prev_cash = curr_cash
-
-        return pd.DataFrame(records)
 
     # ------------------------------------------------------------------
     # BaseStrategy implementation: signal generation

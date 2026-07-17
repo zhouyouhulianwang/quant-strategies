@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Optional, Tuple
 import logging
 
-logger = logging.getLogger('matching_engine')
+logger = logging.getLogger(__name__)
 
 
 class ExecutionParameters:

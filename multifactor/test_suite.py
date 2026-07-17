@@ -150,19 +150,21 @@ class TestRiskControl:
         assert len(alerts) > 0, "25% 仓位应触发告警"
     
     def test_risk_level_transitions(self):
-        """测试风险等级转换"""
+        """测试风险等级转换：VIX 回落不再自动恢复交易"""
         from risk_monitor import RiskMonitor
-        
+
         monitor = RiskMonitor()
-        
+
         # 逐级升高
         assert monitor.check_vix_level(15) == 'NORMAL'
         assert monitor.check_vix_level(26) == 'ELEVATED'
         assert monitor.check_vix_level(32) == 'HIGH'
         assert monitor.check_vix_level(40) == 'CRITICAL'
-        
-        # 降级后恢复
+
+        # 降级后风险等级恢复，但 trading_halted 不会自动解除（P0 修复）
         assert monitor.check_vix_level(15) == 'NORMAL'
+        assert monitor.trading_halted == True, "VIX 回落后不应自动恢复交易"
+        monitor.resume_trading()
         assert monitor.trading_halted == False
 
 
@@ -523,6 +525,40 @@ class TestExecutor:
         # 前 2 个立即消耗，第 3 个需要等待约 0.1 秒
         assert elapsed >= 0.08, "速率限制器应限制过快请求"
 
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_paper_base_url_consistency_paper_true(self):
+        """P0-4: paper=True 时 base_url 必须是纸交易接口"""
+        from alpaca_executor import AlpacaPaperExecutor
+        with pytest.raises(ValueError, match='paper-api'):
+            AlpacaPaperExecutor(mock=True, paper=True, base_url='https://api.alpaca.markets')
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_paper_base_url_consistency_paper_false(self):
+        """P0-4: paper=False 时 base_url 必须是实盘接口"""
+        from alpaca_executor import AlpacaPaperExecutor
+        with pytest.raises(ValueError, match='api.alpaca.markets'):
+            AlpacaPaperExecutor(mock=True, paper=False, base_url='https://paper-api.alpaca.markets')
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_submit_order_records_sell_pdt(self):
+        """P1-4: 直接调用 submit_order 卖出时记录 PDT"""
+        from alpaca_executor import AlpacaPaperExecutor
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=True)
+        assert executor.pdt_tracker is not None
+        record_calls = []
+        executor.pdt_tracker.record_fill = lambda *args, **kwargs: record_calls.append(args)
+        executor.submit_order('AAPL', 10, 'sell')
+        assert any(args[1] == 'sell' for args in record_calls), "直接卖出应触发 record_fill"
+
 # ============================================================
 # 8. 回测统一引擎测试
 # ============================================================
@@ -563,6 +599,105 @@ class TestUnifiedBacktest:
         
         assert len(result) == 0, "空数据应返回空结果"
 
+
+
+# ============================================================
+# 8.5 P0 数据修复测试：受限前向填充与退市检测
+# ============================================================
+
+class TestDataFFillAndDelisting:
+    """测试受限前向填充与 QC 退市检测"""
+
+    def _import_data_source_ffill(self):
+        """data_source 顶部依赖 yfinance，当前环境 websockets 版本不兼容，按需打桩后导入"""
+        import sys
+        from types import ModuleType
+        if 'yfinance' not in sys.modules:
+            yf_stub = ModuleType('yfinance')
+            class TickerStub:
+                def __init__(self, symbol):
+                    self._symbol = symbol
+            yf_stub.Ticker = TickerStub
+            sys.modules['yfinance'] = yf_stub
+        from data_source import _limited_ffill, MAX_FFILL_DAYS
+        return _limited_ffill, MAX_FFILL_DAYS
+
+    def test_limited_ffill_default_gap(self):
+        """默认 5 日最大前向填充，超过天数的缺失值保持 NaN"""
+        _limited_ffill, MAX_FFILL_DAYS = self._import_data_source_ffill()
+
+        dates = pd.bdate_range('2023-01-01', periods=15)
+        df = pd.DataFrame({'A': 100.0}, index=dates)
+        # 构造 6 日缺失：limit=5 只能填前 5 日，第 6 日仍应为 NaN
+        df.iloc[5:11] = np.nan
+
+        filled = _limited_ffill(df)
+        assert filled.iloc[4, 0] == 100.0
+        assert filled.iloc[5, 0] == 100.0
+        assert filled.iloc[9, 0] == 100.0
+        assert pd.isna(filled.iloc[10, 0]), "超过 max_days 的缺失值应保持 NaN"
+        assert MAX_FFILL_DAYS == 5
+
+    def test_limited_ffill_respects_active_marker(self):
+        """提供退市/不活跃标记后，对应标的后不再填充"""
+        _limited_ffill, _ = self._import_data_source_ffill()
+
+        dates = pd.bdate_range('2023-01-01', periods=10)
+        df = pd.DataFrame({'A': 100.0}, index=dates)
+        df.iloc[3:5] = np.nan
+        # 全部标记为不活跃，所有值应被清为 NaN
+        filled = _limited_ffill(df, active={'A': False})
+        assert filled['A'].isna().all()
+
+    def test_limited_ffill_all_modules(self):
+        """三个数据源模块均使用受限前向填充"""
+        ds_ffill, _ = self._import_data_source_ffill()
+        from quantconnect_data import _limited_ffill as qc_ffill
+        from polygon_data import _limited_ffill as poly_ffill
+
+        dates = pd.bdate_range('2023-01-01', periods=10)
+        df = pd.DataFrame({'A': [1.0] * 3 + [np.nan] * 7}, index=dates)
+
+        for ffill in (ds_ffill, qc_ffill, poly_ffill):
+            filled = ffill(df)
+            assert filled.iloc[2, 0] == 1.0
+            assert filled.iloc[7, 0] == 1.0
+            assert pd.isna(filled.iloc[9, 0]), f"{ffill.__module__} 超过 5 日应仍为 NaN"
+
+    def test_qc_detect_delisted_from_prices(self):
+        """QC 路径下基于价格矩阵判定退市（全为 NaN 的列）"""
+        from quantconnect_data import _detect_delisted_from_prices
+
+        dates = pd.bdate_range('2023-01-01', periods=5)
+        df = pd.DataFrame({
+            'AAPL': [1.0, 2.0, 3.0, 4.0, 5.0],
+            'DELISTED': [np.nan] * 5,
+        }, index=dates)
+
+        delisted = _detect_delisted_from_prices(df)
+        assert delisted == {'DELISTED'}, f"应仅检测到 DELISTED，实际 {delisted}"
+
+    def test_v14_backtest_uses_main_cost_model(self):
+        """V14Strategy 回测应复用 main.run_v14，包含真实成本列"""
+        from strategies.v14 import V14Strategy
+
+        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        dates = pd.bdate_range('2023-01-01', periods=300)
+        np.random.seed(42)
+        prices = pd.DataFrame(
+            np.cumprod(1 + np.random.normal(0.0005, 0.015, (300, 10)), axis=0) * 100,
+            index=dates,
+            columns=['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'META', 'JPM', 'V', 'JNJ', 'UNH', 'XOM']
+        )
+        market_df = pd.DataFrame({'VIX': [20.0] * len(dates)}, index=dates)
+
+        result = strategy._run_backtest_unified(prices, market_df)
+        assert len(result) > 0
+        assert 'nav_after_cost' in result.columns, "应包含扣除成本后的 nav 列"
+        assert 'cost' in result.columns, "应包含成本列"
+        # 首个执行日应为信号日的下一交易日
+        first_signal_idx = dates.get_loc(result['date'].iloc[0]) - 1
+        assert first_signal_idx >= 0
 
 
 # ============================================================
@@ -635,6 +770,22 @@ class TestPDTTracker:
         
         assert paper_tracker.get_status()['day_trades_used'] == 1
         assert live_tracker.get_status()['day_trades_used'] == 0, "live 账户不应受 paper 账户影响"
+
+    def test_pdt_unknown_entry_date_not_day_trade(self, tmp_path):
+        """P0-5: 未知 entry_date 的持仓卖出不应计为 day trade"""
+        from pdt_tracker import PDTTracker
+        import os
+        state_file = os.path.join(tmp_path, 'pdt_unknown.json')
+        tracker = PDTTracker(state_file=state_file, paper=True, account_id='test_paper', enabled=True)
+        
+        # 同步无 entry_date 的持仓
+        tracker.sync_positions([{'symbol': 'AAPL', 'qty': 10}])
+        
+        # 当天卖出
+        tracker.record_fill('AAPL', 'sell', 10)
+        
+        status = tracker.get_status()
+        assert status['day_trades_used'] == 0, f"未知建仓日卖出不应计为 day trade，实际 {status['day_trades_used']}"
 
 
 # ============================================================
@@ -749,6 +900,157 @@ class TestOrderManager:
                 assert executor.pdt_tracker.get_status()['day_trades_used'] == 1, "同日内先买后卖应构成 day trade"
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_partial_fill_cancels_original(self):
+        """P0-3: 部分成交后补单前必须撤销原订单"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=1, poll_interval=0.1, max_makeup_depth=2)
+
+        submit_count = [0]
+        def fake_submit_order(**kwargs):
+            submit_count[0] += 1
+            if submit_count[0] == 1:
+                return {
+                    'id': 'partial-order-123',
+                    'symbol': kwargs.get('symbol', 'AAPL'),
+                    'status': 'new',
+                    'qty': kwargs.get('qty', 10),
+                    'side': kwargs.get('side', 'buy'),
+                }
+            return {
+                'id': f'makeup-{submit_count[0]}',
+                'symbol': kwargs.get('symbol', 'AAPL'),
+                'status': 'new',
+                'qty': kwargs.get('qty', 10),
+                'side': kwargs.get('side', 'buy'),
+            }
+
+        executor.submit_order = fake_submit_order
+
+        get_count = [0]
+        def fake_get_order_by_id(order_id):
+            get_count[0] += 1
+            if order_id == 'partial-order-123':
+                # 第一次查询：部分成交；之后：已撤销
+                if get_count[0] == 1:
+                    return {
+                        'id': order_id,
+                        'symbol': 'AAPL',
+                        'status': 'partially_filled',
+                        'qty': 10,
+                        'side': 'buy',
+                        'filled_qty': 5,
+                        'filled_avg_price': 100.0,
+                    }
+                return {
+                    'id': order_id,
+                    'symbol': 'AAPL',
+                    'status': 'canceled',
+                    'qty': 10,
+                    'side': 'buy',
+                    'filled_qty': 5,
+                    'filled_avg_price': 100.0,
+                }
+            # makeup 订单直接成交
+            return {
+                'id': order_id,
+                'symbol': 'AAPL',
+                'status': 'filled',
+                'qty': 5,
+                'side': 'buy',
+                'filled_qty': 5,
+                'filled_avg_price': 100.0,
+            }
+
+        executor.get_order_by_id = fake_get_order_by_id
+
+        cancel_called = []
+        def fake_cancel_order(order_id):
+            cancel_called.append(order_id)
+            return True
+
+        executor.cancel_order = fake_cancel_order
+
+        result = manager.submit_and_wait('AAPL', 10, 'buy')
+        assert 'partial-order-123' in cancel_called, "部分成交后应撤销原订单"
+        assert result.get('filled_qty', 0) == 10, f"补单后应总成交 10 股，实际 {result.get('filled_qty')}"
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_retries_on_submit_failure(self):
+        """P1-1: submit_order 返回 None 时重试最多 3 次"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.5, poll_interval=0.1)
+
+        call_count = [0]
+        def fake_submit_order(**kwargs):
+            call_count[0] += 1
+            if call_count[0] < 3:
+                return None
+            return {
+                'id': 'retried-order',
+                'symbol': kwargs.get('symbol', 'AAPL'),
+                'status': 'filled',
+                'qty': kwargs.get('qty', 1),
+                'side': kwargs.get('side', 'buy'),
+                'filled_qty': kwargs.get('qty', 1),
+                'filled_avg_price': 100.0,
+            }
+
+        executor.submit_order = fake_submit_order
+        executor.get_order_by_id = lambda order_id: {
+            'id': order_id,
+            'symbol': 'AAPL',
+            'status': 'filled',
+            'qty': 1,
+            'side': 'buy',
+            'filled_qty': 1,
+            'filled_avg_price': 100.0,
+        }
+
+        result = manager.submit_and_wait('AAPL', 1, 'buy')
+        assert result['status'] == 'filled', f"重试后应成交，实际 {result['status']}"
+        assert call_count[0] == 3, f"应重试 3 次，实际 {call_count[0]}"
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_no_retry_on_rejected(self):
+        """P1-1: 明确拒绝（如购买力不足）时不应重试"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.5, poll_interval=0.1)
+
+        call_count = [0]
+        def fake_submit_order(**kwargs):
+            call_count[0] += 1
+            return {
+                'status': 'REJECTED',
+                'symbol': kwargs.get('symbol', 'AAPL'),
+                'side': kwargs.get('side', 'buy'),
+                'reason': 'insufficient_buying_power',
+            }
+
+        executor.submit_order = fake_submit_order
+
+        result = manager.submit_and_wait('AAPL', 1, 'buy')
+        assert result['status'] == 'REJECTED'
+        assert call_count[0] == 1, f"明确拒绝不应重试，实际调用 {call_count[0]} 次"
 
 
 
@@ -999,6 +1301,40 @@ class TestEndToEndMockAlpaca:
         assert call_count[0] >= 2, f"应至少调用 2 次 submit_and_wait（部分成交 + 补单），实际 {call_count[0]}"
         statuses = [r.get('status') for r in results if r and isinstance(r, dict)]
         assert 'filled' in statuses, "应发生补单成交"
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_liquidate_all_fallback_records_pdt(self):
+        """P1-3: liquidate_all 兜底路径中显式记录 PDT"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from requests.exceptions import RequestException
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=True, pdt_min_equity=2000000.0)
+        assert executor.pdt_tracker is not None
+
+        # 建立持仓
+        executor.submit_order('AAPL', 10, 'buy', _record_pdt=False)
+        executor.submit_order('MSFT', 5, 'buy', _record_pdt=False)
+        assert len(executor.get_positions()) == 2
+
+        # 强制 close_all_positions 失败，进入兜底路径
+        original_close = executor.trading_client.close_all_positions
+        executor.trading_client.close_all_positions = lambda: (_ for _ in ()).throw(RequestException("forced failure"))
+
+        record_calls = []
+        original_record_fill = executor.pdt_tracker.record_fill
+        executor.pdt_tracker.record_fill = lambda *args, **kwargs: record_calls.append(args)
+
+        try:
+            executor.liquidate_all()
+            symbols = {args[0] for args in record_calls if args[1] == 'sell'}
+            assert 'AAPL' in symbols, "兜底路径应记录 AAPL 卖出 PDT"
+            assert 'MSFT' in symbols, "兜底路径应记录 MSFT 卖出 PDT"
+        finally:
+            executor.trading_client.close_all_positions = original_close
+            executor.pdt_tracker.record_fill = original_record_fill
 
 
 # ============================================================
@@ -1355,6 +1691,37 @@ class TestV3AuditFixes:
         assert monitor.trading_halted in (True, False)
         monitor.trading_halted = True
         assert monitor.trading_halted is True
+
+    def test_v14_strategy_init_config_none(self):
+        """P0: V14Strategy config=None 时初始化不崩溃，且风控器与执行器正确关联"""
+        from strategies import v14 as v14_module
+        from strategies.v14 import V14Strategy
+
+        with patch.object(v14_module, 'CONFIG_AVAILABLE', False):
+            strategy = V14Strategy(
+                use_real_data=False,
+                use_paper_trading=False,
+                enable_risk_monitor=True,
+                enable_intraday_monitor=False,
+                config=None,
+            )
+            assert strategy.config is None
+            assert strategy.risk_monitor is not None
+            assert strategy.executor is None
+
+    def test_rebalance_rejected_when_trading_halted(self):
+        """P0: AlpacaExecutor.rebalance_portfolio 在 trading_halted 时拒绝调仓"""
+        from alpaca_executor import AlpacaExecutor
+        from unittest.mock import MagicMock
+
+        executor = AlpacaExecutor(mock=True)
+        risk_monitor = MagicMock()
+        risk_monitor.trading_halted = True
+        executor.set_risk_monitor(risk_monitor)
+
+        result = executor.rebalance_portfolio({'AAPL': 10000})
+        assert result['status'] == 'FAILED', f"应返回 FAILED，实际 {result}"
+        assert result['reason'] == 'trading_halted'
 
     def test_config_api_key_from_env(self):
         """P1: API Key 可从环境变量注入，config.json 无需硬编码"""

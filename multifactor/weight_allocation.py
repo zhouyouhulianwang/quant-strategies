@@ -7,10 +7,7 @@ import pandas as pd
 import logging
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
-
-logger = logging.getLogger('weight_allocation')
+logger = logging.getLogger(__name__)
 
 
 class WeightAllocator:

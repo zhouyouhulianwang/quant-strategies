@@ -15,10 +15,11 @@ import zipfile
 import io
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
 
-logger = logging.getLogger('quantconnect_data')
+logger = logging.getLogger(__name__)
+
+# P0修复：最大前向填充交易日数（默认 5 日），防止停牌/退市股票无限制前向填充导致前视偏差
+MAX_FFILL_DAYS = int(os.getenv('MULTIFACTOR_MAX_FFILL_DAYS', 5))
 
 # Lean 数据目录
 LEAN_DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'lean')
@@ -36,6 +37,42 @@ def _normalize_index(data):
     if hasattr(data.index, 'tz') and data.index.tz is not None:
         data.index = data.index.tz_localize(None)
     return data
+
+
+def _limited_ffill(df, max_days=MAX_FFILL_DAYS, active=None):
+    """
+    P0修复：受限前向填充，超过 max_days 的缺失值保持 NaN。
+
+    参数:
+        df: DataFrame/Series
+        max_days: int, 最大前向填充天数（交易日）
+        active: 可选，dict/Series/DataFrame，标记标的是否仍活跃；
+                若提供，退市/不活跃日期后不再填充。
+    """
+    if df is None or df.empty:
+        return df
+    filled = df.ffill(limit=max_days)
+    if active is not None:
+        try:
+            if isinstance(active, pd.DataFrame) and filled.shape == active.shape:
+                filled = filled.where(active)
+            elif isinstance(active, dict):
+                for symbol, is_active in active.items():
+                    if symbol in filled.columns and not is_active:
+                        filled[symbol] = np.nan
+        except Exception as e:
+            logger.warning("[PIT] active/delisted marker handling failed: %s", e)
+    return filled
+
+
+def _detect_delisted_from_prices(price_df):
+    """
+    P0修复：基于 QC 返回的价格矩阵判定退市标的。
+    在请求窗口内价格全部为 NaN 的列视为已退市（退市后无数据行）。
+    """
+    if price_df is None or price_df.empty:
+        return set()
+    return set(price_df.columns[price_df.isna().all()])
 
 
 def _compute_rsi_wilder(prices, window=14):
@@ -591,9 +628,9 @@ class HybridQCDataSource:
                 except Exception as e:
                     logger.warning(f"{symbol} date slice failed: {e}")
 
-        # P1修复: 按标的前向填充，不要按行 dropna(how='any') 删整行，避免幸存者偏差
+        # P0修复: 按标的受限前向填充，超过 max_days 的缺失值保持 NaN，后续因子/选股会剔除
         price_df = price_df.dropna(how='all', axis=1)
-        price_df = price_df.ffill()
+        price_df = _limited_ffill(price_df)
         return price_df.dropna(how='all')
 
     def _fetch_single_symbol_full(self, symbol: str, start_date: str, end_date: str,
@@ -800,7 +837,7 @@ class HybridQCDataSource:
 
 
 def _align_and_clean(price_df, market_df):
-    """取交易日交集并显式处理缺失值；P1修复: 按标的前向填充，避免按行 dropna 产生幸存者偏差"""
+    """取交易日交集并显式处理缺失值；P0/P1修复：按标的受限前向填充，避免按行 dropna 产生幸存者偏差"""
     if price_df is None or market_df is None:
         return price_df, market_df
 
@@ -818,9 +855,13 @@ def _align_and_clean(price_df, market_df):
     price_df = price_df.loc[common_dates]
     market_df = market_df.loc[common_dates]
 
-    # P1修复: 按标的前向填充，不要按行 dropna(how='any')
-    price_df = price_df.ffill()
-    market_df = market_df.ffill()
+    # P0修复: 按标的受限前向填充；市场数据缺失行直接删除
+    price_df = _limited_ffill(price_df)
+    market_df = _limited_ffill(market_df).dropna()
+
+    common_dates = price_df.index.intersection(market_df.index)
+    price_df = price_df.loc[common_dates]
+    market_df = market_df.loc[common_dates]
 
     return price_df, market_df
 
@@ -843,25 +884,43 @@ def prepare_backtest_data_qc(tickers, start_date, end_date, resolution='daily'):
     logger.info(f"{'='*60}")
     logger.info(f"Period: {start_date} ~ {end_date}")
 
-    # PIT/公司行为：移除退市股票
-    try:
-        from data_source import filter_universe_for_corporate_actions
-        filtered_tickers, corp_actions = filter_universe_for_corporate_actions(
-            tickers, start_date, end_date
-        )
-        if len(filtered_tickers) < len(tickers):
-            logger.warning(
-                "[PIT] Universe reduced from %d to %d after corporate-action filtering",
-                len(tickers), len(filtered_tickers)
-            )
-        tickers = filtered_tickers
-    except Exception as e:
-        logger.warning(f"[PIT] Could not filter universe for corporate actions: {e}")
-
+    # P0修复: 优先使用 QC 数据本身判定退市（请求窗口内价格全部为 NaN 视为已退市），减少对 Yahoo 的依赖
     source = HybridQCDataSource()
-
-    # 获取价格数据
     price_df = source.get_prices(tickers, start_date, end_date, resolution)
+
+    qc_delisted = _detect_delisted_from_prices(price_df)
+    if qc_delisted:
+        logger.warning(
+            "[PIT] QC-based delisted detection removed %d symbols: %s",
+            len(qc_delisted), sorted(qc_delisted)
+        )
+
+    # 保留 Yahoo 退市检测作为 fallback，并明确记录使用场景
+    fallback_delisted = set()
+    if not qc_delisted and not source.qc.available:
+        try:
+            from data_source import get_delisted_symbols
+            fallback_delisted = get_delisted_symbols(tickers, start_date, end_date)
+            if fallback_delisted:
+                logger.warning(
+                    "[PIT] Yahoo fallback delisted detection used (QC unavailable); removed %d symbols: %s",
+                    len(fallback_delisted), sorted(fallback_delisted)
+                )
+        except Exception as e:
+            logger.warning("[PIT] Yahoo fallback delisted detection failed: %s", e)
+
+    delisted = qc_delisted | fallback_delisted
+    filtered_tickers = [s for s in tickers if s not in delisted]
+    if len(filtered_tickers) < len(tickers):
+        logger.warning(
+            "[PIT] Universe reduced from %d to %d after delisted filtering",
+            len(tickers), len(filtered_tickers)
+        )
+
+    if price_df is not None and len(price_df) > 0:
+        keep_cols = [s for s in filtered_tickers if s in price_df.columns]
+        if len(keep_cols) < len(price_df.columns):
+            price_df = price_df[keep_cols]
 
     # 获取市场数据
     market_df = source.get_market_data(start_date, end_date, resolution)

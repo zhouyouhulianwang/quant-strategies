@@ -19,11 +19,9 @@ P2修复: 文档此前宣称16因子，实际实现为17个(基础7 + V14估值4
 import numpy as np
 import pandas as pd
 import logging
-from logging_config import setup_logging
 
 # P2修复：统一全链路日志格式
-setup_logging()
-logger = logging.getLogger('main')
+logger = logging.getLogger(__name__)
 
 from weight_allocation import WeightAllocator, integrate_with_backtest
 from cost_model import TradingCostModel
@@ -611,6 +609,9 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
 # ============================================================
 
 if __name__ == '__main__':
+    # P2修复：仅在入口运行时初始化日志
+    from logging_config import setup_logging
+    setup_logging()
     # 示例: 生成模拟数据并回测
     np.random.seed(42)
     

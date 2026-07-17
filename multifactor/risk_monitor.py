@@ -13,9 +13,7 @@ import os
 import threading
 
 # 日志设置（P2修复：统一使用 logging_config 的格式）
-from logging_config import setup_logging
-setup_logging()
-logger = logging.getLogger('risk_monitor')
+logger = logging.getLogger(__name__)
 
 # P2修复：引入统一告警管理器
 try:
@@ -246,8 +244,8 @@ class RiskMonitor:
             self.risk_level = 'ELEVATED'
         else:
             self.risk_level = 'NORMAL'
-            self.trading_halted = False
-        
+            # P0: VIX 回落不再自动恢复交易；恢复必须显式调用 resume_trading()
+
         return self.risk_level
     
     def check_concentration_risk(self, positions, portfolio_value):

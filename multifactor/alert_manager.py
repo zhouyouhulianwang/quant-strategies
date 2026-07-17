@@ -17,11 +17,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import threading
 
-from logging_config import setup_logging
 
 # P2修复：统一全链路日志格式
-setup_logging()
-logger = logging.getLogger('alert_manager')
+logger = logging.getLogger(__name__)
 
 
 ALERTS_DIR = os.path.join(os.path.dirname(__file__), 'alerts')

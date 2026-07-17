@@ -9,10 +9,8 @@ import logging
 from functools import wraps
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
 
-logger = logging.getLogger('rate_limiter')
+logger = logging.getLogger(__name__)
 
 
 class TokenBucket:

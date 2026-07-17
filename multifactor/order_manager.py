@@ -5,11 +5,9 @@
 
 import time
 import logging
-from logging_config import setup_logging
 
 # P2修复：统一全链路日志格式
-setup_logging()
-logger = logging.getLogger('order_manager')
+logger = logging.getLogger(__name__)
 
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta
@@ -109,9 +107,48 @@ class OrderManager:
             broker_daytrade_count=account.get('daytrade_count', 0),
         )
 
+    def _place_makeup_with_cancel(self, order_id, symbol, qty, side, order_type, time_in_force, limit_price,
+                                   max_wait_sec, poll_interval, makeup_depth) -> Optional[Dict]:
+        """P0-3 修复：补单前取消原订单，确认状态后再下补单"""
+        if makeup_depth >= self.max_makeup_depth:
+            logger.warning(f"[MAKEUP] Max makeup depth reached for {symbol}, skipping")
+            return None
+        if qty <= 0:
+            return None
+
+        # 1. 撤销原订单
+        cancel_ok = False
+        if hasattr(self.executor, 'cancel_order') and order_id:
+            try:
+                cancel_ok = self.executor.cancel_order(order_id)
+            except (ConnectionError, TimeoutError, Timeout, RequestException, ValueError) as e:
+                logger.warning(f"[MAKEUP] Cancel original order {order_id} failed: {e}")
+
+        # 2. 确认原订单状态为 canceled / expired / filled
+        status_after_cancel = None
+        if cancel_ok:
+            status_check = self._get_order_status(order_id)
+            status_after_cancel = status_check.get('status') if status_check else None
+
+        if status_after_cancel in ('canceled', 'expired', 'filled'):
+            logger.info(f"[MAKEUP] Original order {order_id} status={status_after_cancel}, placing makeup for {symbol} {side} remaining {qty}")
+            return self.submit_and_wait(
+                symbol=symbol, qty=qty, side=side,
+                order_type=order_type, time_in_force=time_in_force, limit_price=limit_price,
+                max_wait_sec=max_wait_sec, poll_interval=poll_interval,
+                _makeup_depth=makeup_depth + 1
+            )
+
+        # 取消失败或状态未确认：保守处理，不下补单
+        logger.warning(
+            f"[MAKEUP] Skipping makeup for {symbol}: original order {order_id} "
+            f"cancel_ok={cancel_ok}, status_after_cancel={status_after_cancel}"
+        )
+        return None
+
     def _place_makeup_order(self, symbol, qty, side, order_type, time_in_force, limit_price,
                             max_wait_sec, poll_interval, makeup_depth) -> Optional[Dict]:
-        """M1 修复：对部分成交/超时剩余数量发起补单"""
+        """M1 修复：对部分成交/超时剩余数量发起补单（保留兼容旧调用）"""
         if makeup_depth >= self.max_makeup_depth:
             logger.warning(f"[MAKEUP] Max makeup depth reached for {symbol}, skipping")
             return None
@@ -178,16 +215,39 @@ class OrderManager:
                 self._send_alert('pdt_blocked', symbol, side, qty, pdt_check.get('reason', 'unknown'))
                 return {'status': 'REJECTED', 'symbol': symbol, 'reason': pdt_check['reason']}
         
-        # 1. 提交订单
-        order = self.executor.submit_order(
-            symbol=symbol, qty=qty, side=side,
-            order_type=order_type,
-            time_in_force=time_in_force,
-            limit_price=limit_price
-        )
-        
-        if not order:
-            logger.error(f"❌ {symbol} order submission failed")
+        # 1. 提交订单（P1-1 修复：网络/API 失败时指数退避重试，明确拒绝直接失败）
+        order = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                order = self.executor.submit_order(
+                    symbol=symbol, qty=qty, side=side,
+                    order_type=order_type,
+                    time_in_force=time_in_force,
+                    limit_price=limit_price,
+                    _record_pdt=False,
+                )
+                if order is not None:
+                    break
+                logger.warning(f"submit_order returned None for {symbol} {side}, attempt {attempt + 1}/3")
+            except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
+                last_error = e
+                logger.warning(f"submit_order network error for {symbol} {side}, attempt {attempt + 1}/3: {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+            except ValueError as e:
+                # 明确参数错误，不重试
+                logger.error(f"submit_order parameter error for {symbol} {side}: {e}")
+                return {'status': 'FAILED', 'symbol': symbol, 'reason': f'value_error: {e}'}
+
+        if order and order.get('status') == 'REJECTED':
+            reason = order.get('reason', 'rejected')
+            logger.error(f"❌ {symbol} order rejected: {reason}")
+            self._send_alert('order_failed', symbol, side, qty, reason)
+            return {'status': 'REJECTED', 'symbol': symbol, 'reason': reason}
+
+        if order is None:
+            logger.error(f"❌ {symbol} order submission failed after retries: {last_error}")
             self._send_alert('order_failed', symbol, side, qty, 'submit_failed')
             return {'status': 'FAILED', 'symbol': symbol, 'reason': 'submit_failed'}
         
@@ -231,10 +291,10 @@ class OrderManager:
                 # 部分成交也记录
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
-                # M1 修复：部分成交后尝试补单
+                # M1 / P0-3 修复：部分成交后先撤销原订单，再对剩余数量补单
                 if remaining_qty > 0:
-                    makeup = self._place_makeup_order(
-                        symbol, remaining_qty, side, order_type, time_in_force, limit_price,
+                    makeup = self._place_makeup_with_cancel(
+                        order_id, symbol, remaining_qty, side, order_type, time_in_force, limit_price,
                         max_wait_sec, poll_interval, _makeup_depth
                     )
                     if makeup:
@@ -261,7 +321,7 @@ class OrderManager:
                 except ValueError as e:
                     logger.error(f"Cancel timed-out order {order_id} parameter error: {e}")
 
-            # M1 修复：超时后确认实际成交数量，若有部分成交则补单
+            # M1 / P0-3 修复：超时后确认实际成交数量，若有部分成交则先撤单再补单
             final_status = self._get_order_status(order_id)
             if final_status:
                 filled_qty = int(final_status.get('filled_qty', 0))
@@ -277,8 +337,8 @@ class OrderManager:
                 }
                 self._log_order(timeout_result)
                 if remaining_qty > 0:
-                    makeup = self._place_makeup_order(
-                        symbol, remaining_qty, side, order_type, time_in_force, limit_price,
+                    makeup = self._place_makeup_with_cancel(
+                        order_id, symbol, remaining_qty, side, order_type, time_in_force, limit_price,
                         max_wait_sec, poll_interval, _makeup_depth
                     )
                     if makeup:

@@ -71,10 +71,7 @@ try:
 except ImportError:
     MATCHING_ENGINE_AVAILABLE = False
 
-# 设置日志（P2修复：统一使用 logging_config 的格式）
-from logging_config import setup_logging
-setup_logging()
-logger = logging.getLogger('alpaca_executor')
+logger = logging.getLogger(__name__)
 
 
 def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = None,
@@ -138,6 +135,9 @@ except ImportError as e:
     ALPACA_AVAILABLE = False
     # Fallback enums so the rest of the codebase can still import them in mock mode
     from enum import Enum
+
+    class APIError(Exception):
+        pass
 
     class OrderSide(str, Enum):
         BUY = "buy"
@@ -353,9 +353,16 @@ class AlpacaPaperExecutor:
             self.api_key = self.api_key or 'MOCK-KEY'
             self.api_secret = self.api_secret or 'MOCK-SECRET'
 
-        # 未指定 base_url 时，根据 paper 模式使用默认值；P1 修复：校验 base_url 合法性
+        # 未指定 base_url 时，根据 paper 模式使用默认值；P0-4 修复：强制 paper 与 base_url 一致
+        expected_base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
         if not self.base_url:
-            self.base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
+            self.base_url = expected_base_url
+        elif self.base_url != expected_base_url:
+            raise ValueError(
+                f"Alpaca paper/base_url mismatch: paper={paper}, base_url={self.base_url}. "
+                f"Expected {expected_base_url}. "
+                "Set paper=True with https://paper-api.alpaca.markets or paper=False with https://api.alpaca.markets."
+            )
         if self.base_url not in ('https://paper-api.alpaca.markets', 'https://api.alpaca.markets'):
             raise ValueError(
                 f"Invalid Alpaca base_url: {self.base_url}，"
@@ -839,6 +846,21 @@ class AlpacaPaperExecutor:
             client_order_id=client_order_id,
         )
 
+    def _record_fill_from_order(self, symbol: str, side: str, order: Optional[Dict], _record_pdt: bool = True):
+        """P1-4 修复：根据订单结果对 sell 填充记录 PDT"""
+        if not _record_pdt or not self.pdt_tracker or not order:
+            return
+        status = order.get('status', '')
+        if status not in ('filled', 'partially_filled'):
+            return
+        filled_qty = int(order.get('filled_qty', 0))
+        if filled_qty <= 0:
+            return
+        side_str = side.lower() if isinstance(side, str) else str(side).lower()
+        if side_str != 'sell':
+            return
+        self.pdt_tracker.record_fill(symbol, side_str, filled_qty)
+
     def submit_order(
         self,
         symbol,
@@ -847,6 +869,8 @@ class AlpacaPaperExecutor:
         order_type='market',
         time_in_force='day',
         limit_price=None,
+        *,
+        _record_pdt=True,
     ):
         """
         提交订单（支持幂等性、PDT 检查、限价单、购买力检查、最小订单数量检查）
@@ -858,6 +882,7 @@ class AlpacaPaperExecutor:
             order_type: str, 'market' 或 'limit'
             time_in_force: str, 'day', 'gtc', 'ioc', 'opg'
             limit_price: float, 限价单价格（None 则自动计算）
+            _record_pdt: bool, 内部参数，是否自动记录 PDT（默认 True）
 
         返回:
             dict: 订单信息
@@ -909,11 +934,15 @@ class AlpacaPaperExecutor:
             return None
 
         if not self.trading_client:
-            return self._mock_order(symbol, qty, side, client_order_id=client_order_id)
+            result = self._mock_order(symbol, qty, side, client_order_id=client_order_id)
+            self._record_fill_from_order(symbol, side, result, _record_pdt)
+            return result
 
         # P0-4 修复：mock 模式且 SDK 未安装时，使用轻量模拟订单，避免引用未导入的 SDK 类
         if self.mock and not ALPACA_AVAILABLE:
-            return self._mock_order(symbol, qty, side, client_order_id=client_order_id)
+            result = self._mock_order(symbol, qty, side, client_order_id=client_order_id)
+            self._record_fill_from_order(symbol, side, result, _record_pdt)
+            return result
 
         # H6 修复：价格/名义金额/购买力检查（含 5% 缓冲）
         current_price = self._get_current_price(symbol)
@@ -956,6 +985,8 @@ class AlpacaPaperExecutor:
             result['client_order_id'] = client_order_id
             # M8：成功后重置连续拒绝计数
             self._consecutive_rejections = 0
+            # P1-4 修复：对成功卖出的订单记录 PDT
+            self._record_fill_from_order(symbol, side, result, _record_pdt)
 
             return result
         except APIError as e:
@@ -963,6 +994,16 @@ class AlpacaPaperExecutor:
             self._send_alert('order_failed', symbol, side, qty, f'api_error: {e}', order_id=client_order_id)
             self._consecutive_rejections += 1
             self._maybe_halt_on_rejections()
+            # P1-1 修复：明确拒绝（如购买力不足）直接返回 REJECTED，不重试
+            error_message = str(e).lower()
+            if 'insufficient_buying_power' in error_message:
+                return {
+                    'status': 'REJECTED',
+                    'symbol': symbol,
+                    'side': side,
+                    'reason': f'insufficient_buying_power: {e}',
+                    'client_order_id': client_order_id,
+                }
             return None
         except (RequestException, ConnectionError, Timeout) as e:
             logger.error(f"Network error, order submission failed: {e}")
@@ -1053,7 +1094,7 @@ class AlpacaPaperExecutor:
             return False
 
     def liquidate_all(self):
-        """平掉所有持仓（P0 修复：平仓前缓存持仓，按缓存记录 PDT）"""
+        """平掉所有持仓（P0-5/P0-6 修复：从券商成交记录更新 PDT，不使用本地缓存 entry_date）"""
         positions = self.get_positions()
 
         if not self.trading_client:
@@ -1062,15 +1103,33 @@ class AlpacaPaperExecutor:
             return len(positions)
 
         try:
-            # P0 修复：在清空前缓存持仓，避免 get_positions 返回空导致无法记录 PDT
-            cached_positions = positions
             self.trading_client.close_all_positions()
             logger.info("[OK] All positions liquidated")
 
-            # 记录 PDT 平仓（按缓存的持仓记录）
+            # P0-5/P0-6/P1-3 修复：从券商返回的真实订单/成交记录更新 PDT
             if self.pdt_tracker:
-                for pos in cached_positions:
-                    self.pdt_tracker.record_fill(pos['symbol'], 'sell', pos['qty'])
+                if self.mock:
+                    # mock 模式下 close_all_positions 不生成订单，使用缓存持仓（PDT  conservatively 处理未知 entry_date）
+                    for pos in positions:
+                        self.pdt_tracker.record_fill(pos['symbol'], 'sell', pos['qty'])
+                else:
+                    try:
+                        closed_orders = self.get_orders(status='closed')
+                        today_str = datetime.now().strftime('%Y-%m-%d')
+                        for order in closed_orders:
+                            if order.get('side', '').lower() != 'sell':
+                                continue
+                            if order.get('status') not in ('filled', 'partially_filled'):
+                                continue
+                            submitted_at = order.get('submitted_at', '') or ''
+                            if submitted_at.startswith(today_str):
+                                filled_qty = int(order.get('filled_qty', 0))
+                                if filled_qty > 0:
+                                    self.pdt_tracker.record_fill(
+                                        order['symbol'], 'sell', filled_qty
+                                    )
+                    except Exception as e:
+                        logger.warning(f"Failed to record PDT after liquidation: {e}")
             return 1
         except (APIError, RequestException, ConnectionError, Timeout) as e:
             logger.error(f"Liquidation failed: {e}")
@@ -1078,7 +1137,12 @@ class AlpacaPaperExecutor:
             self._send_alert('execution_error', 'liquidate_all', str(e))
             # 回退到逐个卖出
             for pos in positions:
-                self.submit_order(pos['symbol'], pos['qty'], 'sell')
+                # P1-3 修复：兜底路径中显式记录 PDT，避免 submit_order 重复记录
+                order = self.submit_order(pos['symbol'], pos['qty'], 'sell', _record_pdt=False)
+                if order and self.pdt_tracker and order.get('status') in ('filled', 'partially_filled'):
+                    filled_qty = int(order.get('filled_qty', 0))
+                    if filled_qty > 0:
+                        self.pdt_tracker.record_fill(pos['symbol'], 'sell', filled_qty)
             return len(positions)
 
     # ========== 模拟模式 ==========
@@ -1361,8 +1425,8 @@ class AlpacaExecutor:
     def liquidate_all(self):
         return self.executor.liquidate_all()
 
-    def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None):
-        return self.executor.submit_order(symbol, qty, side, order_type, time_in_force, limit_price)
+    def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None, *, _record_pdt=True):
+        return self.executor.submit_order(symbol, qty, side, order_type, time_in_force, limit_price, _record_pdt=_record_pdt)
 
     def get_account(self):
         return self.executor.get_account()
@@ -1411,6 +1475,12 @@ class AlpacaExecutor:
             limit_price: float, 限价（单只股票时有效，多只股票自动计算）
             enable_rollback: bool, 失败时是否回滚已卖出仓位
         """
+        # P0: 统一检查 trading_halted，若暂停则拒绝调仓
+        if self.executor.risk_monitor and getattr(self.executor.risk_monitor, 'trading_halted', False):
+            logger.error("[ERROR] Trading halted, rebalance rejected")
+            self.executor._send_alert('execution_error', 'rebalance_rejected', 'trading_halted')
+            return {'status': 'FAILED', 'reason': 'trading_halted'}
+
         # 每次调仓前同步公司行为（拆股调整）
         self.sync_corporate_actions(list(target_positions.keys()))
 
@@ -1468,7 +1538,7 @@ class AlpacaExecutor:
                     logger.error(f"[ERROR] PDT blocked sell: {symbol} ({pdt_check['reason']})")
                     continue
                 try:
-                    result = self.executor.submit_order(symbol, pos['qty'], 'sell', order_type=order_type)
+                    result = self.executor.submit_order(symbol, pos['qty'], 'sell', order_type=order_type, _record_pdt=False)
                     if result:
                         executed_orders.append(result)
                         sold_positions.append({'symbol': symbol, 'qty': result.get('filled_qty', pos['qty'])})
@@ -1509,7 +1579,7 @@ class AlpacaExecutor:
                 logger.info(f"[ROLLBACK] {side.upper()}: {symbol} x {qty} (target: ${target_value:,.0f})")
 
                 try:
-                    result = self.executor.submit_order(symbol, qty, side, order_type=order_type)
+                    result = self.executor.submit_order(symbol, qty, side, order_type=order_type, _record_pdt=False)
                     if result:
                         executed_orders.append(result)
                         self.executor.record_fill(symbol, side, result.get('filled_qty', qty))
@@ -1555,7 +1625,7 @@ class AlpacaExecutor:
             if qty > 0 and symbol:
                 try:
                     logger.info(f"[ROLLBACK] Rollback: buy back {symbol} x {qty}")
-                    self.executor.submit_order(symbol, qty, 'buy')
+                    self.executor.submit_order(symbol, qty, 'buy', _record_pdt=False)
                 except (APIError, RequestException, ConnectionError, Timeout, ValueError) as e:
                     logger.error(f"Rollback failed {symbol}: {e}")
 

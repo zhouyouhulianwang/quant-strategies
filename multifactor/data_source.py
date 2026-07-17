@@ -4,17 +4,18 @@ Data Source Module - Yahoo Finance 真实数据接入
 """
 
 import logging
+import os
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
-logger = logging.getLogger('data_source')
+logger = logging.getLogger(__name__)
+
+# P0修复：最大前向填充交易日数（默认 5 日），防止停牌/退市股票无限制前向填充导致前视偏差
+MAX_FFILL_DAYS = int(os.getenv('MULTIFACTOR_MAX_FFILL_DAYS', 5))
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import os
 import pickle
 
 # 引入统一缓存模块
@@ -134,6 +135,32 @@ def _normalize_index(data):
     if hasattr(data.index, 'tz') and data.index.tz is not None:
         data.index = data.index.tz_localize(None)
     return data
+
+
+def _limited_ffill(df, max_days=MAX_FFILL_DAYS, active=None):
+    """
+    P0修复：受限前向填充，超过 max_days 的缺失值保持 NaN。
+
+    参数:
+        df: DataFrame/Series
+        max_days: int, 最大前向填充天数（交易日）
+        active: 可选，dict/Series/DataFrame，标记标的是否仍活跃；
+                若提供，退市/不活跃日期后不再填充。
+    """
+    if df is None or df.empty:
+        return df
+    filled = df.ffill(limit=max_days)
+    if active is not None:
+        try:
+            if isinstance(active, pd.DataFrame) and filled.shape == active.shape:
+                filled = filled.where(active)
+            elif isinstance(active, dict):
+                for symbol, is_active in active.items():
+                    if symbol in filled.columns and not is_active:
+                        filled[symbol] = np.nan
+        except Exception as e:
+            logger.warning("[PIT] active/delisted marker handling failed: %s", e)
+    return filled
 
 
 def _compute_rsi_wilder(prices, window=14):
@@ -490,9 +517,13 @@ def _align_and_clean(price_df, market_df):
     price_df = price_df.loc[common_dates]
     market_df = market_df.loc[common_dates]
 
-    # P1修复: 按标的前向填充，保留交易日行，避免幸存者偏差
-    price_df = price_df.ffill()
-    market_df = market_df.ffill()
+    # P0修复: 按标的受限前向填充，保留交易日行；市场数据缺失行直接删除
+    price_df = _limited_ffill(price_df)
+    market_df = _limited_ffill(market_df).dropna()
+
+    common_dates = price_df.index.intersection(market_df.index)
+    price_df = price_df.loc[common_dates]
+    market_df = market_df.loc[common_dates]
 
     return price_df, market_df
 

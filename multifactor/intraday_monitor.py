@@ -10,10 +10,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 # P2修复：统一全链路日志格式
-from logging_config import setup_logging
-setup_logging()
-
-logger = logging.getLogger('intraday_monitor')
+logger = logging.getLogger(__name__)
 
 try:
     from json_logger import log_risk_event
@@ -479,53 +476,16 @@ class IntradayMonitor:
         }
 
     # ------------------------------------------------------------------
-    # P0 修复：熔断恢复机制（Medium #14）
+    # P0 修复：自动恢复交易已删除
+    # 交易暂停后必须由人工/外部显式调用 resume_trading() 恢复；盘中监控
+    # 不再根据 VIX 回落或回撤修复自动解除暂停。
     # ------------------------------------------------------------------
-    def check_recovery(self, vix=None, current_nav=None):
-        """检查是否满足恢复交易条件。
-
-        返回：
-            dict: {'can_resume': bool, 'reason': str}
-        """
-        # 1. 必须当前处于暂停状态
-        if not self.trading_halted:
-            return {'can_resume': False, 'reason': 'not_halted'}
-
-        # 2. 市场必须开盘
-        try:
-            if hasattr(self.executor, 'market_is_open') and not self.executor.market_is_open():
-                return {'can_resume': False, 'reason': 'market_closed'}
-        except Exception as e:
-            logger.warning(f"Failed to check market status for recovery: {e}")
-
-        # 3. VIX 回落到阈值以下（如果提供）
-        if vix is not None:
-            if vix >= self.vix_emergency_level:
-                return {'can_resume': False, 'reason': f'vix_still_high:{vix:.2f}'}
-
-        # 4. 累计回撤已修复（如果提供 nav）
-        if current_nav is not None and self.peak_nav is not None and self.peak_nav > 0:
-            drawdown = (current_nav - self.peak_nav) / self.peak_nav
-            if drawdown <= -self.max_total_drawdown:
-                return {'can_resume': False, 'reason': f'total_drawdown_not_recovered:{drawdown:.2%}'}
-
-        return {'can_resume': True, 'reason': 'all_clear'}
-
     def resume_trading(self):
-        """手动/自动恢复交易，重置暂停状态。"""
+        """手动恢复交易，重置暂停状态。"""
         logger.warning("[RESUME] Trading manually resumed")
         self.trading_halted = False
         self._pending_liquidation_reason = None
         return {'status': 'RESUMED', 'trading_halted': False}
-
-    def auto_resume_if_safe(self, vix=None, current_nav=None):
-        """如果满足恢复条件，自动恢复交易。"""
-        recovery = self.check_recovery(vix=vix, current_nav=current_nav)
-        if recovery['can_resume']:
-            logger.warning(f"[RESUME] Trading auto-resumed: {recovery['reason']}")
-            return self.resume_trading()
-        logger.info(f"[PENDING] Recovery conditions not met: {recovery['reason']}")
-        return {'status': 'STAY_HALTED', 'reason': recovery['reason']}
 
 
 # ============================================================

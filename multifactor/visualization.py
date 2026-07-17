@@ -11,10 +11,8 @@ import logging
 from datetime import datetime
 import os
 
-from logging_config import setup_logging
 # P2修复：统一全链路日志格式
-setup_logging()
-logger = logging.getLogger('visualization')
+logger = logging.getLogger(__name__)
 
 # 设置中文字体支持
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']

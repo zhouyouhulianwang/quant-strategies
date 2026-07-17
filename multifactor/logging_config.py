@@ -222,4 +222,4 @@ def setup_logging(
 
 
 # 兼容旧调用：部分脚本 import logging_config 时即可生效
-setup_logging()
+# P2/L-01: 模块导入期不再自动初始化日志，避免 Handler 重复；由入口文件调用。

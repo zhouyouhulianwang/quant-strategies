@@ -15,10 +15,8 @@ from zoneinfo import ZoneInfo
 import os
 import json
 
-from logging_config import setup_logging
 # P2修复：统一全链路日志格式
-setup_logging()
-logger = logging.getLogger('scheduler')
+logger = logging.getLogger(__name__)
 
 # 美东时区（交易时间以美东为准）
 NY_TZ = ZoneInfo('America/New_York')

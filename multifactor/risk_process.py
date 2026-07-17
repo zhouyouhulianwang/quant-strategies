@@ -28,10 +28,8 @@ import threading
 import time
 from datetime import datetime
 
-from logging_config import setup_logging
 
-setup_logging()
-logger = logging.getLogger('risk_process')
+logger = logging.getLogger(__name__)
 
 from version import get_version
 
