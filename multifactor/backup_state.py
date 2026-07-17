@@ -116,14 +116,15 @@ def _decrypt_backup(enc_path: Path, key: str, dest: Path) -> Path:
     fernet = Fernet(_derive_fernet_key(key, salt))
     decrypted = fernet.decrypt(encrypted)
 
-    tar_path = dest / enc_path.with_suffix("").name
-    tar_path = tar_path.with_suffix(".tar.gz")
+    # 原始目录名 = enc_path 去掉 .enc.tar.gz
+    restored_name = enc_path.name.replace(".enc.tar.gz", "")
+    tar_path = dest / (restored_name + ".tar.gz")
     with open(tar_path, "wb") as f:
         f.write(decrypted)
 
     with tarfile.open(tar_path, "r:gz") as tar:
         tar.extractall(dest)
-    restored_dir = dest / enc_path.with_suffix("").with_suffix("").name
+    restored_dir = dest / restored_name
     return restored_dir
 
 

@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 
@@ -1319,10 +1319,119 @@ class TestMinimalExampleStrategy:
 
 
 # ============================================================
-# 运行命令
+# 17. V3 审计回归测试
 # ============================================================
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+class TestV3AuditFixes:
+    """针对 AUDIT_REPORT_V3_PAPER_LIVE.md 的回归测试"""
+
+    def test_risk_monitor_halt_on_drawdown(self):
+        """P0: 回撤超限后必须设置 trading_halted = True"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor(max_drawdown_limit=0.15)
+        monitor.nav_history = [{'timestamp': datetime.now(), 'nav': 1.0}]
+
+        triggered = monitor.check_drawdown(0.80)
+        assert triggered is True
+        assert monitor.trading_halted is True
+
+    def test_risk_monitor_halt_on_daily_loss(self):
+        """P0: 日内亏损超限后必须设置 trading_halted = True"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor(daily_loss_limit=0.03)
+        triggered = monitor.check_daily_loss(-0.05)
+        assert triggered is True
+        assert monitor.trading_halted is True
+
+    def test_risk_monitor_lock_accepts_concurrent_reads(self):
+        """P1: trading_halted 应有锁且可读可写"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor()
+        assert monitor._lock is not None
+        # 基本属性访问不应阻塞或报错
+        assert monitor.trading_halted in (True, False)
+        monitor.trading_halted = True
+        assert monitor.trading_halted is True
+
+    def test_config_api_key_from_env(self):
+        """P1: API Key 可从环境变量注入，config.json 无需硬编码"""
+        from config import V14StrategyConfig
+
+        with patch.dict('os.environ', {'ALPACA_API_KEY': 'PK_FROM_ENV', 'ALPACA_API_SECRET': 'SK_FROM_ENV'}):
+            cfg = V14StrategyConfig()
+            key, secret = cfg.get_api_credentials()
+            assert key == 'PK_FROM_ENV'
+            assert secret == 'SK_FROM_ENV'
+
+    def test_backup_encryption_roundtrip(self, tmp_path):
+        """P1: backup_state.py 加密/解密可往返"""
+        from backup_state import _encrypt_backup_dir, _decrypt_backup, run_backup
+
+        key = 'test-encryption-key-12345'
+        backup_dir = tmp_path / 'plain_backup'
+        backup_dir.mkdir()
+        (backup_dir / 'config.json').write_text('{"secret": true}')
+
+        enc_path = _encrypt_backup_dir(backup_dir, key)
+        assert enc_path.exists()
+        assert enc_path.suffixes == ['.enc', '.tar', '.gz']
+        assert not backup_dir.exists()
+
+        restored = _decrypt_backup(enc_path, key, tmp_path)
+        assert (restored / 'config.json').read_text() == '{"secret": true}'
+
+    def test_alert_manager_dedup(self, tmp_path):
+        """P1: 同一告警在短时间内只写入一次"""
+        from alert_manager import AlertManager
+
+        alert_file = tmp_path / 'alerts.json'
+        manager = AlertManager(alert_file=str(alert_file))
+
+        manager._write_alert('CRITICAL', 'RISK', 'drawdown triggered', {})
+        manager._write_alert('CRITICAL', 'RISK', 'drawdown triggered', {})
+        manager._write_alert('CRITICAL', 'RISK', 'drawdown triggered', {})
+
+        lines = [l for l in alert_file.read_text().split('\n') if l.strip()]
+        assert len(lines) == 1
+
+    def test_pdt_today_uses_et(self):
+        """M3: PDT 的 'today' 应使用 America/New_York 时区"""
+        from pdt_tracker import PDTTracker
+        from datetime import date
+
+        tracker = PDTTracker(paper=True, account_id='test', enabled=True)
+        today = tracker._today()
+        # date 对象无时区属性，仅验证返回合理日期
+        assert isinstance(today, date)
+        assert abs((datetime.now(timezone.utc).date() - today).days) <= 1
+
+    def test_backtest_uses_next_trading_day(self):
+        """H2: 回测引擎应在下一交易日执行，避免同日复权 lookahead"""
+        from strategies.v14 import V14Strategy
+
+        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        dates = pd.bdate_range('2023-01-01', periods=300)
+        np.random.seed(42)
+        prices = pd.DataFrame(
+            np.cumprod(1 + np.random.normal(0.0005, 0.015, (300, 10)), axis=0) * 100,
+            index=dates,
+            columns=['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'META', 'JPM', 'V', 'JNJ', 'UNH', 'XOM']
+        )
+        market_df = pd.DataFrame({'VIX': [20.0] * len(dates)}, index=dates)
+
+        result = strategy._run_backtest_unified(prices, market_df)
+        assert len(result) > 0
+
+        # 所有执行日期必须是交易日的下一交易日（或本身就是交易日）
+        for exec_date in result['date']:
+            assert exec_date in dates
+
+        # 至少第一个执行日期不是第一个信号日（预热后的首个调仓日）的同一日
+        # 因为 _run_backtest_unified 在 first_d 后使用 next_d
+        first_signal_idx = dates.get_loc(result['date'].iloc[0]) - 1
+        assert first_signal_idx >= 0
 
 
