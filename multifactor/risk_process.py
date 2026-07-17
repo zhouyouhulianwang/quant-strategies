@@ -137,7 +137,7 @@ class RiskProcess:
     def _default_monitor_factory(self, executor, config):
         """默认监控器工厂：创建 RiskMonitor 和 IntradayMonitor。"""
         risk_monitor = RiskMonitor(
-            max_drawdown_limit=0.15,
+            max_drawdown_limit=config.risk.max_drawdown_limit,
             max_position_pct=config.risk.max_position_pct,
             max_sector_pct=0.30,
             daily_loss_limit=0.03,
@@ -150,7 +150,7 @@ class RiskProcess:
             vix_emergency_level=config.risk.vix_panic_threshold,
             max_intraday_dd=config.risk.max_intraday_dd,
             single_stock_limit=config.risk.single_stock_limit,
-            max_total_drawdown=0.15,
+            max_total_drawdown=config.risk.max_drawdown_limit,
         )
         return risk_monitor, intraday_monitor
 

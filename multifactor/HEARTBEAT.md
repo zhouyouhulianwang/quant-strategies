@@ -7,6 +7,7 @@
 - [ ] **Git status**: `multifactor/` has no uncommitted critical fixes? Pull/push up to date?
 - [ ] **Test status**: `pytest test_suite.py` still green? If not, halt paper/live and investigate.
 - [ ] **Risk status**: `trading_halted` false? If true, check `alerts/` and follow `RISK_RUNBOOK.md`. No unacknowledged emergency liquidation?
+- [ ] **Kill switch**: `data/kill_switch` absent and `MULTIFACTOR_KILL_SWITCH` not set? If either present, trading must be halted.
 - [ ] **Data freshness**: latest bar/date in cache/feed not stale? Any corporate actions announced? VIX/price data < 1 trading day old?
 - [ ] **Position reconciliation**: run `reconcile()` against broker; local PDT lots match broker positions? Cash diff < $1?
 - [ ] **Backup status**: run `python3 backup_state.py` after any config/risk change; verify latest backup has restrictive permissions and is not stale.

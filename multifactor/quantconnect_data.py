@@ -95,75 +95,11 @@ def _yahoo_end_inclusive(end_date):
 
 
 # ============================================================
-# Parquet 缓存基础设施（按 symbol 缓存完整历史，委托 cache.py）
+# 统一缓存基础设施（DataCache，避免与 polygon_data / data_source 重复）
 # ============================================================
-import os
-from cache import (
-    is_cache_valid,
-    load_parquet_cache,
-    save_parquet_cache,
-    get_cache_metadata,
-    CACHE_VERSION as _CACHE_VERSION,
-)
+from data_source import DataCache
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'data_cache')
-os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_VERSION = _CACHE_VERSION
-CACHE_TTL_DAYS = 7
-
-
-def _get_cache_path(symbol, source='QuantConnect', adjustment='adjusted'):
-    """按 symbol+source+adjustment 缓存完整历史，文件名包含来源和复权标志"""
-    safe_source = source.replace('/', '_').replace(' ', '_')
-    safe_adjustment = adjustment.replace('/', '_').replace(' ', '_')
-    return os.path.join(CACHE_DIR, f"{symbol}_{safe_source}_{safe_adjustment}.parquet")
-
-
-def _decode_metadata(meta_dict):
-    """将 pyarrow 字节型 metadata 解码为字符串字典（委托 cache.py）"""
-    from cache import _decode_metadata as _cache_decode
-    return _cache_decode(meta_dict)
-
-
-def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
-    """检查 parquet 缓存是否有效（版本号 + TTL，委托 cache.py）"""
-    return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
-
-
-def _verify_cache_metadata(cache_path, expected_source=None, expected_adjustment=None):
-    """读取缓存元数据并校验 source/adjustment，不匹配时记录警告"""
-    try:
-        metadata = get_cache_metadata(cache_path)
-        actual_source = metadata.get('source')
-        actual_adjustment = metadata.get('adjustment')
-        if expected_source and actual_source and str(actual_source) != str(expected_source):
-            logger.warning(
-                "[PIT] Cache source mismatch for %s: expected %s, got %s",
-                cache_path, expected_source, actual_source
-            )
-        if expected_adjustment and actual_adjustment and str(actual_adjustment) != str(expected_adjustment):
-            logger.warning(
-                "[PIT] Cache adjustment mismatch for %s: expected %s, got %s",
-                cache_path, expected_adjustment, actual_adjustment
-            )
-    except Exception as e:
-        logger.debug("[PIT] Failed to verify cache metadata %s: %s", cache_path, e)
-
-
-def _load_cache(cache_path, expected_source=None, expected_adjustment=None):
-    """从 parquet 缓存读取数据，单列表自动还原为 Series（委托 cache.py）"""
-    _verify_cache_metadata(cache_path, expected_source, expected_adjustment)
-    return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
-
-
-def _save_cache(cache_path, data, source='QuantConnect', adjustment='adjusted'):
-    """保存数据及元数据到 parquet 缓存，失败不抛异常（委托 cache.py）"""
-    metadata = {
-        'source': source,
-        'adjustment': adjustment,
-        'download_time': datetime.now().isoformat(),
-    }
-    return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
+cache = DataCache()
 
 
 class QuantConnectDataSource:
@@ -591,10 +527,10 @@ class HybridQCDataSource:
 
             # 1. 按优先级尝试 source-specific 缓存
             for source, adjustment in source_order:
-                cache_path = _get_cache_path(symbol, source=source, adjustment=adjustment)
-                if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+                cache_path = cache.get_path(symbol, source=source, adjustment=adjustment, frequency=resolution)
+                if cache.is_valid(cache_path, ttl_days=cache.frequency_ttl(resolution)):
                     try:
-                        loaded = _load_cache(cache_path, expected_source=source, expected_adjustment=adjustment)
+                        loaded = cache.load(cache_path, expected={'source': source, 'adjustment': adjustment})
                         loaded = _normalize_index(loaded)
                         if isinstance(loaded, pd.DataFrame) and 'Close' in loaded.columns:
                             series = loaded['Close']
@@ -615,9 +551,9 @@ class HybridQCDataSource:
                 full_series, source = self._fetch_single_symbol_full(symbol, start_date, end_date, resolution)
                 if full_series is not None and len(full_series) > 0:
                     used_source = source
-                    used_path = _get_cache_path(symbol, source=source, adjustment='adjusted')
+                    used_path = cache.get_path(symbol, source=source, adjustment='adjusted', frequency=resolution)
                     # 保存完整历史到 source-specific parquet
-                    _save_cache(used_path, full_series, source=source, adjustment='adjusted')
+                    cache.save(used_path, full_series, metadata={'source': source, 'adjustment': 'adjusted'})
                     data = full_series
 
             if data is not None and len(data) > 0:
@@ -758,13 +694,13 @@ class HybridQCDataSource:
     def _get_vix_cached(self, start_date: str, end_date: str):
         """获取 VIX 数据（优先 source-specific parquet 缓存）"""
         # VIX 可能来自 QuantConnect 或 Yahoo，均使用 unadjusted
-        qc_path = _get_cache_path('VIX', source='QuantConnect', adjustment='unadjusted')
-        yahoo_path = _get_cache_path('VIX', source='Yahoo', adjustment='unadjusted')
+        qc_path = cache.get_path('VIX', source='QuantConnect', adjustment='unadjusted', frequency=resolution)
+        yahoo_path = cache.get_path('VIX', source='Yahoo', adjustment='unadjusted', frequency=resolution)
 
         for cache_path, source in [(qc_path, 'QuantConnect'), (yahoo_path, 'Yahoo')]:
-            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            if cache.is_valid(cache_path, ttl_days=cache.frequency_ttl(resolution)):
                 try:
-                    vix = _load_cache(cache_path, expected_source=source, expected_adjustment='unadjusted')
+                    vix = cache.load(cache_path, expected={'source': source, 'adjustment': 'unadjusted'})
                     vix = _normalize_index(vix)
                     return vix.loc[start_date:end_date]
                 except Exception as e:
@@ -775,7 +711,7 @@ class HybridQCDataSource:
             try:
                 vix = self.qc.get_vix_data(start_date, end_date)
                 if vix is not None and len(vix) > 0:
-                    _save_cache(qc_path, vix, source='QuantConnect', adjustment='unadjusted')
+                    cache.save(qc_path, vix, metadata={'source': 'QuantConnect', 'adjustment': 'unadjusted'})
                     return _normalize_index(vix.loc[start_date:end_date])
             except Exception as e:
                 logger.warning(f"QC VIX fetch failed: {e}")
@@ -786,7 +722,7 @@ class HybridQCDataSource:
                 import yfinance as yf
                 vix = yf.Ticker('^VIX').history(period='max')['Close']
                 vix = _normalize_index(vix)
-                _save_cache(yahoo_path, vix, source='Yahoo', adjustment='unadjusted')
+                cache.save(yahoo_path, vix, metadata={'source': 'Yahoo', 'adjustment': 'unadjusted'})
                 return vix.loc[start_date:end_date]
             except Exception as e:
                 logger.warning(f"Yahoo VIX fetch failed: {e}")
@@ -795,13 +731,13 @@ class HybridQCDataSource:
 
     def _get_spy_cached(self, start_date: str, end_date: str, resolution: str):
         """获取 SPY 完整历史（优先 source-specific parquet 缓存）"""
-        qc_path = _get_cache_path('SPY', source='QuantConnect', adjustment='adjusted')
-        yahoo_path = _get_cache_path('SPY', source='Yahoo', adjustment='adjusted')
+        qc_path = cache.get_path('SPY', source='QuantConnect', adjustment='adjusted', frequency=resolution)
+        yahoo_path = cache.get_path('SPY', source='Yahoo', adjustment='adjusted', frequency=resolution)
 
         for cache_path, source in [(qc_path, 'QuantConnect'), (yahoo_path, 'Yahoo')]:
-            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            if cache.is_valid(cache_path, ttl_days=cache.frequency_ttl(resolution)):
                 try:
-                    spy = _load_cache(cache_path, expected_source=source, expected_adjustment='adjusted')
+                    spy = cache.load(cache_path, expected={'source': source, 'adjustment': 'adjusted'})
                     spy = _normalize_index(spy)
                     return spy.loc[start_date:end_date]
                 except Exception as e:
@@ -816,7 +752,7 @@ class HybridQCDataSource:
                     df = self.qc._read_lean_data('SPY', resolution)
                 if df is not None and 'Close' in df.columns:
                     spy = _normalize_index(df['Close'])
-                    _save_cache(qc_path, spy, source='QuantConnect', adjustment='adjusted')
+                    cache.save(qc_path, spy, metadata={'source': 'QuantConnect', 'adjustment': 'adjusted'})
                     return spy.loc[start_date:end_date]
             except Exception as e:
                 logger.warning(f"QC SPY fetch failed: {e}")
@@ -827,7 +763,7 @@ class HybridQCDataSource:
                 import yfinance as yf
                 spy = yf.Ticker('SPY').history(period='max')['Close']
                 spy = _normalize_index(spy)
-                _save_cache(yahoo_path, spy, source='Yahoo', adjustment='adjusted')
+                cache.save(yahoo_path, spy, metadata={'source': 'Yahoo', 'adjustment': 'adjusted'})
                 return spy.loc[start_date:end_date]
             except Exception as e:
                 logger.warning(f"Yahoo SPY fetch failed: {e}")
@@ -965,13 +901,13 @@ if __name__ == '__main__':
             adj = 'unadjusted'
         else:
             adj = 'adjusted'
-        cache_path = _get_cache_path(symbol, source='QuantConnect', adjustment=adj)
+        cache_path = cache.get_path(symbol, source='QuantConnect', adjustment=adj, frequency=resolution)
         if not os.path.exists(cache_path):
             # 可能是 Yahoo 回退缓存
-            cache_path = _get_cache_path(symbol, source='Yahoo', adjustment=adj)
+            cache_path = cache.get_path(symbol, source='Yahoo', adjustment=adj, frequency=resolution)
         if os.path.exists(cache_path):
             try:
-                metadata = get_cache_metadata(cache_path)
+                metadata = cache.get_metadata(cache_path)
                 print(f"  {os.path.basename(cache_path)}: "
                       f"source={metadata.get('source')}, "
                       f"adjustment={metadata.get('adjustment')}, "

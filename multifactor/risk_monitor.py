@@ -26,6 +26,10 @@ except ImportError:
 ALERTS_DIR = os.path.join(os.path.dirname(__file__), 'alerts')
 os.makedirs(ALERTS_DIR, exist_ok=True)
 
+# 持久化状态目录
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+
 
 class RiskMonitor:
     """风险监控器"""
@@ -37,7 +41,9 @@ class RiskMonitor:
                  daily_loss_limit=0.03,
                  vix_pause_level=35.0,
                  alert_callbacks=None,
-                 alert_manager=None):
+                 alert_manager=None,
+                 state_file=None,
+                 kill_switch_file=None):
         """
         初始化风险监控器
         
@@ -49,6 +55,8 @@ class RiskMonitor:
             vix_pause_level: float, VIX暂停交易水平
             alert_callbacks: list, 告警回调函数列表
             alert_manager: AlertManager, 可选统一告警管理器（P2修复）
+            state_file: str, 可选持久化状态文件路径
+            kill_switch_file: str, 可选 kill switch 文件路径
         """
         self.limits = {
             'max_drawdown': max_drawdown_limit,
@@ -67,12 +75,23 @@ class RiskMonitor:
         self._lock = threading.Lock()
         self._trading_halted = False
         
+        # P1: 持久化相关状态
+        self.state_file = state_file or os.path.join(DATA_DIR, 'risk_state.json')
+        self.kill_switch_file = kill_switch_file or os.path.join(DATA_DIR, 'kill_switch')
+        self._kill_switch_triggered = False
+        self.halt_reason = None
+        self.halt_time = None
+        self.max_dd_seen = 0.0
+        
         self.alerts_history = []
         self.nav_history = []
         self.position_history = []
         
         # 风险状态
         self.risk_level = 'NORMAL'  # NORMAL, ELEVATED, HIGH, CRITICAL
+        
+        # 启动时加载历史状态
+        self._load_state()
         
         logger.info(f"[OK] Risk monitor started")
         logger.info(f"   Max drawdown limit: {max_drawdown_limit:.1%}")
@@ -91,18 +110,88 @@ class RiskMonitor:
         with self._lock:
             self._trading_halted = value
     
-    def halt_trading(self, reason):
-        """暂停交易并记录原因"""
-        self.trading_halted = True
+    def _load_state(self):
+        """从历史状态文件加载风控状态"""
+        if not os.path.exists(self.state_file):
+            return
+        try:
+            with open(self.state_file, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                return
+            with self._lock:
+                self._trading_halted = bool(state.get('trading_halted', False))
+                self.halt_reason = state.get('halt_reason')
+                halt_time_str = state.get('halt_time')
+                self.halt_time = datetime.fromisoformat(halt_time_str) if halt_time_str else None
+                self.max_dd_seen = float(state.get('max_dd_seen', 0.0))
+                self._kill_switch_triggered = bool(state.get('kill_switch_triggered', False))
+            logger.info(f"[OK] Loaded risk state from {self.state_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load risk state from {self.state_file}: {e}")
+    
+    def persist_state(self):
+        """将风控状态持久化到磁盘"""
+        try:
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            with self._lock:
+                state = {
+                    'trading_halted': self._trading_halted,
+                    'halt_reason': self.halt_reason,
+                    'halt_time': self.halt_time.isoformat() if self.halt_time else None,
+                    'max_dd_seen': self.max_dd_seen,
+                    'kill_switch_triggered': self._kill_switch_triggered,
+                    'persisted_at': datetime.now().isoformat(),
+                }
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to persist risk state: {e}")
+    
+    def halt_trading(self, reason, alert_type='HALT'):
+        """暂停交易并记录原因，同时持久化状态"""
+        with self._lock:
+            self._trading_halted = True
+            self.halt_reason = reason
+            self.halt_time = datetime.now()
         logger.critical(f"[HALT] Trading halted: {reason}")
+        if alert_type:
+            self._trigger_alert(alert_type, f'Trading halted: {reason}', {'reason': reason})
+        self.persist_state()
     
     def resume_trading(self, reason=None):
-        """恢复交易"""
-        self.trading_halted = False
+        """恢复交易，同时持久化状态"""
+        with self._lock:
+            self._trading_halted = False
+            self.halt_reason = None
+            self.halt_time = None
         msg = f"Trading resumed"
         if reason:
             msg = f"Trading resumed: {reason}"
         logger.info(f"[RESUME] {msg}")
+        self.persist_state()
+    
+    def check_remote_kill_switch(self):
+        """
+        检查远程 kill switch：
+        - 文件 data/kill_switch 存在
+        - 或环境变量 MULTIFACTOR_KILL_SWITCH=1
+        
+        返回:
+            bool: 是否被触发
+        """
+        if self._kill_switch_triggered:
+            return True
+        triggered = (
+            os.environ.get('MULTIFACTOR_KILL_SWITCH') == '1'
+            or os.path.exists(self.kill_switch_file)
+        )
+        if triggered:
+            self._kill_switch_triggered = True
+            reason = 'Remote kill switch triggered'
+            logger.critical(f"[KILL_SWITCH] {reason}")
+            self.halt_trading(reason, alert_type='KILL_SWITCH')
+        return self._kill_switch_triggered
     
     
     def check_drawdown(self, current_nav):
@@ -131,14 +220,16 @@ class RiskMonitor:
         peak = nav_series.cummax().iloc[-1]
         drawdown = (current_nav - peak) / peak
         
+        # P1: 跟踪历史最大回撤幅度
+        if drawdown < 0 and abs(drawdown) > self.max_dd_seen:
+            self.max_dd_seen = abs(drawdown)
+        
         if drawdown <= -self.limits['max_drawdown']:
-            self._trigger_alert(
-                'DRAWDOWN',
+            self.halt_trading(
                 f'Drawdown exceeded: {drawdown:.2%} (limit: {-self.limits["max_drawdown"]:.1%})',
-                {'current_nav': current_nav, 'peak': peak, 'drawdown': drawdown}
+                alert_type='DRAWDOWN'
             )
             # P0: 回撤触发时真正暂停交易
-            self.halt_trading(f'Drawdown exceeded: {drawdown:.2%}')
             return True
         
         return False
@@ -205,33 +296,40 @@ class RiskMonitor:
             return False
         
         if daily_return <= -self.limits['daily_loss']:
-            self._trigger_alert(
-                'DAILY_LOSS',
+            self.halt_trading(
                 f'Daily loss exceeded: {daily_return:.2%} (limit: {-self.limits["daily_loss"]:.1%})',
-                {'daily_return': daily_return}
+                alert_type='DAILY_LOSS'
             )
             # P0: 日亏损触发时真正暂停交易
-            self.halt_trading(f'Daily loss exceeded: {daily_return:.2%}')
             return True
         return False
     
     def check_vix_level(self, vix_value):
         """
         检查VIX水平
-        
+
+        P2 修复：VIX 不可用时保守跳过，不进行交易决策。
+
         参数:
-            vix_value: float, 当前VIX
-        
+            vix_value: float or None, 当前VIX
+
         返回:
             str: 风险等级
         """
+        if vix_value is None:
+            logger.warning("[VIX] VIX unavailable, conservatively skipping VIX risk check")
+            return self.risk_level
+        try:
+            vix_value = float(vix_value)
+        except (TypeError, ValueError):
+            logger.warning("[VIX] Invalid VIX value: %s, skipping check", vix_value)
+            return self.risk_level
+
         if vix_value >= self.limits['vix_pause']:
             self.risk_level = 'CRITICAL'
-            self.trading_halted = True
-            self._trigger_alert(
-                'VIX_HIGH',
-                f'VIX extremely high: {vix_value:.1f} (trading paused: {self.limits["vix_pause"]})',
-                {'vix': vix_value, 'trading_halted': True}
+            self.halt_trading(
+                f'VIX extremely high: {vix_value:.1f} (limit: {self.limits["vix_pause"]})',
+                alert_type='VIX_HIGH'
             )
         elif vix_value >= 30:
             self.risk_level = 'HIGH'
@@ -383,6 +481,9 @@ class RiskMonitor:
         return {
             'risk_level': self.risk_level,
             'trading_halted': self.trading_halted,
+            'halt_reason': self.halt_reason,
+            'halt_time': self.halt_time.isoformat() if self.halt_time else None,
+            'max_dd_seen': self.max_dd_seen,
             'total_alerts': len(self.alerts_history),
             'recent_alerts': self.alerts_history[-5:] if self.alerts_history else [],
             'limits': self.limits,
@@ -394,6 +495,9 @@ class RiskMonitor:
             'generated_at': datetime.now().isoformat(),
             'risk_level': self.risk_level,
             'trading_halted': self.trading_halted,
+            'halt_reason': self.halt_reason,
+            'halt_time': self.halt_time.isoformat() if self.halt_time else None,
+            'max_dd_seen': self.max_dd_seen,
             'alerts_count': len(self.alerts_history),
             'alerts_by_type': {},
             'limits': self.limits,

@@ -6,6 +6,8 @@
 import time
 import logging
 import threading
+import json
+import os
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
@@ -17,6 +19,13 @@ try:
     JSON_LOGGER_AVAILABLE = True
 except ImportError:
     JSON_LOGGER_AVAILABLE = False
+
+# 持久化状态目录
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# 默认保留的最近强平事件数量
+DEFAULT_MAX_PENDING_LIQUIDATIONS = 10
 
 
 class IntradayMonitor:
@@ -35,7 +44,9 @@ class IntradayMonitor:
                  vix_emergency_level=35.0,
                  max_intraday_dd=0.10,
                  single_stock_limit=0.05,
-                 max_total_drawdown=0.15):
+                 max_total_drawdown=0.15,
+                 state_file=None,
+                 max_pending_liquidations=DEFAULT_MAX_PENDING_LIQUIDATIONS):
         """
         初始化盘中监控
         
@@ -47,6 +58,8 @@ class IntradayMonitor:
             max_intraday_dd: float, 最大日内回撤
             single_stock_limit: float, 单只股票跌幅限制
             max_total_drawdown: float, 最大累计回撤（P1 修复）
+            state_file: str, 可选持久化状态文件路径
+            max_pending_liquidations: int, 保留的最近强平事件数量
         """
         self.executor = executor
         self.risk_monitor = risk_monitor
@@ -70,10 +83,16 @@ class IntradayMonitor:
         self.peak_nav = None
         
         # P1修复: 收盘时未执行的强平请求，待次日开盘再触发
-        self._pending_liquidation_reason = None
+        # P1修复: 使用队列保留最近 N 条强平事件，避免新事件覆盖旧原因
+        self.state_file = state_file or os.path.join(DATA_DIR, 'intraday_state.json')
+        self.max_pending_liquidations = max_pending_liquidations
+        self._pending_liquidation_reasons = []
         self.on_vix_spike: Optional[Callable] = None
         self.on_drawdown: Optional[Callable] = None
         self.on_single_stock_drop: Optional[Callable] = None
+        
+        # 启动时加载历史状态
+        self._load_state()
         
         logger.info("[OK] Intraday monitor initialized")
         logger.info(f"   VIX emergency threshold: {vix_emergency_level}")
@@ -92,6 +111,58 @@ class IntradayMonitor:
         """交易暂停状态：统一写入 RiskMonitor"""
         if self.risk_monitor:
             self.risk_monitor.trading_halted = value
+    
+    def _load_state(self):
+        """加载历史状态（如存在）"""
+        if not os.path.exists(self.state_file):
+            return
+        try:
+            with open(self.state_file, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                return
+            self.daily_high_nav = state.get('daily_high_nav')
+            self.peak_nav = state.get('peak_nav')
+            current_date_str = state.get('current_date')
+            self._current_date = (
+                datetime.fromisoformat(current_date_str).date()
+                if current_date_str else None
+            )
+            self._pending_liquidation_reasons = state.get('pending_liquidation_reasons', [])
+            if not isinstance(self._pending_liquidation_reasons, list):
+                self._pending_liquidation_reasons = []
+            logger.info(f"[OK] Loaded intraday state from {self.state_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load intraday state from {self.state_file}: {e}")
+    
+    def persist_state(self):
+        """将盘中状态持久化到磁盘"""
+        try:
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            state = {
+                'daily_high_nav': self.daily_high_nav,
+                'peak_nav': self.peak_nav,
+                'current_date': self._current_date.isoformat() if self._current_date else None,
+                'pending_liquidation_reasons': self._pending_liquidation_reasons,
+                'monitoring': self.monitoring,
+                'persisted_at': datetime.now().isoformat(),
+            }
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to persist intraday state: {e}")
+    
+    def _record_pending_liquidation(self, reason):
+        """记录一条待执行的强平事件（带时间戳），并持久化"""
+        entry = {
+            'reason': reason,
+            'timestamp': datetime.now().isoformat(),
+        }
+        self._pending_liquidation_reasons.append(entry)
+        # 保留最近 N 条
+        while len(self._pending_liquidation_reasons) > self.max_pending_liquidations:
+            self._pending_liquidation_reasons.pop(0)
+        self.persist_state()
     
     def start(self, daemon=True):
         """启动监控线程
@@ -144,7 +215,7 @@ class IntradayMonitor:
                     logger.info(f"[NEW_DAY] New day, intraday high reset: {today}")
 
                 # P1修复: 若收盘期间触发了强平但市场关闭，开盘后执行
-                if self._pending_liquidation_reason:
+                while self._pending_liquidation_reasons:
                     try:
                         market_open = self.executor.market_is_open()
                     except AttributeError:
@@ -152,7 +223,9 @@ class IntradayMonitor:
                     if market_open:
                         self._execute_pending_liquidation()
                     else:
-                        logger.info(f"[PENDING] Pending liquidation reason: {self._pending_liquidation_reason}, waiting for market open...")
+                        reasons = [r['reason'] for r in self._pending_liquidation_reasons]
+                        logger.info(f"[PENDING] Pending liquidation reasons: {reasons}, waiting for market open...")
+                        break
 
                 self._check_all()
             except Exception as e:
@@ -164,6 +237,10 @@ class IntradayMonitor:
         """执行所有检查"""
         now = datetime.now()
         self.last_check_time = now
+        
+        # P1: 远程 kill switch 检查
+        if self.risk_monitor and hasattr(self.risk_monitor, 'check_remote_kill_switch'):
+            self.risk_monitor.check_remote_kill_switch()
         
         # 1. 检查 VIX
         self._check_vix()
@@ -338,10 +415,10 @@ class IntradayMonitor:
         """
         P1修复: 执行收盘期间记录下来的待处理强平，避免订单挂到次日开盘。
         """
-        if not self._pending_liquidation_reason:
+        if not self._pending_liquidation_reasons:
             return
-        reason = self._pending_liquidation_reason
-        self._pending_liquidation_reason = None
+        entry = self._pending_liquidation_reasons.pop(0)
+        reason = entry.get('reason', 'unknown')
         try:
             count = self.executor.liquidate_all()
             logger.critical(f"[OK] Executed pending liquidation: {count} positions, reason: {reason}")
@@ -349,7 +426,9 @@ class IntradayMonitor:
         except Exception as e:
             logger.critical(f"[ERROR] Pending liquidation execution failed: {e}")
             # 失败时重新标记待处理，下次循环再试
-            self._pending_liquidation_reason = reason
+            self._pending_liquidation_reasons.insert(0, entry)
+        finally:
+            self.persist_state()
 
     def _emergency_liquidation(self, reason):
         """
@@ -375,7 +454,7 @@ class IntradayMonitor:
 
         if not market_open:
             # P1修复: 市场关闭时记录待平仓，不提交订单，避免挂单到次日开盘
-            self._pending_liquidation_reason = reason
+            self._record_pending_liquidation(reason)
             logger.critical("[PENDING] Market closed, liquidation recorded and will trigger on next open")
             logger.critical("   Trading paused, please check account status")
             logger.critical("[WARN] Trading paused, please manually check and resume")
@@ -390,6 +469,7 @@ class IntradayMonitor:
         self._confirm_liquidation()
 
         logger.critical("[WARN] Trading paused, please manually check and resume")
+        self.persist_state()
     
     def _confirm_liquidation(self, max_retries=3, wait_sec=5):
         """P1: 确认平仓是否真正完成，未完成则重试"""
@@ -431,8 +511,7 @@ class IntradayMonitor:
 
             if not market_open:
                 # P1修复: 收盘时记录整体待平仓，不提交订单，避免挂单到次日开盘
-                if not self._pending_liquidation_reason:
-                    self._pending_liquidation_reason = f"{symbol} {reason}"
+                self._record_pending_liquidation(f"{symbol} {reason}")
                 logger.critical(f"[PENDING] Market not open, {symbol} liquidation recorded and will trigger after open")
                 return
 
@@ -473,6 +552,7 @@ class IntradayMonitor:
             'vix_threshold': self.vix_emergency_level,
             'drawdown_limit': self.max_intraday_dd,
             'total_drawdown_limit': self.max_total_drawdown,
+            'pending_liquidation_reasons': self._pending_liquidation_reasons,
         }
 
     # ------------------------------------------------------------------
@@ -484,7 +564,8 @@ class IntradayMonitor:
         """手动恢复交易，重置暂停状态。"""
         logger.warning("[RESUME] Trading manually resumed")
         self.trading_halted = False
-        self._pending_liquidation_reason = None
+        self._pending_liquidation_reasons = []
+        self.persist_state()
         return {'status': 'RESUMED', 'trading_halted': False}
 
 

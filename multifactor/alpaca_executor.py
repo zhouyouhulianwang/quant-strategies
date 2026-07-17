@@ -64,6 +64,13 @@ try:
 except ImportError:
     ALERT_MGR_AVAILABLE = False
 
+# P2修复：引入结构化订单日志
+try:
+    from json_logger import log_trade_event, log_risk_event
+    JSON_LOGGER_AVAILABLE = True
+except ImportError:
+    JSON_LOGGER_AVAILABLE = False
+
 # 导入统一撮合参数（Critical #2 修复：回测与 live 共享执行假设）
 try:
     from matching_engine import ExecutionParameters, from_config
@@ -162,6 +169,50 @@ except ImportError as e:
         OPEN = "open"
         CLOSED = "closed"
         ALL = "all"
+
+    # Fallback request dataclasses for mock mode without alpaca-py SDK
+    class MarketOrderRequest:
+        def __init__(self, *, symbol, qty, side, time_in_force, client_order_id=None):
+            self.symbol = symbol
+            self.qty = qty
+            self.side = side
+            self.time_in_force = time_in_force
+            self.client_order_id = client_order_id
+            self.limit_price = None
+
+    class LimitOrderRequest:
+        def __init__(self, *, symbol, qty, side, time_in_force, limit_price, client_order_id=None):
+            self.symbol = symbol
+            self.qty = qty
+            self.side = side
+            self.time_in_force = time_in_force
+            self.limit_price = limit_price
+            self.client_order_id = client_order_id
+
+    class GetOrdersRequest:
+        def __init__(self, *, status=None, limit=100, until=None, after=None):
+            self.status = status
+            self.limit = limit
+            self.until = until
+            self.after = after
+
+    class StockLatestTradeRequest:
+        def __init__(self, symbol_or_symbols):
+            self.symbol_or_symbols = symbol_or_symbols
+
+    class StockLatestQuoteRequest:
+        def __init__(self, symbol_or_symbols):
+            self.symbol_or_symbols = symbol_or_symbols
+
+    class StockBarsRequest:
+        def __init__(self, symbol_or_symbols, timeframe, start, end):
+            self.symbol_or_symbols = symbol_or_symbols
+            self.timeframe = timeframe
+            self.start = start
+            self.end = end
+
+    class TimeFrame:
+        Day = 'Day'
 
 
 # ============================================================
@@ -325,23 +376,23 @@ class AlpacaPaperExecutor:
             limit_order_offset_pct: float, 限价单偏移比例（默认 0.1%）
             alert_manager: AlertManager, 可选告警管理器（P2修复）
         """
-        # 尝试从 .env 文件读取（不影响已存在的环境变量）
+        # P1 修复：从 .env 读取仅作为本地 fallback，不注入全局 os.environ
+        # 只读取白名单变量（ALPACA_*），避免泄露或覆盖其他环境变量
+        env_values = {}
         env_path = os.path.join(os.path.dirname(__file__), '.env')
         if os.path.exists(env_path) and not mock:
-            with open(env_path, 'r') as f:
+            with open(env_path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    if '=' in line and not line.startswith('#') and not line.strip().startswith('ALPACA'):
-                        # 只读取非 ALPACA 开头的变量？不，应该读取所有
-                        pass
-                    if '=' in line and not line.startswith('#'):
-                        key, value = line.strip().split('=', 1)
-                        # 不要覆盖已存在的环境变量
-                        if key not in os.environ:
-                            os.environ[key] = value
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    key, value = line.split('=', 1)
+                    if key.startswith('ALPACA'):
+                        env_values[key] = value
 
-        self.api_key = api_key or os.getenv('ALPACA_API_KEY')
-        self.api_secret = api_secret or os.getenv('ALPACA_API_SECRET')
-        self.base_url = base_url or os.getenv('ALPACA_BASE_URL')
+        self.api_key = api_key or env_values.get('ALPACA_API_KEY') or os.getenv('ALPACA_API_KEY')
+        self.api_secret = api_secret or env_values.get('ALPACA_API_SECRET') or os.getenv('ALPACA_API_SECRET')
+        self.base_url = base_url or env_values.get('ALPACA_BASE_URL') or os.getenv('ALPACA_BASE_URL')
         self.paper = paper
         self.mock = mock
         self.require_live_confirmation = require_live_confirmation
@@ -682,9 +733,6 @@ class AlpacaPaperExecutor:
         if not self.data_client:
             return None
         try:
-            from alpaca.data.requests import StockBarsRequest
-            from alpaca.data.timeframe import TimeFrame
-
             end = datetime.now()
             start = end - timedelta(days=period * 2 + 5)
             request = StockBarsRequest(
@@ -907,6 +955,13 @@ class AlpacaPaperExecutor:
             self._send_alert('order_failed', symbol, side, qty, 'invalid_side')
             return None
 
+        # P1: 远程 kill switch 检查（复用 RiskMonitor 的状态）
+        if self.risk_monitor and hasattr(self.risk_monitor, 'check_remote_kill_switch'):
+            if self.risk_monitor.check_remote_kill_switch() is True:
+                logger.error(f"[ERROR] Kill switch active, rejecting order submission: {symbol} {side}")
+                self._send_alert('order_failed', symbol, side, qty, 'kill_switch')
+                return None
+
         # P0: 交易暂停状态统一由 RiskMonitor 持有
         if self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False):
             logger.error(f"[ERROR] Trading halted, rejecting order submission: {symbol} {side}")
@@ -983,6 +1038,19 @@ class AlpacaPaperExecutor:
             logger.info(f"[OK] Order submitted: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
             result = self._order_to_dict(order)
             result['client_order_id'] = client_order_id
+            # P2 修复：订单全生命周期结构化日志
+            try:
+                if JSON_LOGGER_AVAILABLE:
+                    log_trade_event(
+                        symbol=symbol,
+                        side=side,
+                        qty=int(result.get('qty', 0)) or int(qty),
+                        price=float(result.get('filled_avg_price', 0.0)) or 0.0,
+                        status=result.get('status', 'submitted'),
+                        order_id=result.get('id', client_order_id),
+                    )
+            except Exception as e:
+                logger.debug(f"Structured order log failed: {e}")
             # M8：成功后重置连续拒绝计数
             self._consecutive_rejections = 0
             # P1-4 修复：对成功卖出的订单记录 PDT
@@ -1056,18 +1124,75 @@ class AlpacaPaperExecutor:
             return False
 
     def get_orders(self, status='open'):
-        """获取订单列表"""
+        """获取订单列表（保持兼容，limit=100）"""
         if not self.trading_client:
             return []
 
         try:
+            # mock 模式或无 SDK 时直接调用 fake client，避免引用未定义 SDK 类
+            if not ALPACA_AVAILABLE or isinstance(self.trading_client, _FakeAlpacaClient):
+                orders = self.trading_client.get_orders(None)
+                orders_dicts = [self._order_to_dict(o) for o in orders]
+                if status.lower() != 'all':
+                    orders_dicts = [o for o in orders_dicts if o.get('status', '').lower() == status.lower()]
+                logger.info(f"[ORDERS] Fetched {len(orders_dicts)} mock orders (status={status})")
+                return orders_dicts
+
             status_enum = QueryOrderStatus.OPEN if status.lower() == 'open' else QueryOrderStatus.ALL
             request = GetOrdersRequest(status=status_enum, limit=100)
             orders = self.trading_client.get_orders(request)
-            return [self._order_to_dict(o) for o in orders]
+            orders_dicts = [self._order_to_dict(o) for o in orders]
+            logger.info(f"[ORDERS] Fetched {len(orders_dicts)} orders (status={status})")
+            return orders_dicts
         except (APIError, RequestException, ConnectionError, Timeout) as e:
             logger.error(f"Failed to get orders: {e}")
             return []
+
+    def get_all_orders(self, status='all', page_size=100, max_pages=100) -> List[Dict]:
+        """
+        P2 修复：循环分页获取所有历史订单，直到取完或达到 max_pages。
+        兼容 alpaca-py SDK：使用 until 按时间切片。
+        """
+        if not self.trading_client:
+            logger.info("[ORDERS] Mock mode: returning all mock orders")
+            return self.get_orders(status='all')
+
+        # mock 模式或无 SDK 时 fake client 无分页，直接返回全部
+        if not ALPACA_AVAILABLE or isinstance(self.trading_client, _FakeAlpacaClient):
+            return self.get_orders(status='all')
+
+        status_enum = QueryOrderStatus.OPEN if status.lower() == 'open' else QueryOrderStatus.ALL
+        all_orders = []
+        current_until = None
+        pages = 0
+
+        while pages < max_pages:
+            pages += 1
+            try:
+                request = GetOrdersRequest(
+                    status=status_enum,
+                    limit=page_size,
+                    until=current_until,
+                )
+                batch = self.trading_client.get_orders(request)
+                batch_dicts = [self._order_to_dict(o) for o in batch]
+                if not batch_dicts:
+                    break
+                all_orders.extend(batch_dicts)
+                # 本批最旧订单的提交时间作为下一批 until（不含该时间）
+                oldest = min(batch_dicts, key=lambda o: o.get('submitted_at') or '9999')
+                submitted_at = oldest.get('submitted_at')
+                if not submitted_at or submitted_at == current_until:
+                    break
+                current_until = submitted_at
+                if len(batch_dicts) < page_size:
+                    break
+            except (APIError, RequestException, ConnectionError, Timeout) as e:
+                logger.error(f"Failed to get orders page {pages}: {e}")
+                break
+
+        logger.info(f"[ORDERS] get_all_orders fetched total {len(all_orders)} orders across {pages} page(s)")
+        return all_orders
 
     def get_order_by_id(self, order_id: str) -> Optional[Dict]:
         """通过订单 ID 获取订单"""
@@ -1076,10 +1201,31 @@ class AlpacaPaperExecutor:
 
         try:
             order = self.trading_client.get_order_by_id(order_id)
-            return self._order_to_dict(order)
+            result = self._order_to_dict(order)
+            logger.info(f"[ORDER_STATUS] {order_id} status={result.get('status')} filled={result.get('filled_qty')}/{result.get('qty')}")
+            return result
         except (APIError, RequestException, ConnectionError, Timeout) as e:
             logger.warning(f"Get order {order_id} failed: {e}")
             return None
+
+    def cancel_order(self, order_id: str) -> bool:
+        """撤销指定订单"""
+        if not self.trading_client:
+            logger.warning(f"Mock mode: cannot cancel order {order_id}")
+            return True
+        try:
+            self.trading_client.cancel_order_by_id(order_id)
+            logger.info(f"[OK] Order canceled: {order_id}")
+            # P2 修复：结构化日志
+            if JSON_LOGGER_AVAILABLE:
+                try:
+                    log_trade_event(symbol='', side='cancel', qty=0, price=0.0, status='CANCELLED', order_id=order_id)
+                except Exception as e:
+                    logger.debug(f"Structured cancel log failed: {e}")
+            return True
+        except (APIError, RequestException, ConnectionError, Timeout) as e:
+            logger.error(f"Failed to cancel order {order_id} failed: {e}")
+            return False
 
     def market_is_open(self):
         """检查市场是否开盘"""
@@ -1271,19 +1417,6 @@ class AlpacaPaperExecutor:
         
         return report
 
-    def cancel_order(self, order_id: str) -> bool:
-        """撤销指定订单"""
-        if not self.trading_client:
-            logger.warning(f"Mock mode: cannot cancel order {order_id}")
-            return True
-        try:
-            self.trading_client.cancel_order_by_id(order_id)
-            logger.info(f"[OK] Order canceled: {order_id}")
-            return True
-        except (APIError, RequestException, ConnectionError, Timeout) as e:
-            logger.error(f"Failed to cancel order {order_id} failed: {e}")
-            return False
-
     def _mock_account(self):
         """模拟账户信息"""
         return {
@@ -1304,6 +1437,8 @@ class AlpacaPaperExecutor:
         """模拟订单（同时更新本地持仓和现金）"""
         order_id = f"mock-{datetime.now().timestamp()}"
 
+        logger.info(f"[MOCK] Order submitted: {side.upper()} {qty} {symbol} (orderID: {order_id})")
+
         # 优先使用 fake client 更新持仓，保证 mock 模式下 get_positions/账户权益一致
         if self.trading_client and hasattr(self.trading_client, 'submit_order'):
             try:
@@ -1321,10 +1456,11 @@ class AlpacaPaperExecutor:
             req.limit_price = None
 
             order = self.trading_client.submit_order(req)
+            logger.info(f"[ORDER] Mock order submitted: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
             return self._order_to_dict(order)
 
         # 无 fake client 兜底
-        logger.info(f"[MOCK] {side.upper()} {qty} {symbol} (orderID: {order_id})")
+        logger.info(f"[ORDER] [MOCK] {side.upper()} {qty} {symbol} (orderID: {order_id})")
         return {
             'id': order_id,
             'symbol': symbol,
@@ -1440,6 +1576,14 @@ class AlpacaExecutor:
     def get_orders(self, status='open'):
         return self.executor.get_orders(status)
 
+    def get_all_orders(self, status='all', page_size=100, max_pages=100):
+        """P2 修复：分页获取所有历史订单"""
+        return self.executor.get_all_orders(status=status, page_size=page_size, max_pages=max_pages)
+
+    def reconcile_positions(self, expected_cash=None, expected_positions=None) -> Dict:
+        """P2 修复：本地持仓与券商持仓对账"""
+        return self.executor.reconcile(expected_cash=expected_cash, expected_positions=expected_positions)
+
     def start_rebalance_session(self):
         return self.executor.start_rebalance_session()
 
@@ -1475,6 +1619,13 @@ class AlpacaExecutor:
             limit_price: float, 限价（单只股票时有效，多只股票自动计算）
             enable_rollback: bool, 失败时是否回滚已卖出仓位
         """
+        # P1: 远程 kill switch 检查（复用 RiskMonitor 的状态）
+        if self.executor.risk_monitor and hasattr(self.executor.risk_monitor, 'check_remote_kill_switch'):
+            if self.executor.risk_monitor.check_remote_kill_switch() is True:
+                logger.error("[ERROR] Kill switch active, rebalance rejected")
+                self.executor._send_alert('execution_error', 'rebalance_rejected', 'kill_switch')
+                return {'status': 'FAILED', 'reason': 'kill_switch'}
+
         # P0: 统一检查 trading_halted，若暂停则拒绝调仓
         if self.executor.risk_monitor and getattr(self.executor.risk_monitor, 'trading_halted', False):
             logger.error("[ERROR] Trading halted, rebalance rejected")

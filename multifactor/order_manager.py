@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
+from enum import Enum, auto
 import csv
 import os
 
@@ -47,6 +48,29 @@ except ImportError:
     ALERT_MGR_AVAILABLE = False
 
 
+class OrderState(str, Enum):
+    """P1/P2 修复：订单生命周期状态机"""
+    PENDING = 'PENDING'
+    SUBMITTED = 'SUBMITTED'
+    PARTIAL_FILLED = 'PARTIAL_FILLED'
+    FILLED = 'FILLED'
+    CANCELLED = 'CANCELLED'
+    FAILED = 'FAILED'
+    TIMEOUT = 'TIMEOUT'
+
+
+# 合法状态转换图：key=当前状态，value=允许的目标状态集合
+_VALID_TRANSITIONS = {
+    OrderState.PENDING: {OrderState.SUBMITTED, OrderState.FAILED, OrderState.CANCELLED},
+    OrderState.SUBMITTED: {OrderState.PARTIAL_FILLED, OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED, OrderState.TIMEOUT},
+    OrderState.PARTIAL_FILLED: {OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED, OrderState.TIMEOUT, OrderState.PARTIAL_FILLED},
+    OrderState.FILLED: set(),
+    OrderState.CANCELLED: set(),
+    OrderState.FAILED: set(),
+    OrderState.TIMEOUT: {OrderState.CANCELLED, OrderState.FAILED, OrderState.FILLED, OrderState.PARTIAL_FILLED},
+}
+
+
 class OrderManager:
     """订单管理器 - 跟踪订单状态，处理成交确认"""
     
@@ -66,6 +90,9 @@ class OrderManager:
         self.poll_interval = poll_interval
         self.max_makeup_depth = max_makeup_depth
         self.orders_log = []
+        # P1/P2 修复：维护订单状态机
+        self.order_states: Dict[str, OrderState] = {}
+        self.order_metadata: Dict[str, Dict] = {}
 
         # P2修复：接入统一告警管理器
         self.alert_manager = alert_manager
@@ -79,6 +106,66 @@ class OrderManager:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
                 logger.debug(f"Alert send failed: {e}")
+
+    def _transition(self, order_id: str, new_state: OrderState, symbol: str = '', qty: int = 0,
+                    filled: int = 0, reason: str = '', source: str = 'state_machine'):
+        """
+        P1/P2 修复：订单状态转换与结构化日志。
+        检查状态转换合法性，记录 warning 并写入结构化日志。
+        """
+        if not order_id:
+            return
+        old_state = self.order_states.get(order_id, OrderState.PENDING)
+        # 允许重复进入同一状态
+        if old_state == new_state:
+            self.order_states[order_id] = new_state
+            return
+        valid = _VALID_TRANSITIONS.get(old_state, set())
+        if new_state not in valid:
+            logger.warning(
+                f"[STATE_MACHINE] Invalid order state transition: {order_id} "
+                f"{old_state.value} -> {new_state.value} (source={source}, reason={reason})"
+            )
+            # 仍然记录目标状态，但保留原状态作为 metadata 用于审计
+            self.order_metadata.setdefault(order_id, {})['invalid_transition'] = {
+                'from': old_state.value,
+                'to': new_state.value,
+                'source': source,
+                'reason': reason,
+            }
+            return
+        self.order_states[order_id] = new_state
+        log_payload = {
+            'order_id': order_id,
+            'symbol': symbol,
+            'qty': qty,
+            'filled': filled,
+            'state': new_state.value,
+            'previous_state': old_state.value,
+            'reason': reason,
+            'source': source,
+        }
+        # 统一全链路日志：关键状态转换点
+        if new_state in (OrderState.FILLED, OrderState.PARTIAL_FILLED):
+            logger.info(f"[ORDER_STATE] {order_id} {symbol} transitioned to {new_state.value}: filled={filled}/{qty} reason={reason}")
+        elif new_state in (OrderState.CANCELLED, OrderState.FAILED, OrderState.TIMEOUT):
+            logger.warning(f"[ORDER_STATE] {order_id} {symbol} transitioned to {new_state.value}: reason={reason}")
+        else:
+            logger.info(f"[ORDER_STATE] {order_id} {symbol} transitioned to {new_state.value}: reason={reason}")
+        # 结构化日志（JSON）
+        if JSON_LOGGER_AVAILABLE:
+            try:
+                log_trade_event(
+                    symbol=symbol or order_id,
+                    side=self.order_metadata.get(order_id, {}).get('side', ''),
+                    qty=filled or qty,
+                    price=0.0,
+                    status=new_state.value,
+                    order_id=order_id,
+                )
+            except Exception as e:
+                logger.debug(f"Structured state log failed: {e}")
+        self.order_metadata.setdefault(order_id, {}).update(log_payload)
 
     def _get_executor_attr(self, attr):
         """获取执行器属性，兼容 AlpacaPaperExecutor 和 AlpacaExecutor 包装器"""
@@ -121,6 +208,11 @@ class OrderManager:
         if hasattr(self.executor, 'cancel_order') and order_id:
             try:
                 cancel_ok = self.executor.cancel_order(order_id)
+                if cancel_ok:
+                    current_state = self.order_states.get(order_id)
+                    # P2 修复：TIMEOUT 是最终状态，不应被覆盖为 CANCELLED
+                    if current_state != OrderState.TIMEOUT:
+                        self._transition(order_id, OrderState.CANCELLED, symbol=symbol, qty=qty, reason='makeup_cancel_original', source='makeup')
             except (ConnectionError, TimeoutError, Timeout, RequestException, ValueError) as e:
                 logger.warning(f"[MAKEUP] Cancel original order {order_id} failed: {e}")
 
@@ -244,6 +336,8 @@ class OrderManager:
             reason = order.get('reason', 'rejected')
             logger.error(f"❌ {symbol} order rejected: {reason}")
             self._send_alert('order_failed', symbol, side, qty, reason)
+            rej_order_id = order.get('id', f'{symbol}-rejected')
+            self._transition(rej_order_id, OrderState.FAILED, symbol=symbol, qty=qty, reason=reason, source='submit_rejected')
             return {'status': 'REJECTED', 'symbol': symbol, 'reason': reason}
 
         if order is None:
@@ -252,6 +346,9 @@ class OrderManager:
             return {'status': 'FAILED', 'symbol': symbol, 'reason': 'submit_failed'}
         
         order_id = order['id']
+        # P1/P2 修复：初始化订单元数据并迁移到 SUBMITTED
+        self.order_metadata[order_id] = {'symbol': symbol, 'qty': qty, 'side': side}
+        self._transition(order_id, OrderState.SUBMITTED, symbol=symbol, qty=qty, reason='order_submitted', source='submit_and_wait')
         logger.info(f"[ORDER] Order submitted: {order_id} {side} {qty} {symbol}")
         
         # 2. 轮询等待成交
@@ -280,11 +377,13 @@ class OrderManager:
             final_status['remaining_qty'] = remaining_qty
 
             if final_status['status'] == 'filled':
+                self._transition(order_id, OrderState.FILLED, symbol=symbol, qty=qty, filled=filled_qty, reason='order_filled', source='poll_result')
                 logger.info(f"[OK] Order filled: {symbol} {filled_qty} shares @ ${final_status.get('filled_avg_price', 'N/A')}")
                 # 记录 PDT 成交
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
             elif final_status['status'] == 'partially_filled':
+                self._transition(order_id, OrderState.PARTIAL_FILLED, symbol=symbol, qty=qty, filled=filled_qty, reason='partial_fill', source='poll_result')
                 logger.warning(f"[PARTIAL] Partial fill: {symbol} {filled_qty}/{qty}")
                 # P2修复：部分成交发送告警
                 self._send_alert('order_partial_fill', symbol, side, filled_qty, qty, order_id)
@@ -299,7 +398,13 @@ class OrderManager:
                     )
                     if makeup:
                         final_status = self._merge_makeup_status(final_status, makeup, qty)
+                        if final_status.get('status') == 'filled':
+                            self._transition(order_id, OrderState.FILLED, symbol=symbol, qty=qty, filled=final_status.get('filled_qty', filled_qty), reason='filled_after_makeup', source='makeup')
+            elif final_status['status'] in ('canceled', 'expired'):
+                self._transition(order_id, OrderState.CANCELLED, symbol=symbol, qty=qty, filled=filled_qty, reason=final_status['status'], source='poll_result')
+                logger.warning(f"[WARN] Order {final_status['status']}: {symbol}")
             elif final_status['status'] == 'rejected':
+                self._transition(order_id, OrderState.FAILED, symbol=symbol, qty=qty, reason=final_status.get('reason', 'Unknown'), source='poll_result')
                 logger.error(f"[ERROR] Order rejected: {symbol} - {final_status.get('reason', 'Unknown')}")
                 # P2修复：订单被拒发送告警
                 self._send_alert('order_rejected', symbol, side, qty, final_status.get('reason', 'Unknown'), order_id)
@@ -312,6 +417,7 @@ class OrderManager:
         else:
             # 超时：尝试撤销订单
             logger.error(f"[TIMEOUT] Order timeout: {symbol} (waited {max_wait} s), attempting cancel...")
+            self._transition(order_id, OrderState.TIMEOUT, symbol=symbol, qty=qty, reason='wait_timeout', source='poll_result')
             if hasattr(self.executor, 'cancel_order'):
                 try:
                     self.executor.cancel_order(order_id)
@@ -336,6 +442,8 @@ class OrderManager:
                     'remaining_qty': remaining_qty,
                 }
                 self._log_order(timeout_result)
+                if filled_qty > 0:
+                    self._transition(order_id, OrderState.PARTIAL_FILLED, symbol=symbol, qty=qty, filled=filled_qty, reason='timeout_with_fill', source='timeout_recheck')
                 if remaining_qty > 0:
                     makeup = self._place_makeup_with_cancel(
                         order_id, symbol, remaining_qty, side, order_type, time_in_force, limit_price,
@@ -349,6 +457,7 @@ class OrderManager:
                         # 若补单完全成交，整体视为 filled；否则仍标记为 TIMEOUT
                         if merged['status'] == 'filled':
                             timeout_result['status'] = 'filled'
+                            self._transition(order_id, OrderState.FILLED, symbol=symbol, qty=qty, filled=timeout_result['filled_qty'], reason='filled_after_timeout_makeup', source='makeup')
                 return timeout_result
 
             self._log_order({

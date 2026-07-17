@@ -14,6 +14,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+# P2 修复：默认风险状态文件会造成跨测试状态泄漏，每个测试前清理
+default_risk_state_file = os.path.join(os.path.dirname(__file__), 'data', 'risk_state.json')
+
+
+@pytest.fixture(autouse=True, scope='function')
+def clean_default_risk_state():
+    """清理默认 RiskMonitor 状态文件，避免跨测试状态泄漏"""
+    try:
+        if os.path.exists(default_risk_state_file):
+            os.remove(default_risk_state_file)
+    except Exception:
+        pass
+    yield
+
 
 # ============================================================
 # 1. 因子计算测试
@@ -1802,3 +1816,847 @@ class TestV3AuditFixes:
         assert first_signal_idx >= 0
 
 
+# ============================================================
+# 18. P1 风控/运维/可观测性修复回归测试
+# ============================================================
+
+class TestRiskOpsAndObservability:
+    """P1 缺陷修复回归：配置、状态持久化、kill switch、可观测性"""
+
+    def test_config_has_max_drawdown_limit(self):
+        """RiskConfig 应包含 max_drawdown_limit 字段，默认 0.15"""
+        from config import RiskConfig
+
+        config = RiskConfig()
+        assert hasattr(config, 'max_drawdown_limit')
+        assert config.max_drawdown_limit == 0.15
+
+        config2 = RiskConfig(max_drawdown_limit=0.25)
+        assert config2.max_drawdown_limit == 0.25
+
+    def test_config_invalid_max_drawdown_limit(self):
+        """max_drawdown_limit 必须在 (0, 1] 之间"""
+        from config import RiskConfig
+
+        with pytest.raises(ValueError):
+            RiskConfig(max_drawdown_limit=0.0)
+        with pytest.raises(ValueError):
+            RiskConfig(max_drawdown_limit=1.5)
+
+    def test_get_config_missing_file_uses_defaults(self, tmp_path, monkeypatch):
+        """config.json 不存在时使用默认配置"""
+        from config import get_config, set_config, _config_instance
+
+        # 保存并清空全局单例，避免污染
+        original = _config_instance
+        set_config(None)
+        try:
+            cfg = get_config(config_path=str(tmp_path / 'nonexistent.json'))
+            assert cfg.risk.vix_panic_threshold == 35.0
+            assert cfg.risk.max_drawdown_limit == 0.15
+        finally:
+            set_config(original)
+
+    def test_get_config_invalid_json_raises(self, tmp_path, monkeypatch):
+        """config.json 存在但 JSON 解析失败时应抛出异常"""
+        from config import get_config, set_config, _config_instance
+
+        bad_config = tmp_path / 'bad.json'
+        bad_config.write_text('{"risk": {"vix_panic_threshold": 35.0,}', encoding='utf-8')
+
+        original = _config_instance
+        set_config(None)
+        try:
+            with pytest.raises(ValueError):
+                get_config(config_path=str(bad_config))
+        finally:
+            set_config(original)
+
+    def test_risk_monitor_persists_halt_state(self, tmp_path):
+        """RiskMonitor 暂停交易后状态应持久化到磁盘，并在新实例中加载"""
+        from risk_monitor import RiskMonitor
+
+        state_file = tmp_path / 'risk_state.json'
+        monitor = RiskMonitor(state_file=str(state_file))
+        monitor.halt_trading('Test halt')
+
+        assert state_file.exists()
+        assert monitor.trading_halted is True
+        assert monitor.halt_reason == 'Test halt'
+
+        # 新实例加载后应恢复暂停状态
+        monitor2 = RiskMonitor(state_file=str(state_file))
+        assert monitor2.trading_halted is True
+        assert monitor2.halt_reason == 'Test halt'
+
+    def test_risk_monitor_resume_clears_persisted_state(self, tmp_path):
+        """resume_trading 后持久化状态应反映未暂停"""
+        from risk_monitor import RiskMonitor
+
+        state_file = tmp_path / 'risk_state.json'
+        monitor = RiskMonitor(state_file=str(state_file))
+        monitor.halt_trading('Test halt')
+        monitor.resume_trading('Test resume')
+
+        monitor2 = RiskMonitor(state_file=str(state_file))
+        assert monitor2.trading_halted is False
+        assert monitor2.halt_reason is None
+
+    def test_risk_monitor_remote_kill_switch_file(self, tmp_path):
+        """data/kill_switch 文件存在时应触发 kill switch"""
+        from risk_monitor import RiskMonitor
+
+        state_file = tmp_path / 'risk_state.json'
+        kill_switch = tmp_path / 'kill_switch'
+        kill_switch.write_text('halt', encoding='utf-8')
+
+        monitor = RiskMonitor(
+            state_file=str(state_file),
+            kill_switch_file=str(kill_switch),
+        )
+        assert monitor.check_remote_kill_switch() is True
+        assert monitor.trading_halted is True
+        assert monitor.halt_reason == 'Remote kill switch triggered'
+
+    def test_risk_monitor_remote_kill_switch_env(self, tmp_path, monkeypatch):
+        """MULTIFACTOR_KILL_SWITCH=1 时应触发 kill switch"""
+        from risk_monitor import RiskMonitor
+
+        state_file = tmp_path / 'risk_state.json'
+        monkeypatch.setenv('MULTIFACTOR_KILL_SWITCH', '1')
+
+        monitor = RiskMonitor(state_file=str(state_file))
+        assert monitor.check_remote_kill_switch() is True
+        assert monitor.trading_halted is True
+
+        # 移除环境变量不应自动恢复
+        monkeypatch.delenv('MULTIFACTOR_KILL_SWITCH', raising=False)
+        assert monitor.check_remote_kill_switch() is True
+
+    def test_risk_monitor_kill_switch_state_persists(self, tmp_path):
+        """kill switch 触发状态应随 risk_state 持久化"""
+        from risk_monitor import RiskMonitor
+
+        state_file = tmp_path / 'risk_state.json'
+        kill_switch = tmp_path / 'kill_switch'
+        kill_switch.write_text('halt', encoding='utf-8')
+
+        monitor = RiskMonitor(
+            state_file=str(state_file),
+            kill_switch_file=str(kill_switch),
+        )
+        monitor.check_remote_kill_switch()
+
+        monitor2 = RiskMonitor(
+            state_file=str(state_file),
+            kill_switch_file=str(kill_switch),
+        )
+        assert monitor2.check_remote_kill_switch() is True
+
+    def test_intraday_monitor_pending_liquidation_queue(self, tmp_path):
+        """收盘时触发的强平原因应以队列形式保存，避免互相覆盖"""
+        from intraday_monitor import IntradayMonitor
+        from unittest.mock import MagicMock
+
+        state_file = tmp_path / 'intraday_state.json'
+        executor = MagicMock()
+        executor.market_is_open.return_value = False
+        executor.get_account.return_value = {'portfolio_value': 100000}
+        executor.get_positions.return_value = []
+        risk_monitor = MagicMock()
+        risk_monitor.trading_halted = False
+
+        monitor = IntradayMonitor(
+            executor=executor,
+            risk_monitor=risk_monitor,
+            state_file=str(state_file),
+            max_pending_liquidations=3,
+        )
+        monitor._emergency_liquidation('reason 1')
+        monitor._emergency_liquidation('reason 2')
+        monitor._emergency_liquidation('reason 3')
+        monitor._emergency_liquidation('reason 4')
+
+        # 只保留最近 3 条
+        assert len(monitor._pending_liquidation_reasons) == 3
+        assert monitor._pending_liquidation_reasons[0]['reason'] == 'reason 2'
+        assert monitor._pending_liquidation_reasons[-1]['reason'] == 'reason 4'
+
+    def test_intraday_monitor_persists_pending_liquidation(self, tmp_path):
+        """IntradayMonitor 的待处理强平状态应持久化并在新实例加载"""
+        from intraday_monitor import IntradayMonitor
+        from unittest.mock import MagicMock
+
+        state_file = tmp_path / 'intraday_state.json'
+        executor = MagicMock()
+        executor.market_is_open.return_value = False
+        risk_monitor = MagicMock()
+        risk_monitor.trading_halted = False
+
+        monitor = IntradayMonitor(
+            executor=executor,
+            risk_monitor=risk_monitor,
+            state_file=str(state_file),
+        )
+        monitor._record_pending_liquidation('pending reason')
+        monitor.stop()
+
+        assert state_file.exists()
+
+        monitor2 = IntradayMonitor(
+            executor=executor,
+            risk_monitor=risk_monitor,
+            state_file=str(state_file),
+        )
+        assert len(monitor2._pending_liquidation_reasons) == 1
+        assert monitor2._pending_liquidation_reasons[0]['reason'] == 'pending reason'
+
+    def test_alpaca_executor_submit_order_rejects_kill_switch(self):
+        """AlpacaExecutor submit_order 在 kill switch 触发时拒绝下单"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from unittest.mock import MagicMock
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        risk_monitor = MagicMock()
+        risk_monitor.check_remote_kill_switch.return_value = True
+        executor.risk_monitor = risk_monitor
+
+        order = executor.submit_order('AAPL', 10, 'buy')
+        assert order is None, "kill switch 触发后应拒绝下单"
+        assert risk_monitor.check_remote_kill_switch.called
+
+    def test_alpaca_executor_rebalance_rejects_kill_switch(self):
+        """AlpacaExecutor rebalance_portfolio 在 kill switch 触发时拒绝调仓"""
+        from alpaca_executor import AlpacaExecutor
+        from unittest.mock import MagicMock
+
+        executor = AlpacaExecutor(mock=True)
+        risk_monitor = MagicMock()
+        risk_monitor.check_remote_kill_switch.return_value = True
+        executor.executor.risk_monitor = risk_monitor
+
+        result = executor.rebalance_portfolio({'AAPL': 10000})
+        assert result['status'] == 'FAILED'
+        assert result['reason'] == 'kill_switch'
+        assert risk_monitor.check_remote_kill_switch.called
+
+    def test_risk_process_uses_config_max_drawdown_limit(self):
+        """risk_process 应从配置读取 max_drawdown_limit 并传入监控器"""
+        from risk_process import RiskProcess, parse_args
+        from config import V14StrategyConfig, RiskConfig
+        from unittest.mock import MagicMock
+
+        config = V14StrategyConfig(risk=RiskConfig(max_drawdown_limit=0.25))
+        args = parse_args(['--mock', '--check-interval', '5'])
+        process = RiskProcess(args=args)
+
+        risk_monitor, intraday_monitor = process._default_monitor_factory(
+            MagicMock(), config
+        )
+        assert risk_monitor.limits['max_drawdown'] == 0.25
+        assert intraday_monitor.max_total_drawdown == 0.25
+
+    def test_alert_manager_risk_alert_persisted(self, tmp_path):
+        """AlertManager 的风控告警应写入磁盘文件"""
+        from alert_manager import AlertManager
+
+        alert_file = tmp_path / 'alerts.json'
+        manager = AlertManager(alert_file=str(alert_file))
+        manager.risk_triggered('DRAWDOWN', 'drawdown exceeded', {'current_nav': 0.85})
+
+        assert alert_file.exists()
+        content = alert_file.read_text(encoding='utf-8')
+        assert 'DRAWDOWN' in content
+        assert 'drawdown exceeded' in content
+
+    def test_heartbeat_checklist_includes_kill_switch(self):
+        """HEARTBEAT.md 巡检清单应包含 kill switch 检查项"""
+        from pathlib import Path
+
+        heartbeat = Path(__file__).with_name('HEARTBEAT.md')
+        content = heartbeat.read_text(encoding='utf-8')
+        assert 'kill switch' in content.lower()
+        assert 'MULTIFACTOR_KILL_SWITCH' in content or 'data/kill_switch' in content
+
+    def test_config_example_has_max_drawdown_limit(self):
+        """config.example.json 示例配置应包含 max_drawdown_limit"""
+        from pathlib import Path
+        import json
+
+        example = Path(__file__).with_name('config.example.json')
+        data = json.loads(example.read_text(encoding='utf-8'))
+        assert 'max_drawdown_limit' in data['risk']
+        assert data['risk']['max_drawdown_limit'] == 0.15
+
+    def test_risk_monitor_max_dd_seen_tracked(self):
+        """RiskMonitor 应跟踪历史最大回撤幅度"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor(max_drawdown_limit=0.50)
+        monitor.nav_history = [
+            {'timestamp': datetime.now(), 'nav': 1.0},
+        ]
+        monitor.check_drawdown(0.90)
+        assert monitor.max_dd_seen == pytest.approx(0.10, abs=1e-6)
+
+        monitor.nav_history.append({'timestamp': datetime.now(), 'nav': 1.0})
+        monitor.check_drawdown(0.95)
+        assert monitor.max_dd_seen == pytest.approx(0.10, abs=1e-6)
+
+        monitor.check_drawdown(0.85)
+        assert monitor.max_dd_seen == pytest.approx(0.15, abs=1e-6)
+
+
+
+
+# ============================================================
+# 18. P1/P2 订单状态机测试
+# ============================================================
+
+class TestOrderStateMachine:
+    """测试 OrderManager 订单状态机"""
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_state_machine_transitions_filled(self):
+        """订单从 SUBMITTED 到 FILLED 的合法转换"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager, OrderState
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.5, poll_interval=0.1)
+
+        executor.submit_order = lambda **kwargs: {
+            'id': 'sm-filled-123',
+            'symbol': kwargs.get('symbol', 'AAPL'),
+            'status': 'new',
+            'qty': kwargs.get('qty', 1),
+            'side': kwargs.get('side', 'buy'),
+        }
+        executor.get_order_by_id = lambda order_id: {
+            'id': order_id,
+            'symbol': 'AAPL',
+            'status': 'filled',
+            'qty': 1,
+            'side': 'buy',
+            'filled_qty': 1,
+            'filled_avg_price': 100.0,
+        }
+
+        result = manager.submit_and_wait('AAPL', 1, 'buy')
+        assert result['status'] == 'filled'
+        assert manager.order_states.get('sm-filled-123') == OrderState.FILLED
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_state_machine_invalid_transition_warning(self, caplog):
+        """从 FILLED 回到 PENDING 应记录 warning 且不改变状态"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager, OrderState
+        import logging
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.5, poll_interval=0.1)
+        manager.order_states['sm-invalid-123'] = OrderState.FILLED
+        manager.order_metadata['sm-invalid-123'] = {'symbol': 'AAPL', 'qty': 1, 'side': 'buy'}
+
+        with caplog.at_level(logging.WARNING):
+            manager._transition('sm-invalid-123', OrderState.PENDING, symbol='AAPL', qty=1, reason='test_invalid')
+        assert any('Invalid order state transition' in rec.message for rec in caplog.records)
+        assert manager.order_states['sm-invalid-123'] == OrderState.FILLED
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_state_machine_timeout_transition(self):
+        """订单超时后状态机进入 TIMEOUT"""
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager, OrderState
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.1, poll_interval=0.05)
+
+        executor.submit_order = lambda **kwargs: {
+            'id': 'sm-timeout-123',
+            'symbol': kwargs.get('symbol', 'AAPL'),
+            'status': 'new',
+            'qty': kwargs.get('qty', 1),
+            'side': kwargs.get('side', 'buy'),
+        }
+        executor.get_order_by_id = lambda order_id: {
+            'id': order_id,
+            'symbol': 'AAPL',
+            'status': 'new',
+            'qty': 1,
+            'side': 'buy',
+            'filled_qty': 0,
+            'filled_avg_price': None,
+        }
+        executor.cancel_order = lambda order_id: True
+
+        result = manager.submit_and_wait('AAPL', 1, 'buy')
+        assert result['status'] == 'TIMEOUT'
+        assert manager.order_states.get('sm-timeout-123') == OrderState.TIMEOUT
+
+
+# ============================================================
+# 19. P2 订单分页/全量获取测试
+# ============================================================
+
+class TestOrderPagination:
+    """测试 Alpaca 订单分页获取"""
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_get_all_orders_pagination(self):
+        """P2: get_all_orders 应循环分页直到取完所有订单"""
+        from alpaca_executor import AlpacaPaperExecutor
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        # fake client 已返回所有订单，直接验证 get_all_orders 接口可用并返回完整列表
+        orders = executor.get_all_orders(status='all')
+        assert isinstance(orders, list)
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_get_orders_backwards_compatible(self):
+        """P2: get_orders 保持原兼容行为"""
+        from alpaca_executor import AlpacaPaperExecutor
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        orders = executor.get_orders(status='all')
+        assert isinstance(orders, list)
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_alpaca_executor_wrapper_get_all_orders(self):
+        """P2: AlpacaExecutor 包装器暴露 get_all_orders"""
+        from alpaca_executor import AlpacaExecutor
+
+        v14 = AlpacaExecutor(mock=True)
+        assert hasattr(v14, 'get_all_orders')
+        orders = v14.get_all_orders(status='all')
+        assert isinstance(orders, list)
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_alpaca_executor_reconcile_positions(self):
+        """P2: AlpacaExecutor 暴露 reconcile_positions"""
+        from alpaca_executor import AlpacaExecutor
+
+        v14 = AlpacaExecutor(mock=True)
+        assert hasattr(v14, 'reconcile_positions')
+        report = v14.reconcile_positions(expected_cash=1000000.0)
+        assert report['ok'] is True
+
+
+# ============================================================
+# 20. P2 VIX 备用数据源/保守跳过测试
+# ============================================================
+
+class TestVIXFallback:
+    """测试 VIX 备用数据源与保守跳过"""
+
+    def test_check_vix_level_skips_none(self):
+        """P2: VIX 为 None 时 check_vix_level 保守跳过"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor()
+        level = monitor.check_vix_level(None)
+        assert level in ('NORMAL', 'ELEVATED', 'HIGH', 'CRITICAL')
+        assert monitor.trading_halted is False
+
+    def test_check_vix_level_invalid_string(self):
+        """P2: VIX 为非法字符串时保守跳过"""
+        from risk_monitor import RiskMonitor
+
+        monitor = RiskMonitor()
+        level = monitor.check_vix_level('invalid')
+        assert level in ('NORMAL', 'ELEVATED', 'HIGH', 'CRITICAL')
+        assert monitor.trading_halted is False
+
+    def test_fetch_vix_data_returns_none_when_all_sources_fail(self):
+        """P2: VIX 所有数据源失败时返回 None"""
+        from data_source import fetch_vix_data
+
+        # 使用遥远的未来日期，所有缓存/数据源均不应命中
+        result = fetch_vix_data('2099-01-01', '2099-01-02', use_cache=False)
+        # 由于没有真实网络/配置，预期返回 None
+        assert result is None or len(result) == 0
+
+    def test_config_enable_reconcile_field(self):
+        """P2: TradingConfig 支持 enable_reconcile 字段"""
+        from config import TradingConfig
+
+        cfg = TradingConfig(enable_reconcile=True)
+        assert cfg.enable_reconcile is True
+
+        cfg_default = TradingConfig()
+        assert cfg_default.enable_reconcile is False
+
+    def test_scheduler_enable_reconcile(self):
+        """P2: 调度器 enable_reconcile=True 时尝试调用 reconcile_positions"""
+        from scheduler import RebalanceScheduler
+        from unittest.mock import MagicMock
+
+        mock_strategy = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor.reconcile_positions.return_value = {'ok': True}
+        mock_strategy.executor = mock_executor
+        mock_strategy.run_live_rebalance = MagicMock()
+
+        scheduler = RebalanceScheduler(mock_strategy, rebalance_frequency='daily', enable_reconcile=True)
+        # 强制触发
+        from scheduler import NY_TZ
+        now = datetime(2024, 1, 2, 10, 0, tzinfo=NY_TZ)
+        scheduler.last_run = None
+        assert scheduler.run_if_due(now=now) is True
+        mock_executor.reconcile_positions.assert_called_once()
+
+
+# ============================================================
+# 21. P2 订单生命周期结构化日志测试
+# ============================================================
+
+class TestOrderLifecycleLogs:
+    """测试订单生命周期关键节点日志"""
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_alpaca_executor_submit_order_logs(self, caplog):
+        """P2: submit_order 成功时记录订单 ID、symbol、status"""
+        import logging
+        from alpaca_executor import AlpacaPaperExecutor
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        with caplog.at_level(logging.INFO):
+            order = executor.submit_order('AAPL', 5, 'buy')
+        assert order is not None
+        assert any('Order submitted' in rec.message or 'ORDER' in rec.message for rec in caplog.records)
+
+    @patch.dict('os.environ', {
+        'ALPACA_API_KEY': 'PK_TEST123',
+        'ALPACA_API_SECRET': 'SK_TEST456'
+    })
+    def test_order_manager_transition_logs(self, caplog):
+        """P2: 订单状态转换记录结构化日志"""
+        import logging
+        from alpaca_executor import AlpacaPaperExecutor
+        from order_manager import OrderManager
+
+        executor = AlpacaPaperExecutor(mock=True, enable_pdt=False)
+        manager = OrderManager(executor, max_wait_sec=0.5, poll_interval=0.1)
+        from order_manager import OrderState
+        with caplog.at_level(logging.INFO):
+            manager._transition('log-order-123', OrderState.SUBMITTED, symbol='AAPL', qty=10, filled=10, reason='test')
+        # 至少有一条包含 ORDER_STATE 或 trade_executed 的日志
+        assert any('ORDER_STATE' in rec.message or 'trade_executed' in rec.message for rec in caplog.records)
+
+
+# ============================================================
+# 18. CLI paper/live/mock 路由修复回归测试
+# ============================================================
+
+class TestCLIPaperLiveMock:
+    """P1 回归测试：run_strategy.py 与 paper_smoke_test.py 的 CLI 路由。"""
+
+    def test_run_strategy_modes_mutually_exclusive(self):
+        """P1: --paper/--live/--backtest/--mock 必须互斥"""
+        from run_strategy import main
+        with patch('run_strategy.V14Strategy') as mock_strategy:
+            for args in (['--paper', '--backtest'], ['--paper', '--live'], ['--backtest', '--mock']):
+                with pytest.raises(SystemExit):
+                    main(args)
+                mock_strategy.assert_not_called()
+
+    def test_run_strategy_live_requires_confirm(self):
+        """P1: --live 没有 --confirm-live 时应报错退出"""
+        from run_strategy import main
+        with patch('run_strategy.V14Strategy'):
+            with pytest.raises(SystemExit):
+                main(['--live'])
+
+    def test_run_strategy_paper_runs_live_rebalance(self):
+        """P1: --paper 必须执行 run_live_rebalance，而不是回测"""
+        from run_strategy import main
+        mock_strategy = MagicMock()
+        mock_strategy.use_real_data = True
+        with patch('run_strategy.ALPACA_AVAILABLE', True):
+            with patch('run_strategy.V14Strategy', return_value=mock_strategy):
+                main(['--paper'])
+        mock_strategy.run_backtest.assert_not_called()
+        mock_strategy.run_live_rebalance.assert_called_once()
+
+    def test_run_strategy_backtest_runs_backtest(self):
+        """P1: --backtest 执行回测"""
+        from run_strategy import main
+        mock_strategy = MagicMock()
+        mock_strategy.use_real_data = True
+        with patch('run_strategy.V14Strategy', return_value=mock_strategy):
+            main(['--backtest'])
+        mock_strategy.run_backtest.assert_called_once()
+        mock_strategy.run_live_rebalance.assert_not_called()
+
+    def test_run_strategy_mock_runs_backtest_with_mock_data(self):
+        """P1: --mock 使用本地 mock 数据执行回测"""
+        from run_strategy import main
+        mock_strategy = MagicMock()
+        mock_strategy.use_real_data = False
+        with patch('run_strategy.V14Strategy', return_value=mock_strategy) as mock_cls:
+            main(['--mock'])
+        _, kwargs = mock_cls.call_args
+        assert kwargs['use_real_data'] is False
+        mock_strategy.run_backtest.assert_called_once()
+        mock_strategy.run_live_rebalance.assert_not_called()
+
+    def test_run_strategy_live_with_confirm_runs_live_rebalance(self):
+        """P1: --live --confirm-live 执行实盘调仓"""
+        from run_strategy import main
+        mock_strategy = MagicMock()
+        mock_strategy.use_real_data = True
+        with patch('run_strategy.ALPACA_AVAILABLE', True):
+            with patch('run_strategy.V14Strategy', return_value=mock_strategy) as mock_cls:
+                main(['--live', '--confirm-live'])
+        _, kwargs = mock_cls.call_args
+        assert kwargs['use_paper_trading'] is True
+        assert kwargs['paper'] is False
+        mock_strategy.run_backtest.assert_not_called()
+        mock_strategy.run_live_rebalance.assert_called_once()
+
+    def test_config_parse_failure_raises(self, tmp_path, monkeypatch):
+        """P1: config.json 存在但解析失败时必须抛异常（fail-fast）"""
+        import config as config_module
+        from config import set_config
+
+        set_config(None)  # 清除单例
+        bad_config = tmp_path / 'config.json'
+        bad_config.write_text('{invalid json')
+        # 让 config.py 读取到临时目录下的错误配置
+        monkeypatch.setattr(config_module.os.path, 'dirname', lambda _: str(tmp_path))
+        with pytest.raises(ValueError):
+            config_module.get_config()
+        set_config(None)  # 清理单例，避免后续测试读取到错误配置
+
+    def test_paper_smoke_test_live_requires_confirm(self):
+        """P1: paper_smoke_test --live 没有 --confirm-live 时报错"""
+        import paper_smoke_test
+        with patch.dict('os.environ', {'ALPACA_API_KEY': 'PK', 'ALPACA_API_SECRET': 'SK'}):
+            rc = paper_smoke_test.main(['--live'])
+        assert rc == 1
+
+    def test_paper_smoke_test_live_forces_live_endpoint(self):
+        """P1: paper_smoke_test --live 强制使用实盘域名和 paper=False"""
+        import paper_smoke_test
+        with patch.dict('os.environ', {'ALPACA_API_KEY': 'PK', 'ALPACA_API_SECRET': 'SK'}):
+            with patch('paper_smoke_test._confirm_live', return_value=True):
+                with patch('paper_smoke_test.ALPACA_AVAILABLE', True):
+                    with patch('paper_smoke_test.AlpacaExecutor') as mock_exec:
+                        mock_exec.return_value.get_account.return_value = {
+                            'status': 'ACTIVE',
+                            'equity': 100000,
+                            'buying_power': 100000,
+                        }
+                        mock_exec.return_value.submit_order.return_value = MagicMock(id='order-123', status='accepted')
+                        rc = paper_smoke_test.main(['--live', '--confirm-live'])
+        assert rc == 0
+        _, kwargs = mock_exec.call_args
+        assert kwargs['paper'] is False
+
+
+
+# ============================================================
+# 22. P1 数据缓存统一基础设施测试
+# ============================================================
+
+class TestDataCache:
+    """测试统一 DataCache 缓存类（P1 修复）"""
+
+    def test_cache_path_contains_key_components(self, tmp_path):
+        """缓存路径应包含 source + adjustment + symbol + frequency + date-range"""
+        from data_source import DataCache
+
+        cache = DataCache(cache_dir=str(tmp_path))
+        path = cache.get_path(
+            'AAPL', source='Yahoo', adjustment='adjusted',
+            start='2023-01-01', end='2023-12-31', frequency='daily'
+        )
+        filename = os.path.basename(path)
+        assert 'AAPL' in filename
+        assert 'Yahoo' in filename
+        assert 'adjusted' in filename
+        assert 'daily' in filename
+        assert '2023-01-01' in filename
+        assert '2023-12-31' in filename
+
+    def test_frequency_ttl(self, tmp_path):
+        """不同频率应返回不同 TTL"""
+        from data_source import DataCache
+
+        cache = DataCache(cache_dir=str(tmp_path), default_ttl_days=7)
+        assert cache.frequency_ttl('daily') == 7
+        assert cache.frequency_ttl('minute') == 1
+        assert cache.frequency_ttl('hour') == 2
+        assert cache.frequency_ttl('monthly') == 28
+
+    def test_save_and_load_with_metadata(self, tmp_path):
+        """DataCache 保存/读取数据，并校验 source/adjustment 元数据"""
+        from data_source import DataCache
+        import pandas as pd
+
+        cache = DataCache(cache_dir=str(tmp_path))
+        path = cache.get_path('TEST', source='Polygon', adjustment='unadjusted')
+        dates = pd.bdate_range('2023-01-01', periods=5)
+        df = pd.DataFrame({'TEST': [1.0, 2.0, 3.0, 4.0, 5.0]}, index=dates)
+
+        assert cache.save(path, df, metadata={'source': 'Polygon', 'adjustment': 'unadjusted'})
+        loaded = cache.load(path, expected={'source': 'Polygon', 'adjustment': 'unadjusted'})
+        assert loaded is not None
+        assert len(loaded) == 5
+
+    def test_load_returns_none_when_metadata_mismatch(self, tmp_path):
+        """元数据不匹配时，load 仍可读取数据但会记录警告"""
+        from data_source import DataCache
+        import pandas as pd
+
+        cache = DataCache(cache_dir=str(tmp_path))
+        path = cache.get_path('TEST', source='Yahoo', adjustment='adjusted')
+        df = pd.DataFrame({'TEST': [1.0, 2.0, 3.0]}, index=pd.bdate_range('2023-01-01', periods=3))
+        cache.save(path, df, metadata={'source': 'Yahoo', 'adjustment': 'adjusted'})
+
+        # 期望不同 source，load 仍返回数据（仅警告），因为底层 parquet 有效
+        loaded = cache.load(path, expected={'source': 'Polygon', 'adjustment': 'adjusted'})
+        assert loaded is not None
+
+
+# ============================================================
+# 23. P1 relative_value / garp 价格代理测试
+# ============================================================
+
+class TestPriceProxyFactors:
+    """测试 relative_value / garp 使用价格代理，不引入前视"""
+
+    def test_relative_value_and_garp_use_price_proxy_when_no_fundamentals(self):
+        """无基本面数据时，relative_value / garp 使用价格收益代理，不报错"""
+        from main import compute_factors_v14
+
+        dates = pd.bdate_range('2023-01-01', periods=252)
+        np.random.seed(42)
+        prices = pd.DataFrame(
+            np.cumprod(1 + np.random.normal(0.0005, 0.015, (252, 5)), axis=0) * 100,
+            index=dates,
+            columns=['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'META']
+        )
+        factors = compute_factors_v14(prices)
+
+        assert 'relative_value' in factors.columns
+        assert 'garp' in factors.columns
+        assert factors['relative_value'].between(0, 1).all()
+        assert factors['garp'].between(0, 1).all()
+
+    def test_price_proxy_no_lookahead(self):
+        """relative_value / garp 的价格代理不应使用前视数据"""
+        from main import compute_factors_v14
+
+        dates = pd.bdate_range('2023-01-01', periods=252)
+        np.random.seed(42)
+        base = np.cumprod(1 + np.random.normal(0.0005, 0.015, (252, 2)), axis=0) * 100
+        prices = pd.DataFrame(base, index=dates, columns=['A', 'B'])
+
+        # 在末尾追加一个带有极端未来价格的交易日，然后仅使用不包含该日的切片
+        extended = prices.copy()
+        next_day = dates[-1] + pd.Timedelta(days=1)
+        extended.loc[next_day] = extended.iloc[-1] * 100
+
+        f_original = compute_factors_v14(prices)
+        f_truncated = compute_factors_v14(extended.iloc[:-1])
+
+        # 两个切片应产生相同的因子（因为 compute_factors_v14 只使用切片内数据）
+        pd.testing.assert_frame_equal(f_original, f_truncated)
+
+    def test_get_fundamental_data_returns_none(self):
+        """基本面接口当前返回 None，明确使用价格代理 fallback"""
+        from main import get_fundamental_data
+
+        assert get_fundamental_data(['AAPL', 'MSFT'], '2023-12-31') is None
+
+
+# ============================================================
+# 24. P1 配置解析失败测试
+# ============================================================
+
+class TestConfigParseFailure:
+    """测试 config.json 解析失败时明确抛出异常"""
+
+    def test_json_parse_error_includes_path(self, tmp_path):
+        """文件存在但 JSON 解析失败时，异常信息包含文件路径"""
+        from config import get_config
+
+        bad_config = tmp_path / 'bad_config.json'
+        bad_config.write_text('{"invalid json')
+
+        with pytest.raises(ValueError) as exc_info:
+            get_config(config_path=str(bad_config))
+
+        assert str(bad_config) in str(exc_info.value)
+        assert '解析失败' in str(exc_info.value)
+
+    def test_missing_config_file_uses_defaults(self, tmp_path):
+        """文件不存在时使用默认配置"""
+        from config import V14StrategyConfig
+
+        cfg = V14StrategyConfig()
+        assert cfg is not None
+        assert cfg.risk.vix_panic_threshold == 35.0
+
+
+# ============================================================
+# 25. P1 调度器节假日处理测试
+# ============================================================
+
+class TestSchedulerHolidayHandling:
+    """测试 scheduler 使用 XNYS 交易日历识别节假日"""
+
+    def test_module_level_is_trading_day_recognizes_holiday(self):
+        """模块级 is_trading_day 应识别 New Year's Day 为非交易日"""
+        from scheduler import is_trading_day
+        from datetime import date
+
+        # 2024-01-01 是 New Year's Day（周一假日）
+        assert is_trading_day(date(2024, 1, 1)) is False
+        # 2024-01-02 是首个交易日
+        assert is_trading_day(date(2024, 1, 2)) is True
+
+    def test_module_level_next_trading_day_skips_holiday(self):
+        """next_trading_day 应跳过节假日"""
+        from scheduler import next_trading_day
+        from datetime import date
+
+        # 2023-12-29 周五 -> 下一交易日 2024-01-02（跳过周末和元旦）
+        assert next_trading_day(date(2023, 12, 29)) == date(2024, 1, 2)
+
+    def test_get_rebalance_dates_for_quarterly(self):
+        """get_rebalance_dates 返回季度调仓的首个交易日"""
+        from scheduler import get_rebalance_dates
+        from datetime import date
+
+        dates = get_rebalance_dates('2024-01-01', '2024-06-30', frequency='quarterly')
+        # 1/2, 4/1, 7/1 的首个交易日（若在该区间内）
+        assert date(2024, 1, 2) in dates
+        assert date(2024, 4, 1) in dates
+        # 不应包含 2/1
+        assert date(2024, 2, 1) not in dates

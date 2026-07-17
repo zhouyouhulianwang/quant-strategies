@@ -3,11 +3,10 @@
 
 Usage:
     python paper_smoke_test.py --dry-run       # Validate config and connectivity without orders
-    python paper_smoke_test.py --live          # Place a tiny order (requires confirmation)
+    python paper_smoke_test.py --live          # Place a tiny order (requires --confirm-live)
 
 This script is designed to run in CI/CD and locally. It will NEVER place
-real money trades unless `--live` is explicitly passed, and even then it asks
-for confirmation and uses a tiny 1-share order on SPY (or a configurable symbol).
+real money trades unless `--live` is explicitly passed and confirmed.
 """
 from __future__ import annotations
 
@@ -24,20 +23,21 @@ from alpaca_executor import ALPACA_AVAILABLE, AlpacaExecutor, OrderSide, OrderTy
 
 
 def _confirm_live() -> bool:
-    print("\n⚠️  --live will place a real order in your Alpaca account.")
+    print("\n⚠️  --live will place a real order in your Alpaca LIVE account.")
     print("This is a smoke test; it buys a tiny number of shares.")
     answer = input("Type 'yes' to proceed: ")
     return answer.strip().lower() == "yes"
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Alpaca paper trading smoke test")
     parser.add_argument("--dry-run", action="store_true", help="Validate connectivity without placing orders")
-    parser.add_argument("--live", action="store_true", help="Place a tiny order (requires confirmation)")
+    parser.add_argument("--live", action="store_true", help="Use Alpaca LIVE endpoint (real money)")
+    parser.add_argument("--confirm-live", action="store_true", help="Explicitly confirm live trading")
     parser.add_argument("--symbol", default="SPY", help="Symbol for smoke test order")
     parser.add_argument("--qty", type=float, default=1.0, help="Quantity for smoke test order")
-    parser.add_argument("--paper", action="store_true", help="Force paper endpoint")
-    args = parser.parse_args()
+    parser.add_argument("--paper", action="store_true", help="Force paper endpoint (default)")
+    args = parser.parse_args(argv)
 
     print(f"[{datetime.now(timezone.utc).isoformat()}] Alpaca smoke test starting")
     print(f"  ALPACA_AVAILABLE: {ALPACA_AVAILABLE}")
@@ -48,6 +48,10 @@ def main() -> int:
         print("ERROR: alpaca-py is not installed. Install requirements.txt first.")
         return 1
 
+    if args.live and not args.confirm_live:
+        print("ERROR: --live requires --confirm-live to avoid accidental real-money trading.")
+        return 1
+
     api_key = os.environ.get("APCA_API_KEY_ID") or os.environ.get("ALPACA_API_KEY")
     secret_key = os.environ.get("APCA_API_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET")
     if not api_key or not secret_key:
@@ -55,8 +59,16 @@ def main() -> int:
         print("Expected: APCA_API_KEY_ID / APCA_API_SECRET_KEY (or ALPACA_API_KEY / ALPACA_API_SECRET)")
         return 1
 
-    paper = args.paper or True  # default to paper for safety
-    print(f"  Using paper endpoint: {paper}")
+    # 当 --live 被指定时，强制使用实盘域名并将 paper 设为 False
+    if args.live:
+        paper = False
+        base_url = "https://api.alpaca.markets"
+    else:
+        paper = True  # 默认纸交易，安全优先
+        base_url = "https://paper-api.alpaca.markets"
+
+    print(f"  Using base_url: {base_url}")
+    print(f"  Using paper: {paper}")
 
     executor = AlpacaExecutor(
         api_key=api_key,
@@ -79,8 +91,12 @@ def main() -> int:
         return 0
 
     if not args.live:
-        print("  No --live specified. Use --live to place a tiny order (or --dry-run to validate).")
+        print("  No --live specified. Use --live --confirm-live to place a tiny order (or --dry-run to validate).")
         return 0
+
+    if not args.confirm_live:
+        print("ERROR: --live requires --confirm-live flag.")
+        return 1
 
     if not _confirm_live():
         print("  Aborted by user.")
@@ -88,7 +104,7 @@ def main() -> int:
 
     symbol = args.symbol
     qty = args.qty
-    print(f"  Placing MARKET BUY order for {qty} share(s) of {symbol}...")
+    print(f"  Placing MARKET BUY order for {qty} share(s) of {symbol} on LIVE account...")
 
     try:
         order = executor.submit_order(

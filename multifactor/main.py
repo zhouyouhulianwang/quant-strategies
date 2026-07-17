@@ -130,6 +130,40 @@ if _cfg_ndx_set is not None:
 
 
 # ============================================================
+# 1.5 基本面数据接口（占位/模拟）
+# ============================================================
+
+def get_fundamental_data(symbols, date):
+    """获取指定日期的基本面数据（EPS、BookValue 等）
+
+    当前项目没有接入真实基本面数据源，返回 None。当返回 None 时，
+    relative_value / garp 因子会退回到价格收益率代理（price_proxy）。
+
+    参数:
+        symbols: list, 股票代码列表
+        date: datetime/date, 数据截止日期
+
+    返回:
+        DataFrame or None: 索引=symbol, 列=['eps', 'book_value_per_share'] 等；
+                          None 表示无基本面数据，使用价格代理。
+    """
+    # TODO: 接入真实基本面数据源（如 Polygon fundamentals、Yahoo earnings 等）
+    # 在未接入前保持返回 None，确保下游使用价格代理且不引入前视。
+    return None
+
+
+def _price_earnings_yield_proxy(ret):
+    """价格收益率代理：使用历史年化收益倒数作为估值代理
+
+    重要：这并非真实基本面 PE，而是基于价格收益的价格代理。
+    年化价格收益率 = (1 + 日均收益)^252 - 1，其倒数作为“估值”代理。
+    """
+    earnings_yield_proxy = (1 + ret.mean()) ** 252 - 1
+    pe_proxy = 1 / (earnings_yield_proxy.clip(-0.5, 1.0) + 0.01)
+    return pe_proxy
+
+
+# ============================================================
 # 2. V14 因子计算 (17因子)
 # ============================================================
 
@@ -210,14 +244,22 @@ def compute_factors_v14(price_slice):
         f['technical'] = 0.5
     
     # ===== V14新增: 行业相对估值 (4个) =====
-    
+
     # relative_value: 行业内相对估值排名
-    # 使用价格收益率代理(earnings_yield_proxy), 并非真实基本面PE
-    # 年化价格收益率 = (1 + 日均收益)^252 - 1, 其倒数作为“估值”代理
+    # 当前项目无真实基本面数据源，使用 price_earnings_yield_proxy（价格收益率代理）
+    # 作为 fallback。该代理并非真实基本面 PE，仅从历史价格收益推导，不存在前视。
+    # 若接入真实基本面数据，可通过 get_fundamental_data() 获取上一季度/年末可用数据。
+    fundamentals = get_fundamental_data(price_slice.columns.tolist(), price_slice.index[-1])
+    if fundamentals is not None and 'eps' in fundamentals.columns:
+        # 使用上一季度/年末可用基本面数据计算真实估值（避免前视）
+        # 当前价格作为分母，EPS 使用基本面接口返回的最近可用值
+        eps = fundamentals['eps'].reindex(price_slice.columns)
+        pe_fundamental = cur / eps.replace(0, np.nan)
+        pe_proxy = pe_fundamental.fillna(_price_earnings_yield_proxy(ret))
+    else:
+        pe_proxy = _price_earnings_yield_proxy(ret)
+
     if len(ret) >= 252:
-        earnings_yield_proxy = (1 + ret.mean()) ** 252 - 1
-        # 为避免除零, 对收益率代理裁剪并加极小值
-        pe_proxy = 1 / (earnings_yield_proxy.clip(-0.5, 1.0) + 0.01)
         # 行业内排名: 相对PE越低=越便宜=越高分
         # P0修复: 使用 groupby(..., sort=False).transform 保持索引对齐
         f['relative_value'] = pe_proxy.groupby(industries, sort=False).transform(
@@ -225,13 +267,12 @@ def compute_factors_v14(price_slice):
         )
     else:
         f['relative_value'] = 0.5
-    
+
     # garp: 成长调整估值 = growth / relative_pe
-    # 同样使用 earnings_yield_proxy, 明确标注非真实PE
+    # 同样使用 price_earnings_yield_proxy 作为真实基本面的 fallback，非真实PE。
     if len(ret) >= 60:
         ret_60d = cur / price_slice.iloc[-60] - 1
-        earnings_yield_proxy_garp = (1 + ret.mean()) ** 252 - 1
-        pe_p = 1 / (earnings_yield_proxy_garp.clip(-0.5, 1.0) + 0.01)
+        pe_p = _price_earnings_yield_proxy(ret)
         ind_med = pe_p.groupby(industries).transform('median')
         rel_pe = pe_p / (ind_med + 0.001)
         garp_raw = ret_60d / (rel_pe.clip(0.1, 5) + 0.1)

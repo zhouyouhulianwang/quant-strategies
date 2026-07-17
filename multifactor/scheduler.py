@@ -46,19 +46,128 @@ except ImportError:
     logger.warning("exchange_calendars 未安装，使用简化周末逻辑（不识别节假日）")
 
 
+# 用于确保无 XNYS 时至少打印一次降级警告
+_XNYS_FALLBACK_WARNED = False
+
+
+def _fallback_warn_once():
+    """exchange_calendars 不可用时，仅打印一次降级警告"""
+    global _XNYS_FALLBACK_WARNED
+    if not _XNYS_FALLBACK_WARNED:
+        logger.warning("exchange_calendars/XNYS 不可用，使用简化周末逻辑（不识别节假日）")
+        _XNYS_FALLBACK_WARNED = True
+
+
+def is_trading_day(date) -> bool:
+    """判断某天是否为交易日（基于 XNYS 日历，回退到周末判断）"""
+    if XCALS_AVAILABLE and XNYS is not None:
+        try:
+            # 只查询该日本身，避免跨边界和类型比较问题
+            sessions = XNYS.sessions_in_range(
+                date.isoformat(),
+                date.isoformat()
+            )
+            return len(sessions) > 0
+        except Exception as e:
+            logger.warning(f"XNYS 交易日查询失败 {date}: {e}，回退到周末逻辑")
+    _fallback_warn_once()
+    return date.weekday() < 5
+
+
+def next_trading_day(date):
+    """获取某日期之后的下一个交易日（基于 XNYS 日历，回退到跳过周末）"""
+    d = date + timedelta(days=1)
+    while not is_trading_day(d):
+        d += timedelta(days=1)
+    return d
+
+
+def _first_trading_day_of_month(year, month):
+    """获取某月首个交易日（基于 XNYS 日历，回退到跳过周末）"""
+    first_day = datetime(year, month, 1).date()
+    if is_trading_day(first_day):
+        return first_day
+    next_day = first_day + timedelta(days=1)
+    while not is_trading_day(next_day):
+        next_day += timedelta(days=1)
+    return next_day
+
+
+def get_rebalance_dates(start_date, end_date, frequency='monthly'):
+    """获取指定区间内的调仓日期（基于 XNYS 日历）
+
+    参数:
+        start_date: str/datetime/date, 开始日期
+        end_date: str/datetime/date, 结束日期
+        frequency: str, 'monthly' / 'bimonthly' / 'quarterly' / 'weekly' / 'daily'
+
+    返回:
+        list[date]: 调仓日期列表
+    """
+    if isinstance(start_date, str):
+        start_date = datetime.fromisoformat(start_date).date()
+    if isinstance(end_date, str):
+        end_date = datetime.fromisoformat(end_date).date()
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+
+    allowed_months = {
+        'monthly': list(range(1, 13)),
+        'bimonthly': [1, 3, 5, 7, 9, 11],
+        'quarterly': [1, 4, 7, 10],
+        'weekly': list(range(1, 13)),
+        'daily': list(range(1, 13)),
+    }.get(frequency)
+    if allowed_months is None:
+        raise ValueError(f"Invalid rebalance frequency: {frequency}")
+
+    dates = []
+    if frequency == 'daily':
+        d = start_date
+        while d <= end_date:
+            if is_trading_day(d):
+                dates.append(d)
+            d += timedelta(days=1)
+    elif frequency == 'weekly':
+        d = start_date
+        while d <= end_date:
+            if d.weekday() == 0 and is_trading_day(d):
+                dates.append(d)
+            d += timedelta(days=1)
+    else:
+        # monthly / bimonthly / quarterly: 允许月份的首个交易日
+        current = start_date
+        while current <= end_date:
+            if current.month in allowed_months:
+                first = _first_trading_day_of_month(current.year, current.month)
+                if start_date <= first <= end_date:
+                    dates.append(first)
+            # 移到下月 1 日
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1, day=1)
+            else:
+                current = current.replace(month=current.month + 1, day=1)
+
+    return dates
+
+
 class RebalanceScheduler:
     """调仓调度器"""
 
-    def __init__(self, strategy, rebalance_frequency='monthly'):
+    def __init__(self, strategy, rebalance_frequency='monthly', enable_reconcile=False):
         """
         初始化调度器
 
         参数:
             strategy: V14Strategy 实例
             rebalance_frequency: str, 'monthly' / 'bimonthly' / 'quarterly' / 'weekly' / 'daily'
+            enable_reconcile: bool, 调仓前是否执行持仓对账（P2 修复）
         """
         self.strategy = strategy
         self.rebalance_frequency = rebalance_frequency
+        self.enable_reconcile = enable_reconcile
         self.last_run = None
         self.run_log = []
         self.last_run_file = LAST_RUN_FILE
@@ -155,37 +264,16 @@ class RebalanceScheduler:
             raise ValueError(f"Invalid rebalance frequency: {freq}")
 
     def _get_first_trading_day_of_month(self, year, month):
-        """获取某月首个交易日（基于 XNYS 日历，回退到跳过周末）"""
-        first_day = datetime(year, month, 1).date()
-        if self._is_trading_day(first_day):
-            return first_day
-
-        next_day = first_day + timedelta(days=1)
-        while not self._is_trading_day(next_day):
-            next_day += timedelta(days=1)
-        return next_day
+        """获取某月首个交易日（委托模块级 XNYS 函数）"""
+        return _first_trading_day_of_month(year, month)
 
     def _is_trading_day(self, date):
-        """判断某天是否为交易日（基于 XNYS 日历）"""
-        if XCALS_AVAILABLE and XNYS is not None:
-            try:
-                # 只查询该日本身，避免跨边界和类型比较问题
-                sessions = XNYS.sessions_in_range(
-                    date.isoformat(),
-                    date.isoformat()
-                )
-                return len(sessions) > 0
-            except Exception as e:
-                logger.warning(f"XNYS 交易日查询失败 {date}: {e}，回退到周末逻辑")
-        # 回退: 仅跳过周末
-        return date.weekday() < 5
+        """判断某天是否为交易日（委托模块级 XNYS 函数）"""
+        return is_trading_day(date)
 
     def _get_next_trading_day(self, date):
-        """获取某日期之后的下一个交易日"""
-        next_day = date + timedelta(days=1)
-        while not self._is_trading_day(next_day):
-            next_day += timedelta(days=1)
-        return next_day
+        """获取某日期之后的下一个交易日（委托模块级 XNYS 函数）"""
+        return next_trading_day(date)
 
     def _get_last_trading_day_of_month(self, year, month):
         """
@@ -219,14 +307,20 @@ class RebalanceScheduler:
 
         return last_date
 
-    def run_if_due(self):
+    def run_if_due(self, now=None):
         """
         检查并执行调仓（如果到期）
+
+        参数:
+            now: datetime, 可选，指定当前时间；默认使用美东当前时间
 
         返回:
             bool: 是否执行了调仓
         """
-        now = datetime.now(NY_TZ)
+        if now is None:
+            now = datetime.now(NY_TZ)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=NY_TZ)
 
         if self.should_rebalance(now):
             logger.info(f"\n{'='*60}")
@@ -234,6 +328,18 @@ class RebalanceScheduler:
             logger.info(f"{'='*60}")
 
             try:
+                # P2 修复：调仓前持仓对账
+                if self.enable_reconcile and hasattr(self.strategy, 'executor') and self.strategy.executor is not None:
+                    try:
+                        reconcile_fn = getattr(self.strategy.executor, 'reconcile_positions', None)
+                        if reconcile_fn is not None and callable(reconcile_fn):
+                            logger.info("[RECONCILE] Running pre-rebalance position reconciliation...")
+                            report = reconcile_fn()
+                            if not report.get('ok', True):
+                                logger.warning(f"[RECONCILE] Reconciliation mismatch detected: {report}")
+                    except Exception as e:
+                        logger.warning(f"[RECONCILE] Pre-rebalance reconciliation failed: {e}")
+
                 # 执行再平衡
                 self.strategy.run_live_rebalance()
 
@@ -314,14 +420,19 @@ def run_scheduler_loop(strategy, check_interval=3600):
     import time
 
     frequency = 'monthly'
-    if strategy.config and hasattr(strategy.config.trading, 'rebalance_frequency'):
-        frequency = strategy.config.trading.rebalance_frequency
+    enable_reconcile = False
+    if strategy.config and hasattr(strategy.config, 'trading'):
+        if hasattr(strategy.config.trading, 'rebalance_frequency'):
+            frequency = strategy.config.trading.rebalance_frequency
+        if hasattr(strategy.config.trading, 'enable_reconcile'):
+            enable_reconcile = bool(strategy.config.trading.enable_reconcile)
 
-    scheduler = RebalanceScheduler(strategy, rebalance_frequency=frequency)
+    scheduler = RebalanceScheduler(strategy, rebalance_frequency=frequency, enable_reconcile=enable_reconcile)
 
     logger.info(f"🕐 调度器已启动")
     logger.info(f"   下次调仓: {scheduler.get_next_rebalance_date()}")
     logger.info(f"   检查间隔: {check_interval/3600:.1f} 小时")
+    logger.info(f"   调仓前对账: {'启用' if enable_reconcile else '禁用'}")
 
     try:
         while True:
@@ -358,10 +469,14 @@ def run_once(paper=True, require_live_confirmation=True):
     )
 
     frequency = 'monthly'
-    if strategy.config and hasattr(strategy.config.trading, 'rebalance_frequency'):
-        frequency = strategy.config.trading.rebalance_frequency
+    enable_reconcile = False
+    if strategy.config and hasattr(strategy.config, 'trading'):
+        if hasattr(strategy.config.trading, 'rebalance_frequency'):
+            frequency = strategy.config.trading.rebalance_frequency
+        if hasattr(strategy.config.trading, 'enable_reconcile'):
+            enable_reconcile = bool(strategy.config.trading.enable_reconcile)
 
-    scheduler = RebalanceScheduler(strategy, rebalance_frequency=frequency)
+    scheduler = RebalanceScheduler(strategy, rebalance_frequency=frequency, enable_reconcile=enable_reconcile)
     scheduler.run_if_due()
 
 

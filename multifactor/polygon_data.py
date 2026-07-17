@@ -74,80 +74,11 @@ def _compute_rsi_wilder(prices, window=14):
 
 
 # ============================================================
-# Parquet 缓存基础设施（按 symbol 缓存完整历史，委托 cache.py）
+# 统一缓存基础设施（DataCache，避免与 quantconnect_data / data_source 重复）
 # ============================================================
-import os
-from cache import (
-    is_cache_valid,
-    load_parquet_cache,
-    save_parquet_cache,
-    get_cache_metadata,
-    CACHE_VERSION as _CACHE_VERSION,
-)
+from data_source import DataCache
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'data_cache')
-os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_VERSION = _CACHE_VERSION
-CACHE_TTL_DAYS = 7
-
-
-def _get_cache_path(symbol, source='Polygon', adjustment='adjusted'):
-    """按 symbol+source+adjustment 缓存完整历史，文件名包含来源和复权标志"""
-    safe_source = source.replace('/', '_').replace(' ', '_')
-    safe_adjustment = adjustment.replace('/', '_').replace(' ', '_')
-    return os.path.join(CACHE_DIR, f"{symbol}_{safe_source}_{safe_adjustment}.parquet")
-
-
-def _decode_metadata(meta_dict):
-    """将 pyarrow 字节型 metadata 解码为字符串字典（委托 cache.py）"""
-    from cache import _decode_metadata as _cache_decode
-    return _cache_decode(meta_dict)
-
-
-def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
-    """检查 parquet 缓存是否有效（版本号 + TTL，委托 cache.py）"""
-    return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
-
-
-def _verify_cache_metadata(cache_path, expected_source=None, expected_adjustment=None):
-    """读取缓存元数据并校验 source/adjustment，不匹配时记录警告"""
-    try:
-        metadata = get_cache_metadata(cache_path)
-        actual_source = metadata.get('source')
-        actual_adjustment = metadata.get('adjustment')
-        if expected_source and actual_source and str(actual_source) != str(expected_source):
-            logger.warning(
-                "[PIT] Cache source mismatch for %s: expected %s, got %s",
-                cache_path, expected_source, actual_source
-            )
-        if expected_adjustment and actual_adjustment and str(actual_adjustment) != str(expected_adjustment):
-            logger.warning(
-                "[PIT] Cache adjustment mismatch for %s: expected %s, got %s",
-                cache_path, expected_adjustment, actual_adjustment
-            )
-    except Exception as e:
-        logger.debug("[PIT] Failed to verify cache metadata %s: %s", cache_path, e)
-
-
-def _load_cache(cache_path, expected_source=None, expected_adjustment=None):
-    """从 parquet 缓存读取数据，单列表自动还原为 Series（委托 cache.py）"""
-    _verify_cache_metadata(cache_path, expected_source, expected_adjustment)
-    return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
-
-
-def _save_cache(cache_path, data, source='Polygon', adjustment='adjusted'):
-    """保存数据及元数据到 parquet 缓存，失败不抛异常（委托 cache.py）"""
-    metadata = {
-        'source': source,
-        'adjustment': adjustment,
-        'download_time': datetime.now().isoformat(),
-    }
-    return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
-
-
-def _yahoo_end_inclusive(end_date):
-    """Yahoo Finance 的 history end 为右开区间，返回 end + 1 日"""
-    return (pd.to_datetime(end_date) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+cache = DataCache()
 
 
 class PolygonDataSource:
@@ -222,12 +153,12 @@ class PolygonDataSource:
         if not self.available:
             return None
 
-        cache_path = _get_cache_path(symbol, source='Polygon', adjustment='adjusted')
+        cache_path = cache.get_path(symbol, source='Polygon', adjustment='adjusted', frequency='daily')
 
         # 1. 优先读取 parquet 缓存并按日期切片
-        if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+        if cache.is_valid(cache_path):
             try:
-                df = _load_cache(cache_path, expected_source='Polygon', expected_adjustment='adjusted')
+                df = cache.load(cache_path, expected={'source': 'Polygon', 'adjustment': 'adjusted'})
                 df = _normalize_index(df)
                 if isinstance(df, pd.DataFrame) and not df.empty:
                     return df.loc[start_date:end_date]
@@ -275,7 +206,7 @@ class PolygonDataSource:
             }, inplace=True)
 
             # 写入 parquet 缓存（完整历史）
-            _save_cache(cache_path, df, source='Polygon', adjustment='adjusted')
+            cache.save(cache_path, df, metadata={'source': 'Polygon', 'adjustment': 'adjusted'})
             return df
 
         except Exception as e:
@@ -390,10 +321,10 @@ class HybridDataSource:
 
             # 1. 按优先级尝试 source-specific 缓存
             for source, adjustment in source_order:
-                cache_path = _get_cache_path(symbol, source=source, adjustment=adjustment)
-                if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+                cache_path = cache.get_path(symbol, source=source, adjustment=adjustment, frequency='daily')
+                if cache.is_valid(cache_path):
                     try:
-                        loaded = _load_cache(cache_path, expected_source=source, expected_adjustment=adjustment)
+                        loaded = cache.load(cache_path, expected={'source': source, 'adjustment': adjustment})
                         loaded = _normalize_index(loaded)
                         if isinstance(loaded, pd.DataFrame) and 'Close' in loaded.columns:
                             series = loaded['Close']
@@ -422,8 +353,8 @@ class HybridDataSource:
                     ydata = yf.Ticker(symbol).history(period='max')
                     ydata = _normalize_index(ydata)
                     if len(ydata) > 0:
-                        yahoo_path = _get_cache_path(symbol, source='Yahoo', adjustment='adjusted')
-                        _save_cache(yahoo_path, ydata, source='Yahoo', adjustment='adjusted')
+                        yahoo_path = cache.get_path(symbol, source='Yahoo', adjustment='adjusted', frequency='daily')
+                        cache.save(yahoo_path, ydata, metadata={'source': 'Yahoo', 'adjustment': 'adjusted'})
                         data = ydata.loc[start_date:end_date, 'Close']
                         used_source = 'Yahoo'
                 except Exception as e:
@@ -472,14 +403,14 @@ class HybridDataSource:
 
     def get_vix_data(self, start_date, end_date):
         """获取 VIX 历史数据（优先 source-specific parquet 缓存）"""
-        polygon_path = _get_cache_path('VIX', source='Polygon', adjustment='unadjusted')
-        yahoo_path = _get_cache_path('VIX', source='Yahoo', adjustment='unadjusted')
+        polygon_path = cache.get_path('VIX', source='Polygon', adjustment='unadjusted', frequency='daily')
+        yahoo_path = cache.get_path('VIX', source='Yahoo', adjustment='unadjusted', frequency='daily')
 
         # 1. 按优先级尝试 source-specific 缓存
         for cache_path, source in [(polygon_path, 'Polygon'), (yahoo_path, 'Yahoo')]:
-            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            if cache.is_valid(cache_path):
                 try:
-                    vix = _load_cache(cache_path, expected_source=source, expected_adjustment='unadjusted')
+                    vix = cache.load(cache_path, expected={'source': source, 'adjustment': 'unadjusted'})
                     vix = _normalize_index(vix)
                     if isinstance(vix, pd.DataFrame) and 'Close' in vix.columns:
                         vix = vix['Close']
@@ -499,7 +430,7 @@ class HybridDataSource:
                 import yfinance as yf
                 vix = yf.Ticker('^VIX').history(period='max')['Close']
                 vix = _normalize_index(vix)
-                _save_cache(yahoo_path, vix, source='Yahoo', adjustment='unadjusted')
+                cache.save(yahoo_path, vix, metadata={'source': 'Yahoo', 'adjustment': 'unadjusted'})
                 return vix.loc[start_date:end_date]
             except Exception:
                 pass
@@ -518,14 +449,14 @@ class HybridDataSource:
 
         # SPY 数据用于计算 RSI 和基础日期
         spy_data = None
-        polygon_path = _get_cache_path('SPY', source='Polygon', adjustment='adjusted')
-        yahoo_path = _get_cache_path('SPY', source='Yahoo', adjustment='adjusted')
+        polygon_path = cache.get_path('SPY', source='Polygon', adjustment='adjusted', frequency='daily')
+        yahoo_path = cache.get_path('SPY', source='Yahoo', adjustment='adjusted', frequency='daily')
 
         # 优先读取 source-specific parquet 缓存
         for cache_path, source in [(polygon_path, 'Polygon'), (yahoo_path, 'Yahoo')]:
-            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+            if cache.is_valid(cache_path):
                 try:
-                    spy_df = _load_cache(cache_path, expected_source=source, expected_adjustment='adjusted')
+                    spy_df = cache.load(cache_path, expected={'source': source, 'adjustment': 'adjusted'})
                     spy_df = _normalize_index(spy_df)
                     if isinstance(spy_df, pd.DataFrame) and 'Close' in spy_df.columns:
                         spy_data = spy_df['Close'].loc[start_date:end_date]
@@ -548,7 +479,7 @@ class HybridDataSource:
                 import yfinance as yf
                 spy = yf.Ticker('SPY').history(period='max')['Close']
                 spy = _normalize_index(spy)
-                _save_cache(yahoo_path, spy, source='Yahoo', adjustment='adjusted')
+                cache.save(yahoo_path, spy, metadata={'source': 'Yahoo', 'adjustment': 'adjusted'})
                 spy_data = spy.loc[start_date:end_date]
             except Exception:
                 pass
@@ -626,12 +557,12 @@ if __name__ == '__main__':
             adj = 'unadjusted'
         else:
             adj = 'adjusted'
-        cache_path = _get_cache_path(symbol, source='Polygon', adjustment=adj)
+        cache_path = cache.get_path(symbol, source='Polygon', adjustment=adj, frequency='daily')
         if not os.path.exists(cache_path):
-            cache_path = _get_cache_path(symbol, source='Yahoo', adjustment=adj)
+            cache_path = cache.get_path(symbol, source='Yahoo', adjustment=adj, frequency='daily')
         if os.path.exists(cache_path):
             try:
-                metadata = get_cache_metadata(cache_path)
+                metadata = cache.get_metadata(cache_path)
                 print(f"  {os.path.basename(cache_path)}: "
                       f"source={metadata.get('source')}, "
                       f"adjustment={metadata.get('adjustment')}, "

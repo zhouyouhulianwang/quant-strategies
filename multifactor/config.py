@@ -42,6 +42,19 @@ class RiskConfig(BaseModel):
     max_position_pct: float = Field(0.20, gt=0.0, le=1.0)
     max_intraday_dd: float = Field(0.10, gt=0.0, le=0.5)
     single_stock_limit: float = Field(0.05, gt=0.0, le=0.5)
+    max_drawdown_limit: float = Field(0.15, gt=0.0, le=1.0)
+    
+    @field_validator('max_drawdown_limit', mode='before')
+    @classmethod
+    def _load_max_drawdown_limit_from_env(cls, v):
+        """允许 MAX_DRAWDOWN_LIMIT 环境变量覆盖累计回撤阈值（环境变量优先）"""
+        env = os.environ.get('MAX_DRAWDOWN_LIMIT')
+        if env is not None:
+            try:
+                return float(env)
+            except ValueError:
+                raise ValueError(f"MAX_DRAWDOWN_LIMIT 必须是数值: {env}")
+        return v
     
     @field_validator('vix_panic_threshold', mode='before')
     @classmethod
@@ -69,14 +82,14 @@ class RiskConfig(BaseModel):
     
     @field_validator('max_intraday_dd', mode='before')
     @classmethod
-    def _load_max_drawdown_limit_from_env(cls, v):
-        """允许 MAX_DRAWDOWN_LIMIT 环境变量覆盖配置（环境变量优先）"""
-        env = os.environ.get('MAX_DRAWDOWN_LIMIT')
+    def _load_max_intraday_dd_from_env(cls, v):
+        """允许 MAX_INTRADAY_DD 环境变量覆盖配置（环境变量优先）"""
+        env = os.environ.get('MAX_INTRADAY_DD')
         if env is not None:
             try:
                 return float(env)
             except ValueError:
-                raise ValueError(f"MAX_DRAWDOWN_LIMIT 必须是数值: {env}")
+                raise ValueError(f"MAX_INTRADAY_DD 必须是数值: {env}")
         return v
     
     @field_validator('vix_panic_threshold')
@@ -104,6 +117,9 @@ class TradingConfig(BaseModel):
     # 限价单配置
     use_limit_orders: bool = False
     limit_order_offset_pct: float = Field(0.001, ge=0.0001, le=0.05)
+    
+    # P2 修复：调仓前持仓对账开关
+    enable_reconcile: bool = False
     
     # 调仓频率（通过项目下的 config.json 配置，不依赖环境变量）
     # monthly/bimonthly/quarterly/weekly 参考 QC 风格：在允许月份的首个交易日开盘后 30 分钟执行
@@ -213,21 +229,24 @@ class V14StrategyConfig(BaseModel):
 _config_instance: Optional[V14StrategyConfig] = None
 
 
-def get_config() -> V14StrategyConfig:
+def get_config(config_path: Optional[str] = None) -> V14StrategyConfig:
     """获取全局配置（单例）
-    优先读取项目根目录下的 config.json，不存在时使用默认配置
+    优先读取项目根目录下的 config.json；不存在时使用默认配置。
+    若 config.json 存在但读取或解析失败，立即抛出异常以 fail-fast，
+    避免错误配置导致交易行为不一致。
     """
     global _config_instance
-    if _config_instance is None:
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    if _config_instance is None or config_path is not None:
+        config_path = config_path or os.path.join(os.path.dirname(__file__), 'config.json')
         kwargs = {}
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     kwargs = json.load(f)
-            except Exception as e:
-                # 不抛异常，避免配置损坏导致服务无法启动
-                print(f"⚠️ 读取 config.json 失败，使用默认配置: {e}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"config.json 解析失败 ({config_path}): {e}") from e
+            except OSError as e:
+                raise ValueError(f"config.json 读取失败 ({config_path}): {e}") from e
         # 环境变量覆盖 base_url
         if 'ALPACA_BASE_URL' in os.environ:
             kwargs['alpaca_base_url'] = os.environ['ALPACA_BASE_URL']
@@ -235,11 +254,11 @@ def get_config() -> V14StrategyConfig:
     return _config_instance
 
 
-def reload_config():
+def reload_config(config_path: Optional[str] = None):
     """P1 修复：重新加载 config.json，使运行时配置变更生效"""
     global _config_instance
     _config_instance = None
-    return get_config()
+    return get_config(config_path=config_path)
 
 
 def set_config(config: V14StrategyConfig):
