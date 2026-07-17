@@ -315,6 +315,39 @@ class V14Strategy(BaseStrategy):
 
         return result
 
+    def _get_rebalance_dates(self, price_df, rebalance_frequency):
+        """根据调仓频率生成调仓日期序列。
+
+        Parameters
+        ----------
+        price_df : pd.DataFrame
+            价格数据（必须有 DatetimeIndex）。
+        rebalance_frequency : str
+            'daily' | 'weekly' | 'monthly' | 'bimonthly' | 'quarterly'。
+
+        Returns
+        -------
+        pd.DatetimeIndex
+            调仓日期序列。
+        """
+        if rebalance_frequency == 'daily':
+            return price_df.index.copy()
+        elif rebalance_frequency == 'weekly':
+            return price_df.groupby([price_df.index.year, price_df.index.isocalendar().week]).tail(1).index
+        elif rebalance_frequency == 'monthly':
+            return price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
+        elif rebalance_frequency == 'bimonthly':
+            # 每两个月最后一个交易日：1,3,5,7,9,11 月末
+            mask = price_df.index.month.isin([1, 3, 5, 7, 9, 11])
+            if not mask.any():
+                return pd.DatetimeIndex([], tz=price_df.index.tz)
+            return price_df[mask].groupby([price_df[mask].index.year, price_df[mask].index.month]).tail(1).index
+        elif rebalance_frequency == 'quarterly':
+            return price_df.groupby([price_df.index.year, price_df.index.quarter]).tail(1).index
+        else:
+            logger.warning(f"⚠️ 未知调仓频率 '{rebalance_frequency}'，回退到 monthly")
+            return price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
+
     def _run_backtest_unified(self, price_df, market_df):
         """统一回测引擎 - 使用与实盘相同的 generate_signals 逻辑。
 
@@ -369,19 +402,25 @@ class V14Strategy(BaseStrategy):
             logger.warning(f"⚠️ 数据不足 252 日 ({len(price_df)} 日)，无法预热")
             return pd.DataFrame()
 
-        monthly = price_df.groupby([price_df.index.year, price_df.index.month]).tail(1).index
-        monthly = monthly[monthly >= price_df.index[252]]
+        rebalance_frequency = 'monthly'
+        if self.config and hasattr(self.config, 'trading'):
+            rebalance_frequency = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
+        rebalance_dates = self._get_rebalance_dates(price_df, rebalance_frequency)
+        rebalance_dates = rebalance_dates[rebalance_dates >= price_df.index[252]]
 
-        if len(monthly) < 2:
-            logger.warning("⚠️ 调仓日不足 2 个，无法回测")
+        if len(rebalance_dates) < 2:
+            logger.warning(f"⚠️ 调仓日不足 2 个 (frequency={rebalance_frequency})，无法回测")
             return pd.DataFrame()
+
+        logger.info(f"📅 回测调仓频率: {rebalance_frequency} ({len(rebalance_dates)} 个调仓日)")
 
         nav = 1.0
         prev_holdings = []
+        prev_weights = {}
         records = []
 
-        for i in range(1, len(monthly)):
-            prev_d, curr_d = monthly[i-1], monthly[i]
+        for i in range(1, len(rebalance_dates)):
+            prev_d, curr_d = rebalance_dates[i-1], rebalance_dates[i]
 
             try:
                 vix_v = float(market_df.loc[prev_d, 'VIX'])
@@ -393,12 +432,18 @@ class V14Strategy(BaseStrategy):
 
             selected = list(target_positions.keys()) if target_positions else []
 
-            if prev_holdings:
+            # 记录当前目标权重（用于收益计算和成本估算）
+            total_target = sum(target_positions.values()) if target_positions else 0.0
+            curr_weights = {s: v / total_target for s, v in target_positions.items()} if total_target > 0 else {}
+
+            if prev_holdings and prev_weights:
                 try:
                     p_start = price_df.loc[prev_d, prev_holdings].values
                     p_end = price_df.loc[curr_d, prev_holdings].values
+                    returns = p_end / p_start - 1
                     sc = v14_scale(vix_v)
-                    mr = np.mean(p_end / p_start - 1) * (sc / 100)
+                    weights_arr = np.array([prev_weights.get(s, 0.0) for s in prev_holdings])
+                    mr = np.dot(weights_arr, returns) * (sc / 100)
                 except (KeyError, ValueError, TypeError) as e:
                     logger.warning(f"⚠️ 收益计算错误: {e}, 使用 0")
                     mr = 0
@@ -414,8 +459,10 @@ class V14Strategy(BaseStrategy):
                 'vix': vix_v,
                 'n': len(selected),
                 'holdings': selected,
+                'weights': curr_weights,
             })
             prev_holdings = selected
+            prev_weights = curr_weights
 
         return pd.DataFrame(records)
 
@@ -450,11 +497,11 @@ class V14Strategy(BaseStrategy):
                 price_df, market_df = prepare_backtest_data_qc(
                     TICKERS, start, end, resolution='daily'
                 )
+                if vix is None:
+                    vix = market_df['VIX'].iloc[-1]
             else:
                 logger.error("无法获取数据，无可用数据源")
                 return {}
-
-            vix = market_df['VIX'].iloc[-1]
 
         if vix is None:
             logger.error("VIX 数据缺失")
@@ -467,7 +514,11 @@ class V14Strategy(BaseStrategy):
         logger.info(f"数据日期: {price_df.index[-1]}")
 
         if price_df is None or live_mode:
-            logger.info("📌 信号基于历史 EOD 收盘价计算（V14 为月末再平衡策略）")
+            freq_desc = ""
+            if self.config and hasattr(self.config, 'trading'):
+                freq = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
+                freq_desc = f"({freq} 再平衡)"
+            logger.info(f"📌 信号基于历史 EOD 收盘价计算 {freq_desc}")
             if self.use_paper_trading:
                 logger.info("📌 实盘执行时将使用当前实时价格计算股数")
 
@@ -829,12 +880,27 @@ class V14Strategy(BaseStrategy):
             logger.warning("回测结果为空")
             return
 
-        nav = result['nav']
+        # 优先使用扣除交易成本后的 NAV
+        nav_col = 'nav_after_cost' if 'nav_after_cost' in result.columns else 'nav'
+        nav = result[nav_col]
         returns = nav.pct_change().dropna()
 
         years = (result['date'].iloc[-1] - result['date'].iloc[0]).days / 365.25
         cagr = (nav.iloc[-1] / nav.iloc[0]) ** (1/years) - 1
-        vol = returns.std() * np.sqrt(12)
+
+        # 根据调仓频率选择正确的年化系数
+        rebalance_frequency = 'monthly'
+        if self.config and hasattr(self.config, 'trading'):
+            rebalance_frequency = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
+        periods_per_year = {
+            'daily': 252,
+            'weekly': 52,
+            'monthly': 12,
+            'bimonthly': 6,
+            'quarterly': 4,
+        }.get(rebalance_frequency, 12)
+
+        vol = returns.std() * np.sqrt(periods_per_year)
         sharpe = cagr / vol if vol > 0 else 0
         maxdd = ((nav / nav.cummax()) - 1).min()
 
@@ -842,7 +908,9 @@ class V14Strategy(BaseStrategy):
         logger.info(f"回测绩效")
         logger.info(f"{'='*60}")
         logger.info(f"  期间: {result['date'].iloc[0]} ~ {result['date'].iloc[-1]}")
+        logger.info(f"  调仓频率: {rebalance_frequency}")
         logger.info(f"  调仓次数: {len(result)}")
+        logger.info(f"  NAV 列: {nav_col}")
         logger.info(f"  Final NAV: {nav.iloc[-1]:.4f}")
         logger.info(f"  CAGR: {cagr:.2%}")
         logger.info(f"  Sharpe: {sharpe:.3f}")

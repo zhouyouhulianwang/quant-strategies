@@ -390,8 +390,25 @@ def apply_costs_to_backtest(result_df, cost_model_instance=None, cost_per_turnov
     # 默认换手率
     default_turnover = 0.5
 
-    # 若存在 holdings 列，则按实际持仓计算换手率
-    if 'holdings' in result.columns:
+    # 若存在 weights 列，则按实际权重变化计算换手率（dollar turnover）
+    if 'weights' in result.columns:
+        turnovers = []
+        prev_weights = {}
+        for _, row in result.iterrows():
+            curr_weights = row.get('weights', {}) or {}
+            all_symbols = set(prev_weights.keys()) | set(curr_weights.keys())
+            if all_symbols:
+                # 总买入 turnover = 所有正权重变化之和
+                turnover = sum(
+                    max(0.0, curr_weights.get(s, 0.0) - prev_weights.get(s, 0.0))
+                    for s in all_symbols
+                )
+            else:
+                turnover = 0.0
+            turnovers.append(turnover)
+            prev_weights = curr_weights
+    # 若仅有 holdings 列，则退回到持仓集合的 Jaccard 距离
+    elif 'holdings' in result.columns:
         turnovers = []
         prev = set()
         for _, row in result.iterrows():
