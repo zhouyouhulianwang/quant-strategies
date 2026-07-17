@@ -78,11 +78,22 @@ def _get_last_trading_day_of_month(price_df, year, month):
     return last_date
 
 # ============================================================
-# 1. 配置
+# 1. 配置：股票池从 config.json 读取，main.py 保留默认值作为兜底
 # ============================================================
+from config import get_config
 
-# 股票池 (示例: 40只)
-TICKERS = [
+def _load_universe_from_config():
+    """从 config.json 读取股票池，失败时返回默认 40 只。"""
+    try:
+        cfg = get_config()
+        if hasattr(cfg, 'universe') and getattr(cfg.universe, 'tickers', None):
+            return cfg.universe.tickers, cfg.universe.industry_map, cfg.universe.ndx_set()
+    except Exception as e:
+        logger.warning(f"Failed to load universe from config, using defaults: {e}")
+    return None, None, None
+
+
+_DEFAULT_TICKERS = [
     'NVDA','MU','AMD','INTC','AVGO','QCOM',  # 半导体
     'AAPL','MSFT','GOOGL','AMZN','META','TSLA',  # 科技
     'NFLX','ADBE','CRM','INTU',  # 软件
@@ -94,8 +105,7 @@ TICKERS = [
     'DIS','CMCSA','VZ','TMUS'  # 媒体/电信
 ]
 
-# 行业映射
-INDUSTRY = {
+_DEFAULT_INDUSTRY = {
     'NVDA':'semi','MU':'semi','AMD':'semi','INTC':'semi','AVGO':'semi','QCOM':'semi',
     'AAPL':'tech','MSFT':'tech','GOOGL':'tech','AMZN':'tech','META':'tech','TSLA':'tech',
     'NFLX':'tech','ADBE':'tech','CRM':'tech','INTU':'tech',
@@ -106,8 +116,19 @@ INDUSTRY = {
     'DIS':'media','CMCSA':'media','VZ':'telecom','TMUS':'telecom'
 }
 
-# NDX集合 (前35只)
+# 全局股票池变量（可被策略覆盖，保持向后兼容）
+TICKERS = _DEFAULT_TICKERS
+INDUSTRY = _DEFAULT_INDUSTRY
 NDX_SET = set(TICKERS[:35])
+
+# 尝试从 config.json 覆盖（只覆盖一次，避免重复加载）
+_cfg_tickers, _cfg_industry, _cfg_ndx_set = _load_universe_from_config()
+if _cfg_tickers:
+    TICKERS = _cfg_tickers
+if _cfg_industry:
+    INDUSTRY = _cfg_industry
+if _cfg_ndx_set is not None:
+    NDX_SET = _cfg_ndx_set
 
 
 # ============================================================

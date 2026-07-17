@@ -3,11 +3,38 @@
 防止无效配置导致交易错误
 """
 
-from typing import Optional
+from typing import Optional, Dict, List
 import os
 import json
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
+
+class UniverseConfig(BaseModel):
+    """股票池配置"""
+    tickers: List[str] = Field(default_factory=list)
+    ndx_count: int = Field(default=35, ge=0)
+    industry_map: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator('tickers')
+    @classmethod
+    def tickers_must_be_unique_and_uppercase(cls, v):
+        if not v:
+            return v
+        cleaned = [str(s).strip().upper() for s in v if str(s).strip()]
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError('universe.tickers 中不能存在重复股票代码')
+        return cleaned
+
+    @field_validator('ndx_count')
+    @classmethod
+    def ndx_count_not_exceed_universe(cls, v, info):
+        tickers = (info.data or {}).get('tickers', [])
+        if v > len(tickers):
+            raise ValueError(f'ndx_count ({v}) 不能超过股票池数量 ({len(tickers)})')
+        return v
+
+    def ndx_set(self) -> set:
+        return set(self.tickers[:self.ndx_count])
 
 class RiskConfig(BaseModel):
     """风控配置"""

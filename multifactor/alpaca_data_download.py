@@ -18,13 +18,8 @@ from logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger('alpaca_data_download')
 
-# 股票列表（从 main.py 导入）
-TICKERS = [
-    'NVDA', 'MU', 'AMD', 'INTC', 'AVGO', 'QCOM',
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX', 'ADBE', 'CRM', 'INTU',
-    'JPM', 'BAC', 'GS', 'V', 'MA', 'UNH', 'JNJ', 'PFE', 'ABBV',
-    'XOM', 'CVX', 'BA', 'CAT', 'NEE', 'PEP', 'COST', 'WMT', 'HD', 'DIS', 'CMCSA', 'VZ', 'TMUS'
-]
+# 股票列表（从 main.py 导入，支持 config.json 配置化）
+from main import TICKERS
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'alpaca')
 os.makedirs(DATA_DIR, exist_ok=True)
