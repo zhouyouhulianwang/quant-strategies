@@ -18,6 +18,8 @@ P2修复: 文档此前宣称16因子，实际实现为17个(基础7 + V14估值4
 
 import numpy as np
 import pandas as pd
+import json
+import os
 import logging
 
 # P2修复：统一全链路日志格式
@@ -80,12 +82,71 @@ def _get_last_trading_day_of_month(price_df, year, month):
 # ============================================================
 from config import get_config
 
+def _load_builtin_tickers(filename):
+    """加载 data/ 目录下的内置股票池 JSON。"""
+    path = os.path.join(os.path.dirname(__file__), 'data', filename)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load {path}: {e}")
+        return []
+
+
+def _load_builtin_industry_map(filename):
+    """加载 data/ 目录下的行业映射 JSON。"""
+    path = os.path.join(os.path.dirname(__file__), 'data', filename)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load {path}: {e}")
+        return {}
+
+
 def _load_universe_from_config():
-    """从 config.json 读取股票池，失败时返回默认 40 只。"""
+    """从 config.json 读取股票池，支持内置 S&P 500 / NASDAQ 100 / 自定义。"""
     try:
         cfg = get_config()
-        if hasattr(cfg, 'universe') and getattr(cfg.universe, 'tickers', None):
-            return cfg.universe.tickers, cfg.universe.industry_map, cfg.universe.ndx_set()
+        if not hasattr(cfg, 'universe'):
+            return None, None, None
+
+        universe_type = getattr(cfg.universe, 'type', 'default')
+        cap = getattr(cfg.universe, 'cap', 0)
+
+        if universe_type == 'sp500':
+            tickers = _load_builtin_tickers('sp500_tickers.json')
+            industry_map = _load_builtin_industry_map('sp500_sectors.json')
+            ndx_tickers = _load_builtin_tickers('ndx100_tickers.json')
+            ndx_set = set(ndx_tickers) & set(tickers)
+        elif universe_type == 'ndx100':
+            tickers = _load_builtin_tickers('ndx100_tickers.json')
+            industry_map = _load_builtin_industry_map('universe_industry_map.json')
+            industry_map = {k: v for k, v in industry_map.items() if k in tickers}
+            ndx_set = set(tickers)
+        elif universe_type == 'sp500_ndx100':
+            tickers = _load_builtin_tickers('sp500_tickers.json')
+            ndx_tickers = _load_builtin_tickers('ndx100_tickers.json')
+            tickers = list(set(tickers) | set(ndx_tickers))
+            industry_map = _load_builtin_industry_map('universe_industry_map.json')
+            ndx_set = set(ndx_tickers)
+        elif universe_type == 'custom':
+            tickers = getattr(cfg.universe, 'tickers', None)
+            industry_map = getattr(cfg.universe, 'industry_map', None)
+            ndx_set = cfg.universe.ndx_set()
+        else:
+            return None, None, None
+
+        if not tickers:
+            return None, None, None
+
+        # 应用 cap 限制
+        if cap > 0 and len(tickers) > cap:
+            tickers = tickers[:cap]
+            ndx_set = ndx_set & set(tickers)
+            industry_map = {k: v for k, v in industry_map.items() if k in tickers}
+
+        return tickers, industry_map or {}, ndx_set
     except Exception as e:
         logger.warning(f"Failed to load universe from config, using defaults: {e}")
     return None, None, None

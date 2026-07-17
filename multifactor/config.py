@@ -10,7 +10,13 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class UniverseConfig(BaseModel):
-    """股票池配置"""
+    """股票池配置
+    
+    type: 内置股票池类型 (default|sp500|ndx100|sp500_ndx100|custom)
+    当 type 为 custom 时，使用 tickers / ndx_count / industry_map 自定义
+    """
+    type: str = Field('default', pattern='^(default|sp500|ndx100|sp500_ndx100|custom)$')
+    cap: int = Field(0, ge=0)  # 限制股票池数量，0 表示不限制
     tickers: List[str] = Field(default_factory=list)
     ndx_count: int = Field(default=35, ge=0)
     industry_map: Dict[str, str] = Field(default_factory=dict)
@@ -170,6 +176,8 @@ class V14StrategyConfig(BaseModel):
     
     # Alpaca API Key/Secret（从环境变量读取，不硬编码）
     # P1修复: 增加非空校验，但允许通过环境变量注入
+    universe: UniverseConfig = UniverseConfig()
+
     alpaca_api_key: str = Field(default='')
     alpaca_api_secret: str = Field(default='')
     
