@@ -919,6 +919,7 @@ class AlpacaPaperExecutor:
         limit_price=None,
         *,
         _record_pdt=True,
+        force=False,
     ):
         """
         提交订单（支持幂等性、PDT 检查、限价单、购买力检查、最小订单数量检查）
@@ -931,6 +932,7 @@ class AlpacaPaperExecutor:
             time_in_force: str, 'day', 'gtc', 'ioc', 'opg'
             limit_price: float, 限价单价格（None 则自动计算）
             _record_pdt: bool, 内部参数，是否自动记录 PDT（默认 True）
+            force: bool, 内部参数，紧急平仓时绕过 trading_halted（默认 False）
 
         返回:
             dict: 订单信息
@@ -963,7 +965,8 @@ class AlpacaPaperExecutor:
                 return None
 
         # P0: 交易暂停状态统一由 RiskMonitor 持有
-        if self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False):
+        # 紧急平仓时通过 force=True 绕过暂停检查，避免兜底路径被自己的 halted 状态阻断
+        if not force and self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False):
             logger.error(f"[ERROR] Trading halted, rejecting order submission: {symbol} {side}")
             self._send_alert('order_failed', symbol, side, qty, 'trading_halted')
             return None
@@ -1284,7 +1287,8 @@ class AlpacaPaperExecutor:
             # 回退到逐个卖出
             for pos in positions:
                 # P1-3 修复：兜底路径中显式记录 PDT，避免 submit_order 重复记录
-                order = self.submit_order(pos['symbol'], pos['qty'], 'sell', _record_pdt=False)
+                # P0 修复：紧急平仓兜底绕过 trading_halted 检查
+                order = self.submit_order(pos['symbol'], pos['qty'], 'sell', _record_pdt=False, force=True)
                 if order and self.pdt_tracker and order.get('status') in ('filled', 'partially_filled'):
                     filled_qty = int(order.get('filled_qty', 0))
                     if filled_qty > 0:
@@ -1561,8 +1565,8 @@ class AlpacaExecutor:
     def liquidate_all(self):
         return self.executor.liquidate_all()
 
-    def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None, *, _record_pdt=True):
-        return self.executor.submit_order(symbol, qty, side, order_type, time_in_force, limit_price, _record_pdt=_record_pdt)
+    def submit_order(self, symbol, qty, side, order_type='market', time_in_force='day', limit_price=None, *, _record_pdt=True, force=False):
+        return self.executor.submit_order(symbol, qty, side, order_type, time_in_force, limit_price, _record_pdt=_record_pdt, force=force)
 
     def get_account(self):
         return self.executor.get_account()

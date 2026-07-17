@@ -114,7 +114,9 @@ def main(argv=None) -> int:
             order_type=OrderType.MARKET,
             time_in_force=TimeInForce.DAY,
         )
-        print(f"  Order submitted: {order.id} status={order.status}")
+        order_id = order.get('id') if isinstance(order, dict) else getattr(order, 'id', None)
+        order_status = order.get('status') if isinstance(order, dict) else getattr(order, 'status', None)
+        print(f"  Order submitted: {order_id} status={order_status}")
     except Exception as e:
         print(f"ERROR: Order submission failed: {e}")
         return 1
