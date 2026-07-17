@@ -15,6 +15,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import threading
 
 from logging_config import setup_logging
 
@@ -48,11 +49,30 @@ class AlertManager:
             ALERTS_DIR, f"alerts_{datetime.now():%Y%m%d}.json"
         )
         self._alert_buffer: List[Dict[str, Any]] = []
+        # P1: 并发写入锁 + 去重窗口
+        self._write_lock = threading.Lock()
+        self._dedup_window: Dict[str, float] = {}
+        self._dedup_seconds = 60.0
 
     def _write_alert(self, level: str, category: str, message: str, context: Optional[Dict[str, Any]] = None):
         """写入一条告警记录"""
         if not self.enabled:
             return
+        
+        # 去重 key: category + message
+        dedup_key = f"{category}:{message}"
+        now_ts = datetime.now().timestamp()
+        with self._write_lock:
+            last_seen = self._dedup_window.get(dedup_key, 0)
+            if now_ts - last_seen < self._dedup_seconds:
+                return
+            self._dedup_window[dedup_key] = now_ts
+            # 清理过期去重记录
+            self._dedup_window = {
+                k: v for k, v in self._dedup_window.items()
+                if now_ts - v < self._dedup_seconds
+            }
+        
 
         alert = {
             'timestamp': datetime.now().isoformat(),
@@ -75,7 +95,7 @@ class AlertManager:
 
         # 追加写入 JSON 文件
         try:
-            with open(self.alert_file, 'a', encoding='utf-8') as f:
+            with self._write_lock, open(self.alert_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(alert, ensure_ascii=False, default=str) + '\n')
         except (OSError, IOError) as e:
             logger.error(f"Alert write to file failed: {e}")

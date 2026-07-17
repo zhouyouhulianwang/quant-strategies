@@ -44,11 +44,12 @@ def cleanup_runtime_files():
 if __name__ == '__main__':
     cleanup_runtime_files()
 
-    parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
-    parser.add_argument('--backtest', action='store_true', help='Run backtest')
-    parser.add_argument('--live', action='store_true', help='Run live')
+   parser = argparse.ArgumentParser(description='V14 MultiFactor Strategy')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--backtest', action='store_true', help='Run backtest')
+    group.add_argument('--paper', action='store_true', help='Run Alpaca Paper Trading')
+    group.add_argument('--live', action='store_true', help='Run Alpaca Live Trading (real money)')
     parser.add_argument('--real-data', action='store_true', help='Use real data')
-    parser.add_argument('--paper', action='store_true', help='Use Paper Trading')
     parser.add_argument('--start', type=str, help='Start date YYYY-MM-DD')
     parser.add_argument('--end', type=str, help='End date YYYY-MM-DD')
 
@@ -65,15 +66,20 @@ if __name__ == '__main__':
             "alpaca-py is not installed, cannot enter paper/live mode."
             "Run: pip install alpaca-py"
         )
-
-    # 初始化策略 - 默认使用真实数据，回测模式
-    strategy = V14Strategy(
-        use_real_data=True,
-        use_paper_trading=args.paper,
-        enable_risk_monitor=True,
-        enable_intraday_monitor=args.monitor,
-        weight_method=args.weight_method
-    )
+    
+    # 初始化策略：paper/live 明确区分
+    use_paper_trading = args.paper or args.live
+    paper = args.paper  # True=paper, False=live
+    strategy_kwargs = {
+        'use_real_data': True,
+        'enable_risk_monitor': True,
+        'enable_intraday_monitor': args.monitor,
+        'weight_method': args.weight_method,
+    }
+    if use_paper_trading:
+        strategy_kwargs['use_paper_trading'] = use_paper_trading
+        strategy_kwargs['paper'] = paper
+    strategy = V14Strategy(**strategy_kwargs)
 
     # 检查数据可用性
     if not strategy.use_real_data:
@@ -90,12 +96,6 @@ if __name__ == '__main__':
             exit(1)
 
     if args.live:
-        # 检查是否启用了 Paper Trading
-        if not strategy.use_paper_trading:
-            logger.error("[ERROR] Live mode requires --paper to enable Paper Trading")
-            logger.error("   Run: python run_strategy.py --live --paper")
-            exit(1)
-
         # 全自动实盘再平衡
         strategy.run_live_rebalance()
 

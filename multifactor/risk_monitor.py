@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Callable
 import logging
 import json
 import os
+import threading
 
 # 日志设置（P2修复：统一使用 logging_config 的格式）
 from logging_config import setup_logging
@@ -63,18 +64,48 @@ class RiskMonitor:
         self.alert_manager = alert_manager
         if self.alert_manager is None and ALERT_MGR_AVAILABLE:
             self.alert_manager = AlertManager(enabled=True)
+        
+        # P0: 线程安全状态
+        self._lock = threading.Lock()
+        self._trading_halted = False
+        
         self.alerts_history = []
         self.nav_history = []
         self.position_history = []
         
         # 风险状态
         self.risk_level = 'NORMAL'  # NORMAL, ELEVATED, HIGH, CRITICAL
-        self.trading_halted = False
         
         logger.info(f"[OK] Risk monitor started")
         logger.info(f"   Max drawdown limit: {max_drawdown_limit:.1%}")
         logger.info(f"   Max position limit: {max_position_pct:.1%}")
         logger.info(f"   VIX pause level: {vix_pause_level}")
+    
+    @property
+    def trading_halted(self):
+        """线程安全读取交易暂停状态"""
+        with self._lock:
+            return self._trading_halted
+    
+    @trading_halted.setter
+    def trading_halted(self, value):
+        """线程安全写入交易暂停状态"""
+        with self._lock:
+            self._trading_halted = value
+    
+    def halt_trading(self, reason):
+        """暂停交易并记录原因"""
+        self.trading_halted = True
+        logger.critical(f"[HALT] Trading halted: {reason}")
+    
+    def resume_trading(self, reason=None):
+        """恢复交易"""
+        self.trading_halted = False
+        msg = f"Trading resumed"
+        if reason:
+            msg = f"Trading resumed: {reason}"
+        logger.info(f"[RESUME] {msg}")
+    
     
     def check_drawdown(self, current_nav):
         """
@@ -84,12 +115,15 @@ class RiskMonitor:
             current_nav: float, 当前NAV
         
         返回:
-            bool: 是否触发告警
+            bool: 是否触发暂停
         """
         self.nav_history.append({
             'timestamp': datetime.now(),
             'nav': current_nav
         })
+        # P1: 限制历史记录长度，防止内存无限增长
+        if len(self.nav_history) > 1000:
+            self.nav_history = self.nav_history[-1000:]
         
         if len(self.nav_history) < 2:
             return False
@@ -105,6 +139,8 @@ class RiskMonitor:
                 f'Drawdown exceeded: {drawdown:.2%} (limit: {-self.limits["max_drawdown"]:.1%})',
                 {'current_nav': current_nav, 'peak': peak, 'drawdown': drawdown}
             )
+            # P0: 回撤触发时真正暂停交易
+            self.halt_trading(f'Drawdown exceeded: {drawdown:.2%}')
             return True
         
         return False
@@ -176,6 +212,8 @@ class RiskMonitor:
                 f'Daily loss exceeded: {daily_return:.2%} (limit: {-self.limits["daily_loss"]:.1%})',
                 {'daily_return': daily_return}
             )
+            # P0: 日亏损触发时真正暂停交易
+            self.halt_trading(f'Daily loss exceeded: {daily_return:.2%}')
             return True
         return False
     
@@ -292,6 +330,10 @@ class RiskMonitor:
         }
         
         self.alerts_history.append(alert)
+        # P1: 限制告警历史长度，防止内存无限增长
+        if len(self.alerts_history) > 1000:
+            self.alerts_history = self.alerts_history[-1000:]
+        
         
         # 记录日志
         logger.warning(f"[ALERT] [{alert_type}] {message}")

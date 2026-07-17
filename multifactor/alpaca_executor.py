@@ -433,6 +433,10 @@ class AlpacaPaperExecutor:
         # P1 修复：int 截断累计误差补偿表 {symbol: residual_value}
         self._qty_residuals = {}
 
+        # M8: 连续订单拒绝熔断计数器
+        self._consecutive_rejections = 0
+        self._max_consecutive_rejections = 5
+
         # 最小订单数量（按价格估算，避免低于券商最小名义金额）
         self.min_notional = 1.0
         self.tick_size = 0.0001
@@ -444,8 +448,7 @@ class AlpacaPaperExecutor:
 
         # 风控监控器引用（用于交易开关同步）
         self.risk_monitor = risk_monitor
-        # 全局交易开关（可被风控线程/人工紧急停止触发）
-        self.trading_halted = False
+        # P0: 交易暂停状态统一由 RiskMonitor 持有；本实例只通过 self.risk_monitor 访问
 
     def _send_alert(self, method, *args, **kwargs):
         """P2修复：统一封装告警调用，避免空告警管理器时出错"""
@@ -613,6 +616,173 @@ class AlpacaPaperExecutor:
             broker_daytrade_count=account.get('daytrade_count', 0),
         )
 
+    def _check_account_funds(self, symbol: str, qty: float, price: float, side: str) -> Dict:
+        """
+        H6 修复：检查账户资金是否足以开立买单，预留价格变动缓冲（默认 5%）。
+
+        返回:
+            dict: {'ok': bool, 'reason': str, 'required': float, 'available': float}
+        """
+        side = side.lower()
+        if side != 'buy':
+            return {'ok': True, 'reason': 'sell_side_no_funds_check'}
+
+        if price <= 0:
+            return {'ok': False, 'reason': 'invalid_price', 'required': 0.0, 'available': 0.0}
+
+        account = self._get_account_raw()
+        if not account:
+            return {'ok': False, 'reason': 'account_unavailable', 'required': 0.0, 'available': 0.0}
+
+        account_type = account.get('account_type', 'MARGIN').upper()
+        if account_type == 'CASH':
+            available = float(account.get('cash', 0.0) or 0.0)
+        else:
+            available = float(account.get('buying_power', 0.0) or 0.0)
+
+        # 预留 5% 缓冲以应对滑点和价格变动
+        buffer = 1.05
+        required = qty * price * buffer
+
+        if required > available:
+            return {
+                'ok': False,
+                'reason': 'insufficient_funds',
+                'required': required,
+                'available': available,
+            }
+
+        return {'ok': True, 'reason': 'sufficient_funds', 'required': required, 'available': available}
+
+    def _get_spread(self, symbol: str) -> Optional[float]:
+        """从最新报价获取当前买卖价差（H7 辅助）"""
+        if not self.data_client:
+            return None
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            quotes = self.data_client.get_stock_latest_quote(request)
+            quote = quotes.get(symbol) if isinstance(quotes, dict) else quotes
+            bid = float(getattr(quote, 'bid_price', 0) or 0)
+            ask = float(getattr(quote, 'ask_price', 0) or 0)
+            if bid > 0 and ask > 0:
+                return ask - bid
+        except Exception as e:
+            logger.debug(f"Failed to get spread for {symbol}: {e}")
+        return None
+
+    def _get_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """从最近日线计算 ATR（H7 辅助），失败时返回 None"""
+        if not self.data_client:
+            return None
+        try:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+
+            end = datetime.now()
+            start = end - timedelta(days=period * 2 + 5)
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+            )
+            bars = self.data_client.get_stock_bars(request)
+
+            bar_list = []
+            if hasattr(bars, 'df') and not bars.df.empty:
+                df = bars.df.sort_index()
+                bar_list = [
+                    {'high': float(r['high']), 'low': float(r['low']), 'close': float(r['close'])}
+                    for _, r in df.iterrows()
+                ]
+            elif hasattr(bars, 'data') and bars.data:
+                raw = bars.data.get(symbol, []) if isinstance(bars.data, dict) else bars.data
+                sorted_raw = sorted(raw, key=lambda x: getattr(x, 'timestamp', ''))
+                bar_list = [
+                    {'high': float(getattr(b, 'high', 0)),
+                     'low': float(getattr(b, 'low', 0)),
+                     'close': float(getattr(b, 'close', 0))}
+                    for b in sorted_raw
+                ]
+
+            if len(bar_list) < period + 1:
+                return None
+
+            trs = []
+            for i in range(1, len(bar_list)):
+                high = bar_list[i]['high']
+                low = bar_list[i]['low']
+                prev_close = bar_list[i - 1]['close']
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                trs.append(tr)
+
+            atr = sum(trs[-period:]) / period
+            return atr if atr > 0 else None
+        except Exception as e:
+            logger.debug(f"Failed to calculate ATR for {symbol}: {e}")
+        return None
+
+    def _get_protected_order_type(self, symbol: str, qty: float, price: float, side: str) -> Tuple[str, Optional[float]]:
+        """
+        H7 修复：市价单价格保护。
+
+        - 当 use_limit_orders=True 时，将市价单转为限价单。
+        - 当波动率较高（ATR/price > 2% 或 spread/price > 0.5%）时，转为限价单。
+        - 限价价格基于 get_dynamic_limit_offset 动态计算，预留 ATR/Spread 或配置偏移。
+
+        返回:
+            Tuple[str, Optional[float]]: (order_type, limit_price)
+        """
+        side = side.lower()
+        if price <= 0:
+            return 'market', None
+
+        if self.use_limit_orders:
+            atr = self._get_atr(symbol)
+            spread = self._get_spread(symbol)
+            offset = get_dynamic_limit_offset(
+                symbol, price, atr=atr, spread=spread, default_pct=self.limit_order_offset_pct
+            )
+            limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            logger.info(f"[PROTECT] use_limit_orders=True, converting {symbol} {side} to limit @ ${limit_price:.4f}")
+            return 'limit', limit_price
+
+        # 高波动保护阈值
+        atr = self._get_atr(symbol)
+        spread = self._get_spread(symbol)
+        atr_ratio = (atr / price) if atr and price > 0 else 0.0
+        spread_ratio = (spread / price) if spread and price > 0 else 0.0
+
+        if atr_ratio > 0.02 or spread_ratio > 0.005:
+            offset = get_dynamic_limit_offset(
+                symbol, price, atr=atr, spread=spread, default_pct=self.limit_order_offset_pct
+            )
+            limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            logger.info(
+                f"[PROTECT] High volatility (atr={atr_ratio:.4f}, spread={spread_ratio:.4f}), "
+                f"converting {symbol} {side} to limit @ ${limit_price:.4f}"
+            )
+            return 'limit', limit_price
+
+        return 'market', None
+
+    def _maybe_halt_on_rejections(self):
+        """M8 修复：连续订单被拒绝超过阈值时熔断暂停交易"""
+        if self._consecutive_rejections >= self._max_consecutive_rejections:
+            logger.critical(
+                f"[CIRCUIT_BREAKER] {self._consecutive_rejections} consecutive order rejections, "
+                f"halting trading"
+            )
+            if self.risk_monitor is not None:
+                try:
+                    self.risk_monitor.trading_halted = True
+                except Exception as e:
+                    logger.warning(f"Failed to set risk_monitor.trading_halted: {e}")
+            self._send_alert(
+                'risk_triggered', 'CIRCUIT_BREAKER',
+                f"{self._consecutive_rejections} consecutive order rejections"
+            )
+
     def _build_order_request(
         self,
         symbol: str,
@@ -712,8 +882,8 @@ class AlpacaPaperExecutor:
             self._send_alert('order_failed', symbol, side, qty, 'invalid_side')
             return None
 
-        # 全局交易开关检查（风控/人工紧急停止）
-        if self.trading_halted or (self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False)):
+        # P0: 交易暂停状态统一由 RiskMonitor 持有
+        if self.risk_monitor and getattr(self.risk_monitor, 'trading_halted', False):
             logger.error(f"[ERROR] Trading halted, rejecting order submission: {symbol} {side}")
             self._send_alert('order_failed', symbol, side, qty, 'trading_halted')
             return None
@@ -734,6 +904,8 @@ class AlpacaPaperExecutor:
         if not pdt_check['allowed']:
             logger.error(f"[ERROR] PDT blocked opening: {symbol} ({pdt_check['reason']})")
             self._send_alert('pdt_blocked', symbol, side, pdt_check.get('reason', 'unknown'))
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
             return None
 
         if not self.trading_client:
@@ -743,28 +915,34 @@ class AlpacaPaperExecutor:
         if self.mock and not ALPACA_AVAILABLE:
             return self._mock_order(symbol, qty, side, client_order_id=client_order_id)
 
-        # 价格/名义金额/购买力检查（仅在真实交易路径执行）
+        # H6 修复：价格/名义金额/购买力检查（含 5% 缓冲）
         current_price = self._get_current_price(symbol)
         notional = qty * current_price
         if notional < self.min_notional:
             logger.error(f"Order notional too small: {symbol} ${notional:.2f} < ${self.min_notional}")
             self._send_alert('order_failed', symbol, side, qty, 'notional_too_small', order_id=client_order_id)
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
             return None
 
-        # P1 修复：买入侧购买力检查
-        if side.lower() == 'buy':
-            account = self._get_account_raw()
-            if account:
-                bp = account.get('buying_power', 0.0)
-                if notional > bp:
-                    logger.error(f"[ERROR] Insufficient buying power: {symbol} needs ${notional:.2f}, available ${bp:.2f}")
-                    self._send_alert('order_failed', symbol, side, qty, 'insufficient_buying_power', order_id=client_order_id)
-                    return None
+        fund_check = self._check_account_funds(symbol, qty, current_price, side)
+        if not fund_check['ok']:
+            logger.error(
+                f"[ERROR] Insufficient funds: {symbol} {side} needs ${fund_check['required']:.2f}, "
+                f"available ${fund_check['available']:.2f} ({fund_check['reason']})"
+            )
+            self._send_alert('order_failed', symbol, side, qty, fund_check['reason'], order_id=client_order_id)
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
+            return None
 
-        # 如果未指定限价单价格，但配置为限价模式，则转限价单
-        if self.use_limit_orders and order_type.lower() == 'market':
+        # H7 修复：市价单价格保护
+        protected_type, protected_price = self._get_protected_order_type(symbol, qty, current_price, side)
+        if order_type.lower() == 'market' and protected_type == 'limit':
             order_type = 'limit'
-            logger.info(f"[LIMIT] Configured limit-order mode, converting {symbol} to limit order")
+            if limit_price is None:
+                limit_price = protected_price
+            logger.info(f"[LIMIT] Market order converted to protected limit: {symbol} {side} @ ${limit_price:.4f}")
 
         try:
             order_request = self._build_order_request(
@@ -776,19 +954,27 @@ class AlpacaPaperExecutor:
             logger.info(f"[OK] Order submitted: {side.upper()} {qty} {symbol} (ID: {client_order_id})")
             result = self._order_to_dict(order)
             result['client_order_id'] = client_order_id
+            # M8：成功后重置连续拒绝计数
+            self._consecutive_rejections = 0
 
             return result
         except APIError as e:
             logger.error(f"Alpaca API error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'api_error: {e}', order_id=client_order_id)
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
             return None
         except (RequestException, ConnectionError, Timeout) as e:
             logger.error(f"Network error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'network_error: {e}', order_id=client_order_id)
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
             return None
         except ValueError as e:
             logger.error(f"Parameter error, order submission failed: {e}")
             self._send_alert('order_failed', symbol, side, qty, f'value_error: {e}', order_id=client_order_id)
+            self._consecutive_rejections += 1
+            self._maybe_halt_on_rejections()
             return None
 
     def _find_order_by_client_id(self, client_order_id):
@@ -1155,7 +1341,12 @@ class AlpacaExecutor:
     - Decimal 精度（资金计算使用 Decimal）
     """
 
-    def __init__(self, api_key=None, api_secret=None, **kwargs):
+    def __init__(self, api_key=None, api_secret=None, paper=True, **kwargs):
+        # P0: 支持 live/paper 切换，默认 paper；透传给底层 executor
+        kwargs['paper'] = paper
+        # H8 修复：AlpacaExecutor 默认启用 PDT，除非调用方显式关闭
+        if 'enable_pdt' not in kwargs:
+            kwargs['enable_pdt'] = True
         self.executor = AlpacaPaperExecutor(api_key, api_secret, **kwargs)
         self.positions_history = []
 

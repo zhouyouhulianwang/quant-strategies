@@ -52,7 +52,7 @@ except ImportError:
 class OrderManager:
     """订单管理器 - 跟踪订单状态，处理成交确认"""
     
-    def __init__(self, executor, max_wait_sec=300, poll_interval=5, alert_manager=None):
+    def __init__(self, executor, max_wait_sec=300, poll_interval=5, alert_manager=None, max_makeup_depth=1):
         """
         初始化订单管理器
         
@@ -61,10 +61,12 @@ class OrderManager:
             max_wait_sec: int, 最大等待时间（秒）
             poll_interval: int, 轮询间隔（秒）
             alert_manager: AlertManager, 可选告警管理器（P2修复）
+            max_makeup_depth: int, 部分成交/超时后最大补单深度（默认 1）
         """
         self.executor = executor
         self.max_wait_sec = max_wait_sec
         self.poll_interval = poll_interval
+        self.max_makeup_depth = max_makeup_depth
         self.orders_log = []
 
         # P2修复：接入统一告警管理器
@@ -79,10 +81,75 @@ class OrderManager:
                 getattr(self.alert_manager, method)(*args, **kwargs)
             except Exception as e:
                 logger.debug(f"Alert send failed: {e}")
+
+    def _get_executor_attr(self, attr):
+        """获取执行器属性，兼容 AlpacaPaperExecutor 和 AlpacaExecutor 包装器"""
+        if hasattr(self.executor, attr):
+            return getattr(self.executor, attr)
+        if hasattr(self.executor, 'executor') and hasattr(self.executor.executor, attr):
+            return getattr(self.executor.executor, attr)
+        return None
+
+    def _check_pdt_can_open(self, symbol: str, side: str) -> Dict:
+        """H8 修复：开新仓前检查 PDT 限制"""
+        pdt_tracker = self._get_executor_attr('pdt_tracker')
+        enable_pdt = self._get_executor_attr('enable_pdt')
+        if not pdt_tracker or not enable_pdt:
+            return {'allowed': True, 'reason': 'pdt_disabled'}
+
+        account = self.executor.get_account() if hasattr(self.executor, 'get_account') else None
+        if not account:
+            return {'allowed': False, 'reason': 'account_unavailable'}
+
+        return pdt_tracker.can_open_position(
+            symbol=symbol,
+            side=side,
+            account_type=account.get('account_type', 'MARGIN'),
+            equity=account.get('equity', 0.0),
+            broker_daytrade_count=account.get('daytrade_count', 0),
+        )
+
+    def _place_makeup_order(self, symbol, qty, side, order_type, time_in_force, limit_price,
+                            max_wait_sec, poll_interval, makeup_depth) -> Optional[Dict]:
+        """M1 修复：对部分成交/超时剩余数量发起补单"""
+        if makeup_depth >= self.max_makeup_depth:
+            logger.warning(f"[MAKEUP] Max makeup depth reached for {symbol}, skipping")
+            return None
+        if qty <= 0:
+            return None
+        logger.info(f"[MAKEUP] Placing makeup order for {symbol} {side} remaining {qty}")
+        return self.submit_and_wait(
+            symbol=symbol, qty=qty, side=side,
+            order_type=order_type, time_in_force=time_in_force, limit_price=limit_price,
+            max_wait_sec=max_wait_sec, poll_interval=poll_interval,
+            _makeup_depth=makeup_depth + 1
+        )
+
+    def _merge_makeup_status(self, original: Dict, makeup: Optional[Dict], ordered_qty: int) -> Dict:
+        """M1 修复：合并原始部分成交与补单结果"""
+        if not makeup:
+            return original
+
+        orig_filled = int(original.get('filled_qty', 0))
+        makeup_filled = int(makeup.get('filled_qty', 0))
+        total_filled = orig_filled + makeup_filled
+        remaining = ordered_qty - total_filled
+
+        original['filled_qty'] = total_filled
+        original['remaining_qty'] = remaining
+        original['makeup_order'] = makeup
+
+        if remaining <= 0:
+            original['status'] = 'filled'
+        elif makeup.get('status') in ['filled', 'partially_filled']:
+            original['status'] = makeup.get('status')
+        # else keep original partial status
+
+        return original
     
     def submit_and_wait(self, symbol, qty, side, order_type='market', 
                         time_in_force='day', limit_price=None, max_wait_sec=None,
-                        poll_interval=None) -> Dict:
+                        poll_interval=None, _makeup_depth=0) -> Dict:
         """
         提交订单并等待成交确认
         
@@ -95,12 +162,21 @@ class OrderManager:
             limit_price: float
             max_wait_sec: int, 覆盖默认最大等待时间
             poll_interval: int, 覆盖默认轮询间隔
+            _makeup_depth: int, 内部补单深度（私有参数）
         
         返回:
             dict: 最终订单状态
         """
         max_wait = max_wait_sec if max_wait_sec is not None else self.max_wait_sec
         poll_int = poll_interval if poll_interval is not None else self.poll_interval
+
+        # H8 修复：开新仓前进行 PDT 检查（仅针对买入/开仓）
+        if side.lower() == 'buy':
+            pdt_check = self._check_pdt_can_open(symbol, side)
+            if not pdt_check['allowed']:
+                logger.error(f"[ERROR] PDT blocked opening: {symbol} ({pdt_check['reason']})")
+                self._send_alert('pdt_blocked', symbol, side, qty, pdt_check.get('reason', 'unknown'))
+                return {'status': 'REJECTED', 'symbol': symbol, 'reason': pdt_check['reason']}
         
         # 1. 提交订单
         order = self.executor.submit_order(
@@ -139,6 +215,10 @@ class OrderManager:
         # 3. 处理结果
         if final_status:
             filled_qty = int(final_status.get('filled_qty', 0))
+            remaining_qty = qty - filled_qty
+            final_status['filled_qty'] = filled_qty
+            final_status['remaining_qty'] = remaining_qty
+
             if final_status['status'] == 'filled':
                 logger.info(f"[OK] Order filled: {symbol} {filled_qty} shares @ ${final_status.get('filled_avg_price', 'N/A')}")
                 # 记录 PDT 成交
@@ -151,6 +231,14 @@ class OrderManager:
                 # 部分成交也记录
                 if hasattr(self.executor, 'record_fill') and filled_qty > 0:
                     self.executor.record_fill(symbol, side, filled_qty)
+                # M1 修复：部分成交后尝试补单
+                if remaining_qty > 0:
+                    makeup = self._place_makeup_order(
+                        symbol, remaining_qty, side, order_type, time_in_force, limit_price,
+                        max_wait_sec, poll_interval, _makeup_depth
+                    )
+                    if makeup:
+                        final_status = self._merge_makeup_status(final_status, makeup, qty)
             elif final_status['status'] == 'rejected':
                 logger.error(f"[ERROR] Order rejected: {symbol} - {final_status.get('reason', 'Unknown')}")
                 # P2修复：订单被拒发送告警
@@ -172,16 +260,49 @@ class OrderManager:
                     logger.error(f"Cancel timed-out order {order_id} network failed: {e}")
                 except ValueError as e:
                     logger.error(f"Cancel timed-out order {order_id} parameter error: {e}")
+
+            # M1 修复：超时后确认实际成交数量，若有部分成交则补单
+            final_status = self._get_order_status(order_id)
+            if final_status:
+                filled_qty = int(final_status.get('filled_qty', 0))
+                remaining_qty = qty - filled_qty
+                timeout_result = {
+                    'order_id': order_id,
+                    'symbol': symbol,
+                    'status': 'TIMEOUT',
+                    'side': side,
+                    'qty': qty,
+                    'filled_qty': filled_qty,
+                    'remaining_qty': remaining_qty,
+                }
+                self._log_order(timeout_result)
+                if remaining_qty > 0:
+                    makeup = self._place_makeup_order(
+                        symbol, remaining_qty, side, order_type, time_in_force, limit_price,
+                        max_wait_sec, poll_interval, _makeup_depth
+                    )
+                    if makeup:
+                        merged = self._merge_makeup_status(timeout_result, makeup, qty)
+                        timeout_result['filled_qty'] = merged['filled_qty']
+                        timeout_result['remaining_qty'] = merged['remaining_qty']
+                        timeout_result['makeup_order'] = merged.get('makeup_order')
+                        # 若补单完全成交，整体视为 filled；否则仍标记为 TIMEOUT
+                        if merged['status'] == 'filled':
+                            timeout_result['status'] = 'filled'
+                return timeout_result
+
             self._log_order({
                 'order_id': order_id,
                 'symbol': symbol,
                 'status': 'TIMEOUT',
                 'side': side,
-                'qty': qty
+                'qty': qty,
+                'filled_qty': 0,
+                'remaining_qty': qty,
             })
             # P2修复：订单超时发送告警
             self._send_alert('order_timeout', symbol, side, qty, order_id)
-            return {'status': 'TIMEOUT', 'order_id': order_id, 'symbol': symbol}
+            return {'status': 'TIMEOUT', 'order_id': order_id, 'symbol': symbol, 'filled_qty': 0, 'remaining_qty': qty}
     
     def _get_order_status(self, order_id):
         """获取订单状态（使用新版 alpaca-py API）"""

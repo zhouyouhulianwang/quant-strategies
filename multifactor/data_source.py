@@ -3,6 +3,13 @@ Data Source Module - Yahoo Finance 真实数据接入
 支持历史价格数据、VIX、市场指标获取
 """
 
+import logging
+
+# P2修复：统一全链路日志格式
+from logging_config import setup_logging
+setup_logging()
+logger = logging.getLogger('data_source')
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -33,9 +40,11 @@ PRICE_TTL_DAYS = CACHE_TTL_DAYS
 MARKET_TTL_DAYS = CACHE_TTL_DAYS
 
 
-def _get_cache_path(symbol):
-    """按 symbol 缓存完整历史，文件名统一为 {symbol}.parquet"""
-    return os.path.join(CACHE_DIR, f"{symbol}.parquet")
+def _get_cache_path(symbol, source='Yahoo', adjustment='adjusted'):
+    """按 symbol+source+adjustment 缓存完整历史，文件名包含来源和复权标志"""
+    safe_source = source.replace('/', '_').replace(' ', '_')
+    safe_adjustment = adjustment.replace('/', '_').replace(' ', '_')
+    return os.path.join(CACHE_DIR, f"{symbol}_{safe_source}_{safe_adjustment}.parquet")
 
 
 def _get_pickle_path(symbol):
@@ -54,21 +63,49 @@ def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
     return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
 
 
-def _load_cache(cache_path):
+def _verify_cache_metadata(cache_path, expected_source=None, expected_adjustment=None):
+    """读取缓存元数据并校验 source/adjustment，不匹配时记录警告"""
+    try:
+        metadata = get_cache_metadata(cache_path)
+        actual_source = metadata.get('source')
+        actual_adjustment = metadata.get('adjustment')
+        if expected_source and actual_source and str(actual_source) != str(expected_source):
+            logger.warning(
+                "[PIT] Cache source mismatch for %s: expected %s, got %s",
+                cache_path, expected_source, actual_source
+            )
+        if expected_adjustment and actual_adjustment and str(actual_adjustment) != str(expected_adjustment):
+            logger.warning(
+                "[PIT] Cache adjustment mismatch for %s: expected %s, got %s",
+                cache_path, expected_adjustment, actual_adjustment
+            )
+        downloaded_at = metadata.get('downloaded_at')
+        if downloaded_at:
+            logger.debug("[PIT] Cache %s downloaded_at=%s", cache_path, downloaded_at)
+    except Exception as e:
+        logger.debug("[PIT] Failed to verify cache metadata %s: %s", cache_path, e)
+
+
+def _load_cache(cache_path, expected_source=None, expected_adjustment=None):
     """从 parquet 缓存中读取数据对象，单列表自动还原为 Series（委托 cache.py）"""
+    _verify_cache_metadata(cache_path, expected_source, expected_adjustment)
     return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
 
 
 def _save_cache(cache_path, data, source='Yahoo', adjustment='adjusted'):
     """保存数据及元数据到 parquet 缓存，写入失败不抛异常（委托 cache.py）"""
-    metadata = {'source': source, 'adjustment': adjustment}
+    metadata = {
+        'source': source,
+        'adjustment': adjustment,
+        'download_time': datetime.now().isoformat(),
+    }
     return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
 
 
 def _migrate_pickle_to_parquet(symbol, source='Yahoo', adjustment='adjusted'):
     """将旧版 pickle 缓存一次性迁移为 parquet，失败不抛异常"""
     pickle_path = _get_pickle_path(symbol)
-    parquet_path = _get_cache_path(symbol)
+    parquet_path = _get_cache_path(symbol, source=source, adjustment=adjustment)
 
     if not os.path.exists(pickle_path) or os.path.exists(parquet_path):
         return False
@@ -133,13 +170,13 @@ def _fetch_yahoo_series(symbol, full_history=True):
             data = ticker.history(period='5d')['Close']
         return data
     except Exception as e:
-        print(f"失败: {e}")
+        logger.error("Failed to fetch %s: %s", symbol, e)
         return None
 
 
 def get_corporate_actions(symbols, start, end):
     """
-    获取公司行为数据（拆股、分红、并购）
+    获取公司行为数据（拆股、分红、并购），并记录事件警告
 
     参数:
         symbols: list, 股票代码列表
@@ -171,15 +208,24 @@ def get_corporate_actions(symbols, start, end):
             actions = actions[(actions.index >= start_dt) & (actions.index <= end_dt)]
 
             for date, row in actions.iterrows():
+                split = float(row.get('Stock Splits', 0.0)) if row.get('Stock Splits', 0.0) != 0 else 1.0
+                dividend = float(row.get('Dividends', 0.0)) if pd.notna(row.get('Dividends', 0.0)) else 0.0
+                # Yahoo actions 没有直接并购字段，此处尝试从 info 获取退市/并购提示
+                merger = 0
                 records.append({
                     'date': date,
                     'symbol': symbol,
-                    'split': float(row.get('Stock Splits', 0.0)) if row.get('Stock Splits', 0.0) != 0 else 1.0,
-                    'dividend': float(row.get('Dividends', 0.0)) if pd.notna(row.get('Dividends', 0.0)) else 0.0,
-                    'merger': 0,
+                    'split': split,
+                    'dividend': dividend,
+                    'merger': merger,
                 })
+                # PIT/公司行为告警：记录警告
+                if split != 1.0:
+                    logger.warning("[CORP_ACTION] %s split on %s: ratio=%s", symbol, date, split)
+                if dividend > 0:
+                    logger.warning("[CORP_ACTION] %s dividend on %s: amount=%.4f", symbol, date, dividend)
         except Exception as e:
-            print(f"[警告] 获取 {symbol} 公司行为失败: {e}")
+            logger.warning("[CORP_ACTION] Failed to get corporate actions for %s: %s", symbol, e)
             continue
 
     if not records:
@@ -192,6 +238,56 @@ def get_corporate_actions(symbols, start, end):
     df.set_index(['date', 'symbol'], inplace=True)
     df = df.sort_index()
     return df
+
+
+def get_delisted_symbols(symbols, start=None, end=None):
+    """
+    检测可能已退市的 symbols（近 1 个月无交易数据），并从股票池中移除
+
+    参数:
+        symbols: list, 股票代码列表
+        start: str, 'YYYY-MM-DD'（保留参数，未使用）
+        end: str, 'YYYY-MM-DD'（保留参数，未使用）
+
+    返回:
+        set: 已退市或无法获取数据的 symbol 集合
+    """
+    delisted = set()
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='1mo')
+            if hist is None or hist.empty:
+                logger.warning("[CORP_ACTION] %s appears delisted or has no recent data", symbol)
+                delisted.add(symbol)
+        except Exception as e:
+            logger.warning("[CORP_ACTION] %s delisting check failed: %s", symbol, e)
+            delisted.add(symbol)
+    return delisted
+
+
+def filter_universe_for_corporate_actions(symbols, start=None, end=None):
+    """
+    从股票池中移除已退市 symbols，并返回过滤后的列表及公司行为数据
+
+    参数:
+        symbols: list, 股票代码列表
+        start: str, 'YYYY-MM-DD'（可选，用于公司行为查询）
+        end: str, 'YYYY-MM-DD'（可选，用于公司行为查询）
+
+    返回:
+        tuple: (filtered_symbols, corporate_actions_df)
+    """
+    if start is None:
+        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    if end is None:
+        end = datetime.now().strftime('%Y-%m-%d')
+    delisted = get_delisted_symbols(symbols, start, end)
+    filtered = [s for s in symbols if s not in delisted]
+    if delisted:
+        logger.warning("[CORP_ACTION] Removed %d delisted symbols from universe: %s", len(delisted), sorted(delisted))
+    actions = get_corporate_actions(filtered, start, end)
+    return filtered, actions
 
 
 
@@ -212,7 +308,7 @@ def fetch_yahoo_data(symbols, start_date, end_date, use_cache=True):
     price_df = pd.DataFrame()
 
     for symbol in symbols:
-        cache_path = _get_cache_path(symbol)
+        cache_path = _get_cache_path(symbol, source='Yahoo', adjustment='adjusted')
 
         # 向后兼容：迁移旧 pickle 缓存
         if use_cache and not os.path.exists(cache_path):
@@ -221,20 +317,20 @@ def fetch_yahoo_data(symbols, start_date, end_date, use_cache=True):
         # 检查缓存
         if use_cache and _is_cache_valid(cache_path, CACHE_TTL_DAYS):
             try:
-                data = _load_cache(cache_path)
-                print(f"[缓存] {symbol}: {len(data)} 条记录")
+                data = _load_cache(cache_path, expected_source='Yahoo', expected_adjustment='adjusted')
+                logger.info(f"[Cache] {symbol}: {len(data)} records")
             except Exception as e:
-                print(f"[警告] {symbol} 缓存读取失败: {e}，尝试重新下载")
+                logger.warning(f"[Cache] Failed to read {symbol} cache: {e}, will re-download")
                 data = None
         else:
             data = None
 
         # 缓存未命中或失效：下载完整历史并写入缓存
         if data is None:
-            print(f"[下载] {symbol}...", end=' ')
+            logger.info(f"[Download] {symbol}...")
             data = _fetch_yahoo_series(symbol, full_history=True)
             if data is not None and len(data) > 0:
-                print(f"{len(data)} 条记录")
+                logger.info(f"{len(data)} records")
                 if use_cache:
                     _save_cache(cache_path, data, source='Yahoo', adjustment='adjusted')
             else:
@@ -246,7 +342,7 @@ def fetch_yahoo_data(symbols, start_date, end_date, use_cache=True):
             try:
                 data = data.loc[start_date:end_date]
             except Exception as e:
-                print(f"[警告] {symbol} 日期切片失败: {e}")
+                logger.warning(f"[Date slice] {symbol} date slice failed: {e}")
                 continue
             price_df[symbol] = data
 
@@ -266,7 +362,7 @@ def fetch_vix_data(start_date, end_date, use_cache=True):
         Series: VIX 日线数据
     """
     symbol = 'VIX'
-    cache_path = _get_cache_path(symbol)
+    cache_path = _get_cache_path(symbol, source='Yahoo', adjustment='unadjusted')
 
     # 向后兼容
     if use_cache and not os.path.exists(cache_path):
@@ -274,23 +370,23 @@ def fetch_vix_data(start_date, end_date, use_cache=True):
 
     if use_cache and _is_cache_valid(cache_path, CACHE_TTL_DAYS):
         try:
-            vix = _load_cache(cache_path)
-            print(f"[缓存] VIX: {len(vix)} 条记录")
+            vix = _load_cache(cache_path, expected_source='Yahoo', expected_adjustment='unadjusted')
+            logger.info(f"[Cache] VIX: {len(vix)} records")
         except Exception as e:
-            print(f"[警告] VIX 缓存读取失败: {e}，尝试重新下载")
+            logger.warning(f"[Cache] VIX cache read failed: {e}, will re-download")
             vix = None
     else:
         vix = None
 
     if vix is None:
-        print("[下载] VIX...", end=' ')
+        logger.info("[Download] VIX...")
         vix = _fetch_yahoo_series('^VIX', full_history=True)
         if vix is not None and len(vix) > 0:
-            print(f"{len(vix)} 条记录")
+            logger.info(f"{len(vix)} records")
             if use_cache:
                 _save_cache(cache_path, vix, source='Yahoo', adjustment='unadjusted')
         else:
-            print("失败")
+            logger.error("[Download] VIX failed")
             return None
 
     if vix is None or len(vix) == 0:
@@ -318,7 +414,7 @@ def fetch_market_data(start_date, end_date, use_cache=True):
 
     # 使用 SPY 的 RSI 作为市场 RSI 代理
     symbol = 'SPY_RSI'
-    cache_path = _get_cache_path(symbol)
+    cache_path = _get_cache_path(symbol, source='Yahoo', adjustment='adjusted')
 
     # 向后兼容
     if use_cache and not os.path.exists(cache_path):
@@ -326,22 +422,22 @@ def fetch_market_data(start_date, end_date, use_cache=True):
 
     if use_cache and _is_cache_valid(cache_path, CACHE_TTL_DAYS):
         try:
-            spy = _load_cache(cache_path)
+            spy = _load_cache(cache_path, expected_source='Yahoo', expected_adjustment='adjusted')
         except Exception as e:
-            print(f"[警告] SPY 缓存读取失败: {e}，尝试重新下载")
+            logger.warning(f"[Cache] SPY cache read failed: {e}, will re-download")
             spy = None
     else:
         spy = None
 
     if spy is None:
-        print("[下载] SPY (用于 RSI)...", end=' ')
+        logger.info("[Download] SPY (for RSI)...")
         spy = _fetch_yahoo_series('SPY', full_history=True)
         if spy is not None and len(spy) > 0:
-            print(f"{len(spy)} 条记录")
+            logger.info(f"{len(spy)} records")
             if use_cache:
                 _save_cache(cache_path, spy, source='Yahoo', adjustment='adjusted')
         else:
-            print("失败")
+            logger.error("[Download] SPY failed")
             return None
 
     if spy is None or len(spy) == 0:
@@ -413,12 +509,22 @@ def prepare_backtest_data(tickers, start_date, end_date, use_cache=True):
     返回:
         tuple: (price_df, market_df)
     """
-    print(f"\n{'='*60}")
-    print(f"准备回测数据: {start_date} ~ {end_date}")
-    print(f"{'='*60}")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Preparing backtest data: {start_date} ~ {end_date}")
+    logger.info(f"{'='*60}")
+
+    # PIT/公司行为：先移除退市股票，再获取数据
+    filtered_tickers, corp_actions = filter_universe_for_corporate_actions(
+        tickers, start_date, end_date
+    )
+    if len(filtered_tickers) < len(tickers):
+        logger.warning(
+            "[PIT] Universe reduced from %d to %d after corporate-action filtering",
+            len(tickers), len(filtered_tickers)
+        )
 
     # 获取价格数据
-    price_df = fetch_yahoo_data(tickers, start_date, end_date, use_cache)
+    price_df = fetch_yahoo_data(filtered_tickers, start_date, end_date, use_cache)
 
     # 获取市场数据
     market_df = fetch_market_data(start_date, end_date, use_cache)
@@ -426,9 +532,9 @@ def prepare_backtest_data(tickers, start_date, end_date, use_cache=True):
     # 对齐日期并处理缺失值
     price_df, market_df = _align_and_clean(price_df, market_df)
 
-    print(f"\n[完成] 价格数据: {len(price_df)} 个交易日")
-    print(f"[完成] 市场数据: {len(market_df)} 个交易日")
-    print(f"[完成] 股票数量: {len(price_df.columns)}")
+    logger.info(f"\n[Done] Price data: {len(price_df)} trading days")
+    logger.info(f"[Done] Market data: {len(market_df)} trading days")
+    logger.info(f"[Done] Stock count: {len(price_df.columns)}")
 
     return price_df, market_df
 
@@ -457,7 +563,7 @@ if __name__ == '__main__':
     # 展示缓存文件信息
     print(f"\n缓存文件示例:")
     for symbol in TICKERS[:2] + ['VIX', 'SPY_RSI']:
-        cache_path = _get_cache_path(symbol)
+        cache_path = _get_cache_path(symbol, source='Yahoo', adjustment='adjusted')
         if os.path.exists(cache_path):
             try:
                 metadata = get_cache_metadata(cache_path)

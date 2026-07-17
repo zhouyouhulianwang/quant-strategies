@@ -64,9 +64,11 @@ CACHE_VERSION = _CACHE_VERSION
 CACHE_TTL_DAYS = 7
 
 
-def _get_cache_path(symbol):
-    """按 symbol 缓存完整历史，文件名统一为 {symbol}.parquet"""
-    return os.path.join(CACHE_DIR, f"{symbol}.parquet")
+def _get_cache_path(symbol, source='Polygon', adjustment='adjusted'):
+    """按 symbol+source+adjustment 缓存完整历史，文件名包含来源和复权标志"""
+    safe_source = source.replace('/', '_').replace(' ', '_')
+    safe_adjustment = adjustment.replace('/', '_').replace(' ', '_')
+    return os.path.join(CACHE_DIR, f"{symbol}_{safe_source}_{safe_adjustment}.parquet")
 
 
 def _decode_metadata(meta_dict):
@@ -80,14 +82,39 @@ def _is_cache_valid(cache_path, ttl_days=CACHE_TTL_DAYS):
     return is_cache_valid(cache_path, ttl_days=ttl_days, version=CACHE_VERSION)
 
 
-def _load_cache(cache_path):
+def _verify_cache_metadata(cache_path, expected_source=None, expected_adjustment=None):
+    """读取缓存元数据并校验 source/adjustment，不匹配时记录警告"""
+    try:
+        metadata = get_cache_metadata(cache_path)
+        actual_source = metadata.get('source')
+        actual_adjustment = metadata.get('adjustment')
+        if expected_source and actual_source and str(actual_source) != str(expected_source):
+            logger.warning(
+                "[PIT] Cache source mismatch for %s: expected %s, got %s",
+                cache_path, expected_source, actual_source
+            )
+        if expected_adjustment and actual_adjustment and str(actual_adjustment) != str(expected_adjustment):
+            logger.warning(
+                "[PIT] Cache adjustment mismatch for %s: expected %s, got %s",
+                cache_path, expected_adjustment, actual_adjustment
+            )
+    except Exception as e:
+        logger.debug("[PIT] Failed to verify cache metadata %s: %s", cache_path, e)
+
+
+def _load_cache(cache_path, expected_source=None, expected_adjustment=None):
     """从 parquet 缓存读取数据，单列表自动还原为 Series（委托 cache.py）"""
+    _verify_cache_metadata(cache_path, expected_source, expected_adjustment)
     return load_parquet_cache(cache_path, ttl_days=CACHE_TTL_DAYS, version=CACHE_VERSION)
 
 
 def _save_cache(cache_path, data, source='Polygon', adjustment='adjusted'):
     """保存数据及元数据到 parquet 缓存，失败不抛异常（委托 cache.py）"""
-    metadata = {'source': source, 'adjustment': adjustment}
+    metadata = {
+        'source': source,
+        'adjustment': adjustment,
+        'download_time': datetime.now().isoformat(),
+    }
     return save_parquet_cache(data, cache_path, metadata=metadata, version=CACHE_VERSION)
 
 
@@ -168,17 +195,17 @@ class PolygonDataSource:
         if not self.available:
             return None
 
-        cache_path = _get_cache_path(symbol)
+        cache_path = _get_cache_path(symbol, source='Polygon', adjustment='adjusted')
 
         # 1. 优先读取 parquet 缓存并按日期切片
         if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
             try:
-                df = _load_cache(cache_path)
+                df = _load_cache(cache_path, expected_source='Polygon', expected_adjustment='adjusted')
                 df = _normalize_index(df)
                 if isinstance(df, pd.DataFrame) and not df.empty:
                     return df.loc[start_date:end_date]
             except Exception as e:
-                logger.warning(f"读取 {symbol} parquet 缓存失败: {e}")
+                logger.warning(f"Failed to read {symbol} parquet cache: {e}")
 
         # 2. 缓存未命中：从 Polygon 下载完整历史并写入缓存
         try:
@@ -225,7 +252,7 @@ class PolygonDataSource:
             return df
 
         except Exception as e:
-            logger.error(f"Polygon 获取 {symbol} 数据失败: {e}")
+            logger.error(f"Polygon failed to fetch {symbol}: {e}")
 
         return None
 
@@ -313,7 +340,7 @@ class HybridDataSource:
 
     def get_prices(self, symbols, start_date, end_date, prefer_realtime=True):
         """
-        获取价格数据（按 symbol 缓存完整历史，使用时按日期切片）
+        获取价格数据（按 symbol+source+adjustment 缓存完整历史，使用时按日期切片）
 
         参数:
             symbols: list, 股票代码列表
@@ -325,49 +352,62 @@ class HybridDataSource:
             DataFrame: 价格数据
         """
         price_df = pd.DataFrame()
+        source_order = [
+            ('Polygon', 'adjusted'),
+            ('Yahoo', 'adjusted'),
+        ]
 
         for symbol in symbols:
-            cache_path = _get_cache_path(symbol)
+            data = None
+            used_source = None
 
-            # 1. 优先读取 parquet 缓存
-            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
-                try:
-                    data = _load_cache(cache_path)
-                    data = _normalize_index(data)
-                    if isinstance(data, pd.DataFrame) and 'Close' in data.columns:
-                        series = data['Close']
-                    elif isinstance(data, pd.Series):
-                        series = data
-                    else:
-                        series = None
-                    if series is not None:
-                        price_df[symbol] = series.loc[start_date:end_date]
-                        logger.info(f"[缓存] {symbol}: {len(price_df[symbol])} 条")
-                        continue
-                except Exception as e:
-                    logger.warning(f"缓存读取失败 {symbol}: {e}")
+            # 1. 按优先级尝试 source-specific 缓存
+            for source, adjustment in source_order:
+                cache_path = _get_cache_path(symbol, source=source, adjustment=adjustment)
+                if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+                    try:
+                        loaded = _load_cache(cache_path, expected_source=source, expected_adjustment=adjustment)
+                        loaded = _normalize_index(loaded)
+                        if isinstance(loaded, pd.DataFrame) and 'Close' in loaded.columns:
+                            series = loaded['Close']
+                        elif isinstance(loaded, pd.Series):
+                            series = loaded
+                        else:
+                            series = None
+                        if series is not None and len(series) > 0:
+                            data = series
+                            used_source = source
+                            break
+                    except Exception as e:
+                        logger.warning(f"Cache read failed for {symbol} ({source}): {e}")
 
-            # 2. 尝试 Polygon（内部已含 parquet 缓存）
-            if prefer_realtime and self.polygon.available:
-                data = self.polygon.get_daily_bars(symbol, start_date, end_date)
-                if data is not None and not data.empty and 'Close' in data.columns:
-                    price_df[symbol] = data['Close']
-                    logger.info(f"[Polygon] {symbol}: {len(data)} 条")
-                    continue
+            # 2. 尝试 Polygon（已含 source-specific 缓存）
+            if data is None and prefer_realtime and self.polygon.available:
+                df = self.polygon.get_daily_bars(symbol, start_date, end_date)
+                if df is not None and not df.empty and 'Close' in df.columns:
+                    data = df['Close']
+                    used_source = 'Polygon'
 
             # 3. 回退 Yahoo Finance，并缓存结果
-            if self._yahoo_available:
+            if data is None and self._yahoo_available:
                 try:
                     import yfinance as yf
-                    data = yf.Ticker(symbol).history(period='max')
-                    data = _normalize_index(data)
-                    if len(data) > 0:
-                        # 缓存完整历史到 parquet
-                        _save_cache(cache_path, data, source='Yahoo', adjustment='adjusted')
-                        price_df[symbol] = data.loc[start_date:end_date, 'Close']
-                        logger.info(f"[Yahoo] {symbol}: {len(price_df[symbol])} 条")
+                    ydata = yf.Ticker(symbol).history(period='max')
+                    ydata = _normalize_index(ydata)
+                    if len(ydata) > 0:
+                        yahoo_path = _get_cache_path(symbol, source='Yahoo', adjustment='adjusted')
+                        _save_cache(yahoo_path, ydata, source='Yahoo', adjustment='adjusted')
+                        data = ydata.loc[start_date:end_date, 'Close']
+                        used_source = 'Yahoo'
                 except Exception as e:
-                    logger.error(f"获取 {symbol} 失败: {e}")
+                    logger.error(f"Failed to fetch {symbol} from Yahoo: {e}")
+
+            if data is not None and len(data) > 0:
+                try:
+                    price_df[symbol] = data.loc[start_date:end_date]
+                    logger.info(f"[Cache/{used_source}] {symbol}: {len(price_df[symbol])} records")
+                except Exception as e:
+                    logger.warning(f"{symbol} date slice failed: {e}")
 
         # P1修复: 按标的前向填充，不要按行 dropna(how='any') 删整行，避免幸存者偏差
         price_df = price_df.dropna(how='all', axis=1)
@@ -404,19 +444,21 @@ class HybridDataSource:
         return None
 
     def get_vix_data(self, start_date, end_date):
-        """获取 VIX 历史数据（优先 parquet 缓存）"""
-        cache_path = _get_cache_path('VIX')
+        """获取 VIX 历史数据（优先 source-specific parquet 缓存）"""
+        polygon_path = _get_cache_path('VIX', source='Polygon', adjustment='unadjusted')
+        yahoo_path = _get_cache_path('VIX', source='Yahoo', adjustment='unadjusted')
 
-        # 1. 优先读取 parquet 缓存
-        if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
-            try:
-                vix = _load_cache(cache_path)
-                vix = _normalize_index(vix)
-                if isinstance(vix, pd.DataFrame) and 'Close' in vix.columns:
-                    vix = vix['Close']
-                return vix.loc[start_date:end_date]
-            except Exception as e:
-                logger.warning(f"VIX 缓存读取失败: {e}")
+        # 1. 按优先级尝试 source-specific 缓存
+        for cache_path, source in [(polygon_path, 'Polygon'), (yahoo_path, 'Yahoo')]:
+            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+                try:
+                    vix = _load_cache(cache_path, expected_source=source, expected_adjustment='unadjusted')
+                    vix = _normalize_index(vix)
+                    if isinstance(vix, pd.DataFrame) and 'Close' in vix.columns:
+                        vix = vix['Close']
+                    return vix.loc[start_date:end_date]
+                except Exception as e:
+                    logger.warning(f"VIX cache read failed ({source}): {e}")
 
         # 2. 尝试 Polygon
         if self.polygon.available:
@@ -430,7 +472,7 @@ class HybridDataSource:
                 import yfinance as yf
                 vix = yf.Ticker('^VIX').history(period='max')['Close']
                 vix = _normalize_index(vix)
-                _save_cache(cache_path, vix, source='Yahoo', adjustment='unadjusted')
+                _save_cache(yahoo_path, vix, source='Yahoo', adjustment='unadjusted')
                 return vix.loc[start_date:end_date]
             except Exception:
                 pass
@@ -439,7 +481,7 @@ class HybridDataSource:
 
     def get_market_data(self, start_date, end_date):
         """
-        获取市场数据 (VIX + RSI proxy)，按 symbol 缓存完整历史
+        获取市场数据 (VIX + RSI proxy)，按 symbol+source+adjustment 缓存完整历史
 
         返回:
             DataFrame: 列=['VIX', 'RSI'], 索引=日期
@@ -449,19 +491,23 @@ class HybridDataSource:
 
         # SPY 数据用于计算 RSI 和基础日期
         spy_data = None
-        cache_path = _get_cache_path('SPY')
+        polygon_path = _get_cache_path('SPY', source='Polygon', adjustment='adjusted')
+        yahoo_path = _get_cache_path('SPY', source='Yahoo', adjustment='adjusted')
 
-        # 优先读取 parquet 缓存
-        if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
-            try:
-                spy_df = _load_cache(cache_path)
-                spy_df = _normalize_index(spy_df)
-                if isinstance(spy_df, pd.DataFrame) and 'Close' in spy_df.columns:
-                    spy_data = spy_df['Close'].loc[start_date:end_date]
-                elif isinstance(spy_df, pd.Series):
-                    spy_data = spy_df.loc[start_date:end_date]
-            except Exception as e:
-                logger.warning(f"SPY 缓存读取失败: {e}")
+        # 优先读取 source-specific parquet 缓存
+        for cache_path, source in [(polygon_path, 'Polygon'), (yahoo_path, 'Yahoo')]:
+            if _is_cache_valid(cache_path, CACHE_TTL_DAYS):
+                try:
+                    spy_df = _load_cache(cache_path, expected_source=source, expected_adjustment='adjusted')
+                    spy_df = _normalize_index(spy_df)
+                    if isinstance(spy_df, pd.DataFrame) and 'Close' in spy_df.columns:
+                        spy_data = spy_df['Close'].loc[start_date:end_date]
+                    elif isinstance(spy_df, pd.Series):
+                        spy_data = spy_df.loc[start_date:end_date]
+                    if spy_data is not None and len(spy_data) > 0:
+                        break
+                except Exception as e:
+                    logger.warning(f"SPY cache read failed ({source}): {e}")
 
         # 回退 Polygon
         if spy_data is None and self.polygon.available:
@@ -475,7 +521,7 @@ class HybridDataSource:
                 import yfinance as yf
                 spy = yf.Ticker('SPY').history(period='max')['Close']
                 spy = _normalize_index(spy)
-                _save_cache(cache_path, spy, source='Yahoo', adjustment='adjusted')
+                _save_cache(yahoo_path, spy, source='Yahoo', adjustment='adjusted')
                 spy_data = spy.loc[start_date:end_date]
             except Exception:
                 pass
@@ -549,7 +595,13 @@ if __name__ == '__main__':
     # 展示缓存文件元数据
     print("\n缓存文件元数据:")
     for symbol in ['AAPL', 'MSFT', 'SPY', 'VIX']:
-        cache_path = _get_cache_path(symbol)
+        if symbol in ('VIX',):
+            adj = 'unadjusted'
+        else:
+            adj = 'adjusted'
+        cache_path = _get_cache_path(symbol, source='Polygon', adjustment=adj)
+        if not os.path.exists(cache_path):
+            cache_path = _get_cache_path(symbol, source='Yahoo', adjustment=adj)
         if os.path.exists(cache_path):
             try:
                 metadata = get_cache_metadata(cache_path)

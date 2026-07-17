@@ -92,7 +92,8 @@ except ImportError:
 # 导入 V14 因子核心（策略模型层）
 from main import (
     TICKERS, INDUSTRY, NDX_SET,
-    compute_factors_v14, v14_composite_score, v14_scale, run_v14
+    compute_factors_v14, v14_composite_score, v14_scale, run_v14,
+    _get_next_trading_day
 )
 
 
@@ -100,20 +101,23 @@ class V14Strategy(BaseStrategy):
     """V14 多因子策略的完整封装类，继承 BaseStrategy 以复用通用接口。"""
 
     def __init__(self,
-                 use_real_data=True,
-                 use_paper_trading=False,
-                 enable_risk_monitor=True,
-                 enable_intraday_monitor=False,
-                 weight_method='equal',
-                 config=None):
+                use_real_data=True,
+                use_paper_trading=False,
+                paper=True,
+                enable_risk_monitor=True,
+                enable_intraday_monitor=False,
+                weight_method='equal',
+                config=None):
         """初始化 V14 策略。
 
         Parameters
         ----------
         use_real_data : bool
             是否使用真实数据源（默认 True）。
-        use_paper_trading : bool
-            是否使用 Alpaca Paper Trading（默认 False）。
+                use_paper_trading : bool
+                    是否启用 Alpaca 交易执行（默认 False）。
+                paper : bool
+                    当 use_paper_trading=True 时，True=Paper, False=Live（默认 True）。
         enable_risk_monitor : bool
             是否启用风险监控（默认 True）。
         enable_intraday_monitor : bool
@@ -149,15 +153,22 @@ class V14Strategy(BaseStrategy):
         self.backtest_result = None
         self._last_live_portfolio_value = None
 
+        # PIT/数据一致性：强制回测与实盘使用同一数据源和复权方法
+        self.signal_data_source = 'QuantConnect'
+        self.signal_adjustment = 'adjusted'
+        logger.info(f"[DATA] Unified signal data source: {self.signal_data_source} ({self.signal_adjustment})")
         if self.use_paper_trading:
             executor_kwargs = {}
             if self.config:
                 executor_kwargs = {
+                    'paper': paper,
                     'enable_pdt': self.config.trading.enable_pdt_check,
                     'pdt_min_equity': self.config.trading.pdt_min_equity,
                     'use_limit_orders': self.config.trading.use_limit_orders,
                     'limit_order_offset_pct': self.config.trading.limit_order_offset_pct,
                 }
+            else:
+                executor_kwargs = {'paper': paper}
                 logger.info(f"[LIMIT] Limit orders: {self.config.trading.use_limit_orders}, "
                            f"offset={self.config.trading.limit_order_offset_pct:.2%}")
                 logger.info(f"[PDT] PDT check: {self.config.trading.enable_pdt_check}, "
@@ -167,23 +178,41 @@ class V14Strategy(BaseStrategy):
 
             self.executor = AlpacaExecutor(**executor_kwargs)
             logger.info("[OK] Alpaca Paper Trading enabled")
+            if not paper:
+                logger.critical("[ALERT] Live trading mode initialized")
 
             if self.risk_monitor:
                 self.executor.set_risk_monitor(self.risk_monitor)
                 logger.info("[OK] Risk monitor state synced with executor")
 
         if self.enable_risk_monitor:
-            self.risk_monitor = RiskMonitor()
+            # P1: 使用 config.risk 驱动风控器
+            risk_kwargs = {}
+            if self.config and hasattr(self.config, 'risk'):
+                risk_config = self.config.risk
+                risk_kwargs = {
+                    'max_drawdown_limit': getattr(risk_config, 'max_drawdown_limit', 0.15),
+                    'max_position_pct': getattr(risk_config, 'max_position_pct', 0.20),
+                    'max_sector_pct': getattr(risk_config, 'max_sector_pct', 0.30),
+                    'daily_loss_limit': getattr(risk_config, 'daily_loss_limit', 0.03),
+                    'vix_pause_level': getattr(risk_config, 'vix_panic_threshold', 35.0),
+                }
+                # 兼容命名：config.json 中使用 max_intraday_dd 但 RiskMonitor 使用 daily_loss_limit
+                if hasattr(risk_config, 'max_intraday_dd') and not hasattr(risk_config, 'daily_loss_limit'):
+                    risk_kwargs['daily_loss_limit'] = risk_config.max_intraday_dd
+            self.risk_monitor = RiskMonitor(**risk_kwargs)
             logger.info("[OK] Risk monitor enabled")
 
         # 盘中监控
         if enable_intraday_monitor and INTRADAY_AVAILABLE and self.executor and self.risk_monitor:
             check_interval = 60
-            vix_emergency_level = 35.0
-            max_total_drawdown = 0.15
             if self.config:
                 check_interval = self.config.trading.check_interval
-                vix_emergency_level = self.config.risk.vix_panic_threshold
+                vix_emergency_level = getattr(self.config.risk, 'vix_panic_threshold', 35.0)
+                max_total_drawdown = getattr(self.config.risk, 'max_drawdown_limit', 0.15)
+            else:
+                vix_emergency_level = 35.0
+                max_total_drawdown = 0.15
 
             class V14IntradayMonitor(IntradayMonitor):
                 def __init__(inner_self, *args, **kwargs):
@@ -210,6 +239,8 @@ class V14Strategy(BaseStrategy):
                         if inner_self._daily_baseline_nav and inner_self._daily_baseline_nav > 0:
                             daily_return = (portfolio_value - inner_self._daily_baseline_nav) / inner_self._daily_baseline_nav
                             inner_self.risk_monitor.check_daily_loss(daily_return)
+                    except (ConnectionError, TimeoutError, Timeout, RequestException) as e:
+                        logger.warning(f"Intraday risk supplement network error: {e}")
                     except Exception as e:
                         logger.warning(f"Intraday risk supplement check failed: {e}")
 
@@ -454,8 +485,10 @@ class V14Strategy(BaseStrategy):
             vix_first = 20.0
         price_slice_first = price_df.loc[:first_d].iloc[-252:]
         target_positions_first = self.generate_signals(price_slice_first, vix_first)
+        # P0修复: 首个信号在 first_d 生成，在下一交易日 first_exec_d 执行，避免 lookahead
+        first_exec_d = _get_next_trading_day(price_df, first_d)
         selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
-            target_positions_first, nav, first_d
+            target_positions_first, nav, first_exec_d
         )
         prev_holdings = selected
         prev_quantities = curr_quantities
@@ -463,6 +496,9 @@ class V14Strategy(BaseStrategy):
 
         for i in range(1, len(rebalance_dates)):
             prev_d, curr_d = rebalance_dates[i-1], rebalance_dates[i]
+            # P0修复: 在下一交易日执行，避免使用 signal 日当天收盘价同日复权执行
+            prev_exec_d = _get_next_trading_day(price_df, prev_d)
+            curr_exec_d = _get_next_trading_day(price_df, curr_d)
 
             try:
                 vix_v = float(market_df.loc[prev_d, 'VIX'])
@@ -475,8 +511,8 @@ class V14Strategy(BaseStrategy):
                     stock_value_start = 0.0
                     stock_value_end = 0.0
                     for s, qty in prev_quantities.items():
-                        p_start = float(price_df.loc[prev_d, s])
-                        p_end = float(price_df.loc[curr_d, s])
+                        p_start = float(price_df.loc[prev_exec_d, s])
+                        p_end = float(price_df.loc[curr_exec_d, s])
                         stock_value_start += qty * p_start
                         stock_value_end += qty * p_end
                     portfolio_value_start = stock_value_start + prev_cash
@@ -491,14 +527,14 @@ class V14Strategy(BaseStrategy):
             nav *= (1 + mr)
 
             # 生成新的目标持仓并模拟整数截断
-            price_slice = price_df.loc[:curr_d].iloc[-252:]
+            price_slice = price_df.loc[:prev_d].iloc[-252:]  # P0修复: 使用 prev_d 收盘前数据生成信号
             target_positions = self.generate_signals(price_slice, vix_v)
             selected, curr_weights, curr_quantities, curr_invested, curr_cash = build_portfolio(
-                target_positions, nav, curr_d
+                target_positions, nav, curr_exec_d  # P0修复: 在下一交易日执行
             )
 
             records.append({
-                'date': curr_d,
+                'date': curr_exec_d,
                 'nav': nav,
                 'mr': mr,
                 'vix': vix_v,
@@ -518,6 +554,28 @@ class V14Strategy(BaseStrategy):
     # ------------------------------------------------------------------
     # BaseStrategy implementation: signal generation
     # ------------------------------------------------------------------
+
+    def _prepare_signal_data(self, start_date, end_date):
+        """
+        统一为回测信号和实盘信号准备数据，确保数据源和复权方法一致。
+        """
+        if not QC_DATA_AVAILABLE:
+            logger.error("[DATA] QuantConnect data source not available")
+            return None, None
+
+        logger.info(
+            "[DATA] Preparing signal data: source=%s, adjustment=%s, period=%s ~ %s",
+            self.signal_data_source, self.signal_adjustment, start_date, end_date
+        )
+        price_df, market_df = prepare_backtest_data_qc(
+            TICKERS, start_date, end_date, resolution='daily'
+        )
+        if price_df is not None and len(price_df) > 0:
+            logger.info(
+                "[DATA] Signal data ready: source=%s, adjustment=%s, latest=%s",
+                self.signal_data_source, self.signal_adjustment, price_df.index[-1]
+            )
+        return price_df, market_df
 
     def generate_signals(self, price_df=None, vix=None, live_mode=False):
         """生成交易信号 - 桥接回测逻辑到实盘。
@@ -541,16 +599,12 @@ class V14Strategy(BaseStrategy):
             end = datetime.now().strftime('%Y-%m-%d')
             start = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
 
-            if QC_DATA_AVAILABLE:
-                logger.info("[DATA] Signal generation data source: QuantConnect")
-                price_df, market_df = prepare_backtest_data_qc(
-                    TICKERS, start, end, resolution='daily'
-                )
-                if vix is None:
-                    vix = market_df['VIX'].iloc[-1]
-            else:
-                logger.error("Cannot get data, no data source available")
+            price_df, market_df = self._prepare_signal_data(start, end)
+            if price_df is None or len(price_df) == 0:
+                logger.error("Cannot get signal data, no data source available")
                 return {}
+            if vix is None:
+                vix = market_df['VIX'].iloc[-1]
 
         if vix is None:
             logger.error("VIX data missing")
@@ -559,15 +613,17 @@ class V14Strategy(BaseStrategy):
         logger.info(f"\n{'='*60}")
         logger.info(f"Generating trading signals")
         logger.info(f"{'='*60}")
+        logger.info(f"Data source: {self.signal_data_source} ({self.signal_adjustment})")
         logger.info(f"Current VIX: {vix:.2f}")
         logger.info(f"Data date: {price_df.index[-1]}")
 
-        if price_df is None or live_mode:
+        if live_mode:
             freq_desc = ""
             if self.config and hasattr(self.config, 'trading'):
                 freq = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
                 freq_desc = f"({freq} rebalance)"
-            logger.info(f"[NOTE] Signals based on historical EOD close prices {freq_desc}")
+            logger.info(f"[NOTE] Live signals based on historical EOD close prices {freq_desc}")
+            logger.info(f"[NOTE] Latest available EOD date: {price_df.index[-1]}")
             if self.use_paper_trading:
                 logger.info("[NOTE] Live execution will use current real-time prices to calculate shares")
 

@@ -60,8 +60,7 @@ class IntradayMonitor:
         self.max_total_drawdown = max_total_drawdown
         
         # 线程锁（防止和主交易线程竞态）
-        self._halt_lock = threading.Lock()
-        self._halted = False
+        # P0: 交易暂停状态统一由 RiskMonitor 持有，本模块仅做代理
         
         # 状态
         self.monitoring = False
@@ -86,17 +85,16 @@ class IntradayMonitor:
     
     @property
     def trading_halted(self):
-        """线程安全的 trading_halted 读取"""
-        with self._halt_lock:
-            return self._halted
+        """交易暂停状态：统一由 RiskMonitor 持有"""
+        if self.risk_monitor:
+            return self.risk_monitor.trading_halted
+        return False
     
     @trading_halted.setter
     def trading_halted(self, value):
-        """线程安全的 trading_halted 设置"""
-        with self._halt_lock:
-            self._halted = value
-            if self.risk_monitor:
-                self.risk_monitor.trading_halted = value
+        """交易暂停状态：统一写入 RiskMonitor"""
+        if self.risk_monitor:
+            self.risk_monitor.trading_halted = value
     
     def start(self, daemon=True):
         """启动监控线程
@@ -369,40 +367,53 @@ class IntradayMonitor:
         logger.critical(f"Reason: {reason}")
         logger.critical(f"{'='*60}")
 
+        # 1. 暂停交易（线程安全）
+        self.trading_halted = True
+        
+        # P0 修复：检查市场是否开盘
         try:
-            # P0 修复：检查市场是否开盘
-            try:
-                market_open = self.executor.market_is_open()
-            except AttributeError:
-                market_open = True  # 无 market_is_open 时放行（兼容模式）
+            market_open = self.executor.market_is_open()
+        except AttributeError:
+            market_open = True  # 无 market_is_open 时放行（兼容模式）
 
-            # 1. 暂停交易（线程安全）
-            self.trading_halted = True
-
-            if not market_open:
-                # P1修复: 市场关闭时记录待平仓，不提交订单，避免挂单到次日开盘
-                self._pending_liquidation_reason = reason
-                logger.critical("[PENDING] Market closed, liquidation recorded and will trigger on next open")
-                logger.critical("   Trading paused, please check account status")
-                logger.critical("[WARN] Trading paused, please manually check and resume")
-                # 发送告警
-                self._send_emergency_alert(reason)
-                return
-
-            # 2. 市场开盘，立即平掉所有持仓
-            count = self.executor.liquidate_all()
-            logger.critical(f"[OK] Liquidated {count} positions")
-
+        if not market_open:
+            # P1修复: 市场关闭时记录待平仓，不提交订单，避免挂单到次日开盘
+            self._pending_liquidation_reason = reason
+            logger.critical("[PENDING] Market closed, liquidation recorded and will trigger on next open")
+            logger.critical("   Trading paused, please check account status")
             logger.critical("[WARN] Trading paused, please manually check and resume")
-            
-            # 3. 发送告警（如果配置了）
+            # 发送告警
             self._send_emergency_alert(reason)
-            
-        except ConnectionError as e:
-            logger.critical(f"[ERROR] Emergency liquidation network error: {e}")
-        except Exception as e:
-            logger.critical(f"[ERROR] Emergency liquidation failed: {e}")
+            return
+
+        # 2. 市场开盘，立即平掉所有持仓
+        count = self.executor.liquidate_all()
+        logger.critical(f"[OK] Liquidated {count} positions")
+        # P1: 确认持仓是否真正归零，未归零则重试
+        self._confirm_liquidation()
+
+        logger.critical("[WARN] Trading paused, please manually check and resume")
     
+    def _confirm_liquidation(self, max_retries=3, wait_sec=5):
+        """P1: 确认平仓是否真正完成，未完成则重试"""
+        for attempt in range(max_retries):
+            try:
+                positions = self.executor.get_positions() or []
+                remaining = [p for p in positions if float(p.get('qty', 0)) != 0]
+                if not remaining:
+                    logger.critical("[OK] Liquidation confirmed: all positions closed")
+                    return True
+                logger.critical(f"[RETRY] Liquidation incomplete: {len(remaining)} positions remain (attempt {attempt+1}/{max_retries})")
+                for pos in remaining:
+                    self._liquidate_symbol(pos['symbol'], "liquidation confirmation retry")
+                time.sleep(wait_sec)
+            except Exception as e:
+                logger.critical(f"[ERROR] Liquidation confirmation failed: {e}")
+                time.sleep(wait_sec)
+        logger.critical("[FAIL] Liquidation could not be fully confirmed after retries")
+        self._send_emergency_alert("Liquidation incomplete after retries - manual intervention required")
+        return False
+
     def _liquidate_symbol(self, symbol, reason):
         """
         平仓单只股票

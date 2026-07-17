@@ -17,12 +17,25 @@ import argparse
 import os
 import shutil
 import sys
+import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
+
+import base64
+
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
 
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_BACKUP_ROOT = ROOT / "backups"
+ENCRYPTION_KEY_ENV = "MULTIFACTOR_BACKUP_KEY"
 
 # Sensitive / small runtime files to keep
 PROTECTED_FILES = [
@@ -60,6 +73,58 @@ def _set_restrictive_permissions(path: Path) -> None:
                 child.chmod(0o600)
             elif child.is_dir():
                 child.chmod(0o700)
+
+
+def _derive_fernet_key(password: str, salt: bytes) -> bytes:
+    """从密码派生 Fernet 兼容的 32-byte base64 密钥。"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100_000,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def _encrypt_backup_dir(backup_dir: Path, key: str) -> Path:
+    """将备份目录打包为 tar.gz 并用 AES-GCM (Fernet) 加密。"""
+    tar_path = backup_dir.with_suffix(".tar.gz")
+    with tarfile.open(tar_path, "w:gz") as tar:
+        tar.add(backup_dir, arcname=backup_dir.name)
+
+    salt = os.urandom(16)
+    fernet = Fernet(_derive_fernet_key(key, salt))
+    with open(tar_path, "rb") as f:
+        encrypted = fernet.encrypt(f.read())
+
+    enc_path = backup_dir.with_suffix(".enc.tar.gz")
+    with open(enc_path, "wb") as f:
+        f.write(salt + encrypted)
+
+    # 删除未加密残留
+    shutil.rmtree(backup_dir)
+    tar_path.unlink()
+    return enc_path
+
+
+def _decrypt_backup(enc_path: Path, key: str, dest: Path) -> Path:
+    """解密 .enc.tar.gz 备份并解压到 dest。"""
+    with open(enc_path, "rb") as f:
+        data = f.read()
+    salt = data[:16]
+    encrypted = data[16:]
+    fernet = Fernet(_derive_fernet_key(key, salt))
+    decrypted = fernet.decrypt(encrypted)
+
+    tar_path = dest / enc_path.with_suffix("").name
+    tar_path = tar_path.with_suffix(".tar.gz")
+    with open(tar_path, "wb") as f:
+        f.write(decrypted)
+
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(dest)
+    restored_dir = dest / enc_path.with_suffix("").with_suffix("").name
+    return restored_dir
 
 
 def _copy_file(src: Path, dest: Path) -> None:
@@ -123,8 +188,17 @@ def run_backup(dest: Path | None = None, recent_days: int = 7, encrypt: bool = F
     print(f"Total size: {sum(f.stat().st_size for f in backup_dir.rglob('*') if f.is_file())} bytes")
 
     if encrypt:
-        # Placeholder: real encryption should use gpg or age
-        print("NOTE: --encrypt is a placeholder; install gpg/age and update this script for production.")
+        if not CRYPTO_AVAILABLE:
+            raise RuntimeError(
+                "--encrypt 需要 cryptography 库。请安装: pip install cryptography"
+            )
+        key = os.environ.get(ENCRYPTION_KEY_ENV)
+        if not key:
+            raise RuntimeError(
+                f"--encrypt 需要环境变量 {ENCRYPTION_KEY_ENV} 提供加密口令"
+            )
+        backup_dir = _encrypt_backup_dir(backup_dir, key)
+        print(f"Encrypted backup created: {backup_dir}")
 
     return backup_dir
 
@@ -133,13 +207,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Backup multifactor runtime state and secrets")
     parser.add_argument("--dest", type=Path, help="Backup destination directory")
     parser.add_argument("--days", type=int, default=7, help="Recent days of logs/orders/alerts/charts to keep")
-    parser.add_argument("--encrypt", action="store_true", help="Placeholder: encrypt the backup (not implemented)")
+    parser.add_argument("--encrypt", action="store_true", help="Encrypt the backup with AES-GCM (requires environment variable MULTIFACTOR_BACKUP_KEY)")
+    parser.add_argument("--decrypt", type=Path, metavar="FILE", help="Decrypt a .enc.tar.gz backup")
+    parser.add_argument("--decrypt-dest", type=Path, metavar="DIR", help="Destination for --decrypt")
     parser.add_argument("--chmod-only", type=Path, metavar="DIR", help="Fix permissions on an existing backup directory")
     args = parser.parse_args()
 
     if args.chmod_only:
         _set_restrictive_permissions(args.chmod_only)
         print(f"Permissions fixed: {args.chmod_only}")
+        return 0
+
+    if args.decrypt:
+        if not CRYPTO_AVAILABLE:
+            raise RuntimeError("--decrypt 需要 cryptography 库")
+        key = os.environ.get(ENCRYPTION_KEY_ENV)
+        if not key:
+            raise RuntimeError(f"--decrypt 需要环境变量 {ENCRYPTION_KEY_ENV}")
+        dest = args.decrypt_dest or Path.cwd()
+        restored = _decrypt_backup(args.decrypt, key, dest)
+        print(f"Backup restored to: {restored}")
         return 0
 
     run_backup(dest=args.dest, recent_days=args.days, encrypt=args.encrypt)

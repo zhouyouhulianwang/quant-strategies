@@ -339,19 +339,24 @@ def run_scheduler_loop(strategy, check_interval=3600):
 
 
 # 用于 cron 的简化入口
-def run_once():
+def run_once(paper=True, require_live_confirmation=True):
     """
     单次执行入口（用于 cron/celery 调用）
+    
+    参数:
+        paper: bool, True=Paper Trading, False=Live Trading
+        require_live_confirmation: bool, live 模式下是否需要确认
 
     使用方式:
-        python -c "from scheduler import run_once; run_once()"
+        python -c "from scheduler import run_once; run_once(paper=True)"
     """
     from run_strategy import V14Strategy
 
     strategy = V14Strategy(
         use_real_data=True,
         use_paper_trading=True,
-        enable_risk_monitor=True
+        paper=paper,
+        enable_risk_monitor=True,
     )
 
     frequency = 'monthly'
@@ -372,6 +377,7 @@ if __name__ == '__main__':
     strategy = V14Strategy(
         use_real_data=True,
         use_paper_trading=False,  # 测试模式
+        paper=True,
         enable_risk_monitor=True
     )
 

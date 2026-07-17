@@ -177,22 +177,6 @@ class V14StrategyConfig(BaseModel):
                 return env_secret
         return v or ''
     
-    @field_validator('alpaca_api_key')
-    @classmethod
-    def api_key_must_be_set(cls, v):
-        """P1修复: API Key 必须非空"""
-        if not v or not v.strip():
-            raise ValueError('ALPACA_API_KEY 不能为空，请通过环境变量或构造函数传入')
-        return v
-    
-    @field_validator('alpaca_api_secret')
-    @classmethod
-    def api_secret_must_be_set(cls, v):
-        """P1修复: API Secret 必须非空"""
-        if not v or not v.strip():
-            raise ValueError('ALPACA_API_SECRET 不能为空，请通过环境变量或构造函数传入')
-        return v
-    
     # Alpaca 配置（从环境变量读取，不硬编码）
     alpaca_base_url: str = Field(
         default='https://paper-api.alpaca.markets',
@@ -219,6 +203,21 @@ class V14StrategyConfig(BaseModel):
         if v not in ('https://paper-api.alpaca.markets', 'https://api.alpaca.markets'):
             raise ValueError('alpaca_base_url 必须是 https://paper-api.alpaca.markets 或 https://api.alpaca.markets')
         return v
+    
+    def get_api_credentials(self):
+        """P1 修复：运行时优先从环境变量获取 API 凭证，config.json 不保留真实 Key/Secret"""
+        key = os.environ.get('ALPACA_API_KEY') or self.alpaca_api_key
+        secret = os.environ.get('ALPACA_API_SECRET') or self.alpaca_api_secret
+        return key, secret
+    
+    def require_api_credentials(self):
+        """P1 修复：需要连接真实 API 时调用，明确报错信息"""
+        key, secret = self.get_api_credentials()
+        if not key or not key.strip():
+            raise ValueError('ALPACA_API_KEY 未设置，请通过环境变量或构造函数传入')
+        if not secret or not secret.strip():
+            raise ValueError('ALPACA_API_SECRET 未设置，请通过环境变量或构造函数传入')
+        return key, secret
 
 
 # 全局配置实例
@@ -242,6 +241,13 @@ def get_config() -> V14StrategyConfig:
                 print(f"⚠️ 读取 config.json 失败，使用默认配置: {e}")
         _config_instance = V14StrategyConfig(**kwargs)
     return _config_instance
+
+
+def reload_config():
+    """P1 修复：重新加载 config.json，使运行时配置变更生效"""
+    global _config_instance
+    _config_instance = None
+    return get_config()
 
 
 def set_config(config: V14StrategyConfig):

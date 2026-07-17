@@ -12,6 +12,7 @@ import os
 import json
 import logging
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 
@@ -126,9 +127,14 @@ class PDTTracker:
         except (OSError, IOError, PermissionError) as e:
             logger.warning(f"持久化 PDT 状态失败: {e}")
 
+    @staticmethod
+    def _today() -> date:
+        """M3 修复：使用美东时间（ET）作为交易日边界"""
+        return datetime.now(ZoneInfo('America/New_York')).date()
+
     def _reset_if_new_day(self):
         """如果跨交易日，重置今日日内记录（但保留仓位 lot）"""
-        today = date.today().isoformat()
+        today = self._today().isoformat()
         if self._last_trade_date != today:
             self._last_trade_date = today
             # P0 修复：跨日清空当日卖出缓存，避免昨日卖出影响今日 PDT 判断
@@ -136,13 +142,25 @@ class PDTTracker:
             self._persist_state()
 
     def _rolling_count(self, today: date) -> int:
-        """计算过去 5 个交易日（含今日）的 day trade 次数
-        
-        Alpaca 的 daytrade_count 基于滚动 5 个交易日，这里用 7 个自然日近似覆盖。
         """
-        # 5 个交易日最多对应 7 个自然日（含周末），用 7 天 cutoff 偏保守
-        cutoff = (today - timedelta(days=7)).isoformat()
-        recent = [dt for dt in self.day_trade_history if dt['date'] >= cutoff]
+        计算过去 5 个交易日（含今日）的 day trade 次数。
+
+        M4 修复：优先使用 XNYS 交易日历计算真正 5 个交易日；不可用时回退到 7 个自然日。
+        """
+        try:
+            import exchange_calendars as xc
+            cal = xc.get_calendar('XNYS')
+            # 如果今天不是交易日，则回退到最近一个交易日
+            if not cal.is_session(today):
+                today = cal.previous_session(today)
+            # 5 个交易日包含 today 向前推 4 个 session
+            cutoff = cal.session_offset(today, -4)
+            cutoff_str = cutoff.isoformat()
+        except Exception:
+            # 回退：7 个自然日近似覆盖 5 个交易日
+            cutoff_str = (today - timedelta(days=7)).isoformat()
+
+        recent = [dt for dt in self.day_trade_history if dt['date'] >= cutoff_str]
         # 同一 symbol 同一天多次 day trade 合并计为一次
         unique = {(dt['date'], dt['symbol']) for dt in recent}
         return len(unique)
@@ -162,7 +180,7 @@ class PDTTracker:
             return
 
         self._reset_if_new_day()
-        today = date.today().isoformat()
+        today = self._today().isoformat()
 
         # P1-5 修复：延迟初始化账户 ID，避免构造时 API 失败阻塞启动
         if account_id is not None and account_id != self.account_id:
@@ -203,7 +221,7 @@ class PDTTracker:
             return
 
         self._reset_if_new_day()
-        today = date.today().isoformat()
+        today = self._today().isoformat()
         side = side.lower()
         symbol = symbol.upper()
 
@@ -263,7 +281,7 @@ class PDTTracker:
 
     def _record_day_trade(self, symbol: str, qty: int):
         """记录一次 day trade 并持久化"""
-        today_str = date.today().isoformat()
+        today_str = self._today().isoformat()
         key = (today_str, symbol)
         existing = {(dt['date'], dt['symbol']) for dt in self.day_trade_history}
         if key not in existing:
@@ -288,7 +306,7 @@ class PDTTracker:
             return {'allowed': True, 'reason': 'pdt_disabled', 'day_trades_used': 0, 'day_trades_left': 999}
 
         self._reset_if_new_day()
-        today = date.today()
+        today = self._today()
         today_str = today.isoformat()
         symbol = symbol.upper()
         side = side.lower()
@@ -368,7 +386,7 @@ class PDTTracker:
     def get_status(self) -> Dict[str, Any]:
         """获取当前 PDT 状态摘要"""
         self._reset_if_new_day()
-        today = date.today()
+        today = self._today()
         used = self._rolling_count(today)
         return {
             'account_id': self.account_id,

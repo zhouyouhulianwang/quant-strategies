@@ -20,3 +20,6 @@ alpaca-py>=0.30.0
 
 # 其他
 python-dotenv>=1.0.0
+
+# 备份加密 (AES-GCM via Fernet)
+cryptography>=41.0.0

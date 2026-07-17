@@ -121,19 +121,38 @@ def _add_file_handler(
     root.addHandler(file_handler)
 
 
-def _configure_json_logger(level: int) -> None:
-    """为结构化日志 logger 'json' 配置 JSON StreamHandler。
+def _configure_json_logger(level: int, log_dir: str = DEFAULT_LOG_DIR) -> None:
+    """为结构化日志 logger 'json' 配置 JSON 处理器。
 
     该 logger 用于 json_logger.py 中的 trade/risk/portfolio 事件，
     与根日志的文本/文件格式解耦。
     """
     json_logger = logging.getLogger('json')
     json_logger.setLevel(level)
-    if json_logger.handlers:
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(JSONFormatter())
-    json_logger.addHandler(handler)
+
+    # P2 修复：'json' logger 同时输出到控制台和文件，避免只走 StreamHandler
+    if not json_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(JSONFormatter())
+        json_logger.addHandler(handler)
+
+    # 添加独立的 JSON 文件处理器（幂等）
+    has_file_handler = any(
+        isinstance(h, (RotatingFileHandler, TimedRotatingFileHandler))
+        for h in json_logger.handlers
+    )
+    if not has_file_handler:
+        log_path = _ensure_log_dir(log_dir)
+        filename = log_path / 'multifactor.json.log'
+        file_handler = RotatingFileHandler(
+            filename=str(filename),
+            maxBytes=DEFAULT_MAX_BYTES,
+            backupCount=DEFAULT_BACKUP_COUNT,
+            encoding='utf-8',
+        )
+        file_handler.setFormatter(JSONFormatter())
+        json_logger.addHandler(file_handler)
+
     json_logger.propagate = False
 
 
