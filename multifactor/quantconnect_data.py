@@ -287,13 +287,14 @@ class QuantConnectDataSource:
 class AlpacaMarketData:
     """Alpaca Market Data API - 作为 QuantConnect 的 fallback"""
 
-    def __init__(self, api_key=None, api_secret=None):
+    def __init__(self, api_key=None, api_secret=None, feed='iex'):
         """
         初始化 Alpaca Market Data
 
         参数:
             api_key: str
             api_secret: str
+            feed: str, 数据源 feed ('iex' 或 'sip')，默认 'iex'，可通过 ALPACA_DATA_FEED 覆盖
         """
         # 使用 dotenv_values 读取 .env，不污染全局环境变量
         env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -316,6 +317,8 @@ class AlpacaMarketData:
             or os.getenv('ALPACA_API_SECRET')
         )
         self.base_url = 'https://data.alpaca.markets'
+        # P0 修复：默认使用 IEX feed，避免未订阅 SIP 导致 403
+        self.feed = feed or os.getenv('ALPACA_DATA_FEED', 'iex')
 
         if not self.api_key or not self.api_secret:
             logger.warning("⚠️ Alpaca Market Data API Key 未设置")
@@ -334,6 +337,9 @@ class AlpacaMarketData:
         }
 
         url = f"{self.base_url}/v2/{endpoint}"
+        params = params or {}
+        if 'feed' not in params and self.feed:
+            params['feed'] = self.feed
 
         try:
             response = requests.get(url, headers=headers, params=params, timeout=30)

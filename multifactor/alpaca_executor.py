@@ -81,6 +81,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _round_to_tick(price: float, tick_size: float = 0.01) -> float:
+    """将价格按 tick 取整，避免 sub-penny 等无效报价"""
+    if price <= 0 or tick_size <= 0:
+        return price
+    return round(price / tick_size) * tick_size
+
+
 def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = None,
                              spread: Optional[float] = None, default_pct: float = 0.001) -> float:
     """
@@ -135,6 +142,7 @@ try:
     )
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockLatestTradeRequest, StockLatestQuoteRequest
+    from alpaca.data.enums import DataFeed
     from alpaca.common.exceptions import APIError
     ALPACA_AVAILABLE = True
 except ImportError as e:
@@ -717,7 +725,7 @@ class AlpacaPaperExecutor:
         if not self.data_client:
             return None
         try:
-            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
             quotes = self.data_client.get_stock_latest_quote(request)
             quote = quotes.get(symbol) if isinstance(quotes, dict) else quotes
             bid = float(getattr(quote, 'bid_price', 0) or 0)
@@ -740,6 +748,7 @@ class AlpacaPaperExecutor:
                 timeframe=TimeFrame.Day,
                 start=start,
                 end=end,
+                feed=DataFeed.IEX,
             )
             bars = self.data_client.get_stock_bars(request)
 
@@ -792,6 +801,9 @@ class AlpacaPaperExecutor:
         if price <= 0:
             return 'market', None
 
+        # 根据价格确定最小 tick：高价股 0.01，低价股 0.0001
+        tick_size = 0.0001 if price < 1.0 else 0.01
+
         if self.use_limit_orders:
             atr = self._get_atr(symbol)
             spread = self._get_spread(symbol)
@@ -799,20 +811,27 @@ class AlpacaPaperExecutor:
                 symbol, price, atr=atr, spread=spread, default_pct=self.limit_order_offset_pct
             )
             limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            limit_price = _round_to_tick(limit_price, tick_size)
             logger.info(f"[PROTECT] use_limit_orders=True, converting {symbol} {side} to limit @ ${limit_price:.4f}")
             return 'limit', limit_price
 
         # 高波动保护阈值
         atr = self._get_atr(symbol)
         spread = self._get_spread(symbol)
+        # P0 修复：过滤异常宽价差，避免 IEX/Polygon 脏数据触发不成交的限价单
+        if spread is not None and price > 0:
+            spread = min(spread, price * 0.02)
         atr_ratio = (atr / price) if atr and price > 0 else 0.0
         spread_ratio = (spread / price) if spread and price > 0 else 0.0
 
-        if atr_ratio > 0.02 or spread_ratio > 0.005:
+        if atr_ratio > 0.02 or spread_ratio > 0.02:
             offset = get_dynamic_limit_offset(
                 symbol, price, atr=atr, spread=spread, default_pct=self.limit_order_offset_pct
             )
+            # 限价偏移不超过 2%，避免限价单挂在远处无法成交
+            offset = min(offset, 0.02)
             limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            limit_price = _round_to_tick(limit_price, tick_size)
             logger.info(
                 f"[PROTECT] High volatility (atr={atr_ratio:.4f}, spread={spread_ratio:.4f}), "
                 f"converting {symbol} {side} to limit @ ${limit_price:.4f}"
@@ -1147,6 +1166,27 @@ class AlpacaPaperExecutor:
             logger.error(f"Failed to get orders: {e}")
             return []
 
+    def get_order_by_id(self, order_id):
+        """根据订单 ID 获取订单状态（兼容 order_manager 轮询）"""
+        if not self.trading_client:
+            return None
+
+        try:
+            # mock 模式或无 SDK 时直接调用 fake client
+            if not ALPACA_AVAILABLE or isinstance(self.trading_client, _FakeAlpacaClient):
+                order = self.trading_client.get_order_by_id(order_id)
+                if order is None:
+                    return None
+                return self._order_to_dict(order)
+
+            order = self.trading_client.get_order_by_id(order_id)
+            if order is None:
+                return None
+            return self._order_to_dict(order)
+        except (APIError, RequestException, ConnectionError, Timeout) as e:
+            logger.error(f"Failed to get order {order_id}: {e}")
+            return None
+
     def _parse_submitted_at(self, value) -> Optional[datetime]:
         """将订单 submitted_at 统一转换为 datetime，供 SDK 分页使用"""
         if value is None:
@@ -1347,6 +1387,34 @@ class AlpacaPaperExecutor:
             logger.warning(f"Failed to sync corporate actions: {e}")
 
     def sync_positions(self):
+        """同步本地 PDT tracker 与券商当前持仓和 daytrade_count"""
+        if not self.pdt_tracker:
+            logger.debug("PDT tracker disabled, skipping position sync")
+            return
+
+        try:
+            positions = self.get_positions()
+            broker_daytrade_count = None
+            account_id = None
+            try:
+                account = self.get_account()
+                if account:
+                    broker_daytrade_count = account.get('daytrade_count')
+                    account_id = account.get('id')
+            except Exception as e:
+                logger.warning(f"Failed to get account info for PDT sync: {e}")
+
+            self.pdt_tracker.sync_positions(
+                positions,
+                broker_daytrade_count=broker_daytrade_count,
+                account_id=account_id,
+            )
+            logger.info("[PDT] Pre-rebalance PDT state synced")
+        except Exception as e:
+            logger.warning(f"Failed to sync positions: {e}")
+            raise
+
+    def sync_positions(self):
         """与 Alpaca 持仓同步，用于 PDT 准确追踪"""
         if not self.pdt_tracker:
             return
@@ -1507,7 +1575,7 @@ class AlpacaPaperExecutor:
 
         try:
             # P1 修复：优先使用报价（quote）而非成交价（trade），更反映当前市场
-            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
             quotes = self.data_client.get_stock_latest_quote(request)
             quote = quotes.get(symbol) if isinstance(quotes, dict) else quotes
             # 买入用 ask_price，卖出用 bid_price，通用取中间价
@@ -1585,6 +1653,10 @@ class AlpacaExecutor:
     def cancel_all_orders(self):
         return self.executor.cancel_all_orders()
 
+    def cancel_order(self, order_id: str) -> bool:
+        """透传到执行器：撤销指定订单"""
+        return self.executor.cancel_order(order_id)
+
     def get_orders(self, status='open'):
         return self.executor.get_orders(status)
 
@@ -1608,6 +1680,14 @@ class AlpacaExecutor:
     def sync_corporate_actions(self, symbols, start_date=None, end_date=None):
         """透传到执行器：同步公司行为并调整本地 lot"""
         return self.executor.sync_corporate_actions(symbols, start_date, end_date)
+
+    def sync_positions(self):
+        """透传到执行器：同步 PDT tracker 与券商持仓"""
+        return self.executor.sync_positions()
+
+    def get_order_by_id(self, order_id):
+        """透传到执行器：根据订单 ID 获取订单状态"""
+        return self.executor.get_order_by_id(order_id)
 
     def rebalance_portfolio(
         self,
@@ -1869,7 +1949,7 @@ class AlpacaExecutor:
             return {'sufficient': True, 'reason': 'mock_mode'}
 
         try:
-            request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+            request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
             quotes = self.executor.data_client.get_stock_latest_quote(request)
             quote = quotes.get(symbol) if isinstance(quotes, dict) else quotes
 

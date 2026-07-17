@@ -510,14 +510,14 @@ class OrderManager:
     def _get_order_status(self, order_id):
         """获取订单状态（使用新版 alpaca-py API）"""
         try:
-            # 优先使用 executor 的 get_order_by_id 方法（兼容新 SDK）
-            if hasattr(self.executor, 'get_order_by_id'):
+            # P0 修复：优先使用 executor 的 get_order_by_id 方法（兼容新 SDK）
+            if hasattr(self.executor, 'get_order_by_id') and callable(getattr(self.executor, 'get_order_by_id', None)):
                 order = self.executor.get_order_by_id(order_id)
                 if order:
                     return order
 
-            # 兼容旧代码：直接调用底层 API
-            if self.executor.api:
+            # 兼容旧代码：直接调用底层 API（仅当存在 api 属性时）
+            if hasattr(self.executor, 'api') and self.executor.api:
                 order = self.executor.api.get_order_by_id(order_id)
                 return {
                     'order_id': order.id,

@@ -291,7 +291,13 @@ class RiskMonitor:
         alerts = []
         
         # 检查单仓限制
-        for symbol, pos in positions.items():
+        # 兼容 list 与 dict 两种输入格式
+        if isinstance(positions, list):
+            pos_iter = ((p['symbol'], p) for p in positions)
+        else:
+            pos_iter = positions.items()
+
+        for symbol, pos in pos_iter:
             weight = pos['market_value'] / portfolio_value
             
             if weight > self.limits['max_position']:
@@ -392,33 +398,39 @@ class RiskMonitor:
     def check_concentration_risk(self, positions, portfolio_value):
         """
         检查集中度风险
-        
+
         参数:
-            positions: dict, 持仓
+            positions: dict or list, 持仓（dict 时按 symbol 键；list 时元素需含 'symbol' 和 'market_value'）
             portfolio_value: float, 组合价值
-        
+
         返回:
             dict: 集中度指标
         """
         # P1/P2: 确保接口签名可用，防御组合价值异常
         if not positions or portfolio_value <= 0:
             return {'hh_index': 0, 'top5_concentration': 0}
-        
-        weights = [p['market_value'] / portfolio_value for p in positions.values()]
+
+        # 兼容 list 与 dict 两种输入格式
+        if isinstance(positions, list):
+            pos_iter = positions
+        else:
+            pos_iter = positions.values()
+
+        weights = [p['market_value'] / portfolio_value for p in pos_iter]
         weights = sorted(weights, reverse=True)
-        
+
         # 赫芬达尔指数
         hh_index = sum(w**2 for w in weights)
-        
+
         # 前5大持仓集中度
         top5_concentration = sum(weights[:5]) if len(weights) >= 5 else sum(weights)
-        
+
         metrics = {
             'hh_index': hh_index,
             'top5_concentration': top5_concentration,
             'num_positions': len(positions),
         }
-        
+
         # 检查集中度告警
         if hh_index > 0.15:  # 高度集中
             self._trigger_alert(
@@ -426,9 +438,9 @@ class RiskMonitor:
                 f'High concentration: HHI={hh_index:.3f}',
                 metrics
             )
-        
+
         return metrics
-    
+
     def _calculate_sector_weights(self, positions, portfolio_value):
         """计算行业权重 - 使用 INDUSTRY 映射"""
         # 导入策略的行业映射
@@ -436,18 +448,24 @@ class RiskMonitor:
             from main import INDUSTRY
         except ImportError:
             INDUSTRY = {}
-        
+
         sector_weights = {}
-        
-        for symbol, pos in positions.items():
+
+        # 兼容 list 与 dict 两种输入格式
+        if isinstance(positions, list):
+            pos_iter = ((p['symbol'], p) for p in positions)
+        else:
+            pos_iter = positions.items()
+
+        for symbol, pos in pos_iter:
             # 使用 INDUSTRY 映射获取行业
             sector = INDUSTRY.get(symbol, 'other')
             weight = pos['market_value'] / portfolio_value
-            
+
             if sector not in sector_weights:
                 sector_weights[sector] = 0
             sector_weights[sector] += weight
-        
+
         return sector_weights
     
     def _send_alert(self, method, *args, **kwargs):
