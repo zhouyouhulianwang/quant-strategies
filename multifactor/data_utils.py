@@ -22,6 +22,8 @@ def _normalize_index(data):
         return data
     if hasattr(data.index, 'tz') and data.index.tz is not None:
         data.index = data.index.tz_localize(None)
+    if hasattr(data.index, 'normalize'):
+        data.index = data.index.normalize()
     return data
 
 

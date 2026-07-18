@@ -524,6 +524,7 @@ class HybridQCDataSource:
 
             if data is not None and len(data) > 0:
                 try:
+                    data = _normalize_index(data)
                     series = data.loc[start_date:end_date]
                     price_df[symbol] = series
                     logger.info(f"[Cache/{used_source}] {symbol}: {len(series)} records")
@@ -745,6 +746,10 @@ def _align_and_clean(price_df, market_df):
 
     if len(price_df) == 0 or len(market_df) == 0:
         return price_df, market_df
+
+    # 统一归一化日期索引，避免 Alpaca 时区感知索引与 Yahoo naive 日期交集为空
+    price_df = _normalize_index(price_df)
+    market_df = _normalize_index(market_df)
 
     common_dates = price_df.index.intersection(market_df.index)
     price_df = price_df.reindex(common_dates)
