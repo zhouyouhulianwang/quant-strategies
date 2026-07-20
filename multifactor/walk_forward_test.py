@@ -97,6 +97,7 @@ def run_walk_forward(
     train_years: int,
     test_months: int,
     weight_method: str,
+    generate_report: bool = True,
 ):
     start_date = pd.Timestamp(start)
     end_date = pd.Timestamp(end)
@@ -127,6 +128,7 @@ def run_walk_forward(
         result = strategy.run_backtest(
             str(train_start.date()),
             str(test_end.date()),
+            generate_report=generate_report,
         )
 
         if result is None or len(result) == 0:
@@ -212,9 +214,11 @@ def main():
                         help='训练窗口长度（年）')
     parser.add_argument('--test-months', type=int, default=6,
                         help='测试窗口长度（月）')
-    parser.add_argument('--weight-method', type=str, default='equal',
+    parser.add_argument('--weight-method', type=str, default='momentum_weighted',
                         choices=['equal', 'risk_parity', 'momentum_weighted'],
                         help='权重分配方法')
+    parser.add_argument('--no-report', action='store_true',
+                        help='跳过每个窗口的可视化报告生成，节省磁盘')
     args = parser.parse_args()
 
     run_walk_forward(
@@ -223,6 +227,7 @@ def main():
         train_years=args.train_years,
         test_months=args.test_months,
         weight_method=args.weight_method,
+        generate_report=not args.no_report,
     )
 
 

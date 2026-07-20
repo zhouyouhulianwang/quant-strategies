@@ -106,7 +106,7 @@ class V14Strategy(BaseStrategy):
                 paper=True,
                 enable_risk_monitor=True,
                 enable_intraday_monitor=False,
-                weight_method='equal',
+                weight_method='momentum_weighted',
                 config=None):
         """初始化 V14 策略。
 
@@ -273,7 +273,7 @@ class V14Strategy(BaseStrategy):
     # BaseStrategy implementation: backtest
     # ------------------------------------------------------------------
 
-    def run_backtest(self, start_date=None, end_date=None, use_cache=True):
+    def run_backtest(self, start_date=None, end_date=None, use_cache=True, generate_report=True):
         """运行 V14 回测 - 使用与实盘相同的信号生成逻辑。
 
         Parameters
@@ -349,9 +349,11 @@ class V14Strategy(BaseStrategy):
 
         self._print_performance(result)
 
-        if VIZ_AVAILABLE and len(result) > 0:
+        if VIZ_AVAILABLE and len(result) > 0 and generate_report:
             logger.info("\nGenerating visualization report...")
             generate_full_report(result)
+        elif not generate_report:
+            logger.info("\nVisualization report generation skipped (--no-report)")
 
         return result
 

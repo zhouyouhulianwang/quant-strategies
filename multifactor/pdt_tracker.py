@@ -378,6 +378,102 @@ class PDTTracker:
             'day_trades_left': day_trades_left,
         }
 
+    def estimate_additional_day_trades(self, orders: List[Dict[str, Any]]) -> int:
+        """
+        保守估计一组计划订单将新增的 day trade 次数（用于盘中/调仓前预估算）。
+
+        对每只 symbol，比较今日已发生的反向 exposure 与本次订单的反向数量，
+        取最小值作为新增的日内 round-trip 次数。注意：这里按 symbol 分别保守估计，
+        不处理跨 symbol 的 day trade。
+
+        参数:
+            orders: list of dict, 每个 dict 包含 'symbol'、'side'（'buy'/'sell'）、'qty'。
+        返回:
+            int: 预计新增的 day trade 次数（保守上界）。
+        """
+        if not self.enabled:
+            return 0
+        self._reset_if_new_day()
+        today = self._today().isoformat()
+
+        buys: Dict[str, int] = defaultdict(int)
+        sells: Dict[str, int] = defaultdict(int)
+        for o in orders:
+            symbol = str(o.get('symbol', '')).upper()
+            side = str(o.get('side', '')).lower()
+            qty = int(o.get('qty', 0) or 0)
+            if not symbol or qty <= 0:
+                continue
+            if side == 'buy':
+                buys[symbol] += qty
+            elif side == 'sell':
+                sells[symbol] += qty
+
+        additional = 0
+        for symbol in set(buys.keys()) | set(sells.keys()):
+            # 今日已开仓的 lot
+            existing_buy_today = sum(
+                lot['qty'] for lot in self.positions.get(symbol, [])
+                if lot.get('entry_date') == today
+            )
+            # 今日已卖出缓存
+            existing_sell_today = self._today_sells.get(symbol, 0)
+            # 计划订单
+            new_buy = buys.get(symbol, 0)
+            new_sell = sells.get(symbol, 0)
+            # 保守新增 round-trip：计划订单产生的新最小配对，减去已存在的最小配对
+            before = min(existing_buy_today, existing_sell_today)
+            after = min(existing_buy_today + new_buy, existing_sell_today + new_sell)
+            additional += max(0, after - before)
+        return additional
+
+    def check_orders_pdt_limit(self, orders: List[Dict[str, Any]], account_type: str = 'MARGIN',
+                               equity: float = 0.0, broker_daytrade_count: int = 0) -> Dict[str, Any]:
+        """
+        在批量发送订单前，检查这些订单是否会触发 PDT 限制。
+
+        返回:
+            dict: {'allowed': bool, 'reason': str, 'additional_day_trades': int,
+                   'day_trades_used': int, 'day_trades_left': int}
+        """
+        if not self.enabled:
+            return {'allowed': True, 'reason': 'pdt_disabled', 'additional_day_trades': 0,
+                    'day_trades_used': 0, 'day_trades_left': 999}
+        if account_type.upper() == 'CASH':
+            return {'allowed': True, 'reason': 'cash_account', 'additional_day_trades': 0,
+                    'day_trades_used': 0, 'day_trades_left': 999}
+        if equity >= self.min_equity_for_unlimited:
+            return {'allowed': True, 'reason': 'equity_above_threshold', 'additional_day_trades': 0,
+                    'day_trades_used': 0, 'day_trades_left': 999}
+
+        additional = self.estimate_additional_day_trades(orders)
+        if additional <= 0:
+            return {'allowed': True, 'reason': 'no_additional_day_trades', 'additional_day_trades': 0,
+                    'day_trades_used': 0, 'day_trades_left': 999}
+
+        today = self._today()
+        local_count = self._rolling_count(today)
+        broker_count = broker_daytrade_count if broker_daytrade_count is not None else self._broker_daytrade_count
+        day_trades_used = max(local_count, broker_count)
+        day_trades_left = max(0, self.max_day_trades_in_5_days - day_trades_used)
+
+        if day_trades_used + additional > self.max_day_trades_in_5_days:
+            return {
+                'allowed': False,
+                'reason': (f'pre_trade_pdt_exceed: {day_trades_used}+{additional} > '
+                           f'{self.max_day_trades_in_5_days}'),
+                'additional_day_trades': additional,
+                'day_trades_used': day_trades_used,
+                'day_trades_left': day_trades_left,
+            }
+        return {
+            'allowed': True,
+            'reason': 'ok',
+            'additional_day_trades': additional,
+            'day_trades_used': day_trades_used,
+            'day_trades_left': day_trades_left,
+        }
+
     def _has_sell_today(self, symbol: str) -> bool:
         """检查今日是否有卖出成交（P0 修复：使用今日卖出缓存）"""
         return self._today_sells.get(symbol.upper(), 0) > 0

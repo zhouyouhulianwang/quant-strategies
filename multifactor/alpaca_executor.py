@@ -1757,6 +1757,27 @@ class AlpacaExecutor:
                 return {'status': 'PRECHECK_FAILED', **precheck}
             logger.info(f"[OK] Atomic pre-check passed ({precheck['orders_count']} orders)")
 
+        # L2: 调仓前批量 PDT 预估算（防止同一次再平衡触发 PDT 限制）
+        if self.executor.pdt_tracker and self.executor.enable_pdt:
+            planned_orders = self._build_planned_orders(
+                target_positions, current_positions, portfolio_value, max_position_pct
+            )
+            account_type = account.get('account_type', 'MARGIN')
+            equity = account.get('equity', 0.0)
+            broker_dt = account.get('daytrade_count', 0)
+            pdt_batch = self.executor.pdt_tracker.check_orders_pdt_limit(
+                planned_orders, account_type=account_type, equity=equity,
+                broker_daytrade_count=broker_dt
+            )
+            logger.info(
+                f"[PDT_BATCH] 预计新增 day trade {pdt_batch['additional_day_trades']}，"
+                f"已用 {pdt_batch['day_trades_used']}/3，剩余 {pdt_batch['day_trades_left']}"
+            )
+            if not pdt_batch['allowed']:
+                logger.error(f"[ERROR] 批量 PDT 预估算拒绝: {pdt_batch['reason']}")
+                self.executor._send_alert('execution_error', 'pdt_batch_rejected', pdt_batch['reason'])
+                return {'status': 'PRECHECK_FAILED', 'reason': pdt_batch['reason'], **pdt_batch}
+
         # 记录调仓前状态
         pre_state = {
             'timestamp': datetime.now().isoformat(),
@@ -1939,6 +1960,27 @@ class AlpacaExecutor:
             }
 
         return {'pass': True, 'reason': 'ok', 'orders_count': orders_count}
+
+    def _build_planned_orders(self, target_positions, current_positions, portfolio_value, max_position_pct):
+        """L2: 根据目标持仓和当前持仓构建计划订单列表，用于批量 PDT 预估算。"""
+        orders = []
+        for symbol, pos in current_positions.items():
+            if symbol not in target_positions and pos.get('qty', 0) > 0:
+                orders.append({'symbol': symbol, 'side': 'sell', 'qty': int(pos['qty'])})
+        for symbol, target_value in target_positions.items():
+            target_value = min(target_value, portfolio_value * max_position_pct)
+            try:
+                current_price = self._get_current_price(symbol)
+            except Exception:
+                continue
+            current_qty = current_positions.get(symbol, {}).get('qty', 0)
+            target_qty = self._calculate_qty(target_value, current_price, symbol=symbol)
+            diff = int(target_qty - current_qty)
+            if diff > 0:
+                orders.append({'symbol': symbol, 'side': 'buy', 'qty': diff})
+            elif diff < 0:
+                orders.append({'symbol': symbol, 'side': 'sell', 'qty': -diff})
+        return orders
 
     def _check_liquidity(self, symbol, qty_needed):
         """检查标的流动性"""

@@ -61,7 +61,7 @@ def main(argv=None):
     parser.add_argument('--end', type=str, help='End date YYYY-MM-DD')
 
     parser.add_argument('--monitor', action='store_true', help='Enable intraday monitor')
-    parser.add_argument('--weight-method', type=str, default='equal',
+    parser.add_argument('--weight-method', type=str, default='momentum_weighted',
                        choices=['equal', 'risk_parity', 'momentum_weighted'],
                        help='Weight allocation method')
     parser.add_argument('--confirm-live', action='store_true',
