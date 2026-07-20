@@ -147,38 +147,6 @@ class QuantConnectDataSource:
             )
             return False
 
-            # 构建 lean 命令（适配新版 Lean CLI 1.0.227+）
-            # 旧版 --dataset QuantConnect 已改为 --data-provider-historical QuantConnect
-            # 保留如下，仅作参考：
-            # cmd = [
-            #     'lean', 'data', 'download',
-            #     '--data-provider-historical', 'QuantConnect',
-            #     '--data-type', 'Trade',
-            #     '--resolution', resolution.capitalize(),
-            #     '--security-type', 'Equity',
-            #     '--market', 'USA',
-            #     '--ticker', symbol.upper(),
-            # ]
-            # if start_date:
-            #     cmd.extend(['--start', start_date.replace('-', '')])
-            # if end_date:
-            #     cmd.extend(['--end', end_date.replace('-', '')])
-
-            # result = subprocess.run(
-            #     cmd,
-            #     capture_output=True,
-            #     text=True,
-            #     timeout=120,
-            #     cwd=LEAN_ROOT_DIR
-            # )
-
-            # if result.returncode == 0:
-            #     logger.info(f"✅ {symbol} 数据下载成功")
-            #     return True
-            # else:
-            #     logger.warning(f"⚠️ {symbol} 数据下载失败: {result.stderr}")
-            #     return False
-
         except subprocess.TimeoutExpired:
             logger.error(f"⏱️ {symbol} 数据下载超时")
             return False
