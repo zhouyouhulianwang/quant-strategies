@@ -536,8 +536,8 @@ class AlpacaPaperExecutor:
                 logger.debug(f"Alert send failed: {e}")
 
     def start_rebalance_session(self):
-        """开始新的调仓会话，生成唯一 ID"""
-        self.rebalance_session = uuid.uuid4().hex[:8]
+        """开始新的调仓会话，生成基于日期的确定性 ID，避免跨进程重启重复下单"""
+        self.rebalance_session = datetime.now().strftime('%Y%m%d')
         logger.info(f"[ROLLBACK] Starting rebalance session: {self.rebalance_session}")
         return self.rebalance_session
 

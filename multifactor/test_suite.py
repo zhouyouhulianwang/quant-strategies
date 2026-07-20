@@ -243,29 +243,30 @@ class TestOrderIdempotency:
         'ALPACA_API_SECRET': 'SK_TEST456'
     })
     def test_client_order_id_format(self):
-        """测试 client_order_id 格式"""
+        """测试 session_id 格式（基于日期，YYYYmmdd）"""
         from alpaca_executor import AlpacaPaperExecutor
         
         executor = AlpacaPaperExecutor(mock=True)
         session = executor.start_rebalance_session()
         
-        # session_id 应为 8 位 hex
+        # session_id 应为 8 位日期格式
         assert len(session) == 8, f"session_id 应为 8 位，实际 {len(session)}"
-        assert all(c in '0123456789abcdef' for c in session), "session_id 应为 hex"
+        assert session.isdigit(), "session_id 应为数字日期"
+        assert datetime.strptime(session, '%Y%m%d'), "session_id 应为合法日期"
     
     @patch.dict('os.environ', {
         'ALPACA_API_KEY': 'PK_TEST123',
         'ALPACA_API_SECRET': 'SK_TEST456'
     })
     def test_rebalance_session_isolation(self):
-        """测试不同会话的 ID 不同"""
+        """测试同一天多次重启生成的会话 ID 一致，避免跨进程重复下单"""
         from alpaca_executor import AlpacaPaperExecutor
         
         executor = AlpacaPaperExecutor(mock=True)
         session1 = executor.start_rebalance_session()
         session2 = executor.start_rebalance_session()
         
-        assert session1 != session2, "两次会话应生成不同 ID"
+        assert session1 == session2, "同一天重启的会话 ID 应一致"
     
     @patch.dict('os.environ', {
         'ALPACA_API_KEY': 'PK_TEST123',
