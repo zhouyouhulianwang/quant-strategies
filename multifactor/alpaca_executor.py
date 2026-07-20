@@ -85,7 +85,10 @@ def _round_to_tick(price: float, tick_size: float = 0.01) -> float:
     """将价格按 tick 取整，避免 sub-penny 等无效报价"""
     if price <= 0 or tick_size <= 0:
         return price
-    return round(price / tick_size) * tick_size
+    # 按 tick_size 精度截断，避免浮点串号导致 Alpaca 收到 96.71000000000001
+    decimals = max(0, int(round(-math.log10(tick_size))))
+    rounded = round(price / tick_size) * tick_size
+    return float(f"{rounded:.{decimals}f}")
 
 
 def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = None,
