@@ -470,7 +470,7 @@ class HybridQCDataSource:
 
         优先级: QuantConnect → Alpaca → Yahoo Finance
         """
-        price_df = pd.DataFrame()
+        price_series = {}
         source_order = [
             ('QuantConnect', 'adjusted'),
             ('Alpaca', 'adjusted'),
@@ -517,12 +517,13 @@ class HybridQCDataSource:
                 try:
                     data = _normalize_index(data)
                     series = data.loc[start_date:end_date]
-                    price_df[symbol] = series
+                    price_series[symbol] = series
                     logger.info(f"[Cache/{used_source}] {symbol}: {len(series)} records")
                 except Exception as e:
                     logger.warning(f"{symbol} date slice failed: {e}")
 
         # P0修复: 按标的受限前向填充，超过 max_days 的缺失值保持 NaN，后续因子/选股会剔除
+        price_df = pd.concat(price_series, axis=1) if price_series else pd.DataFrame()
         price_df = price_df.dropna(how='all', axis=1)
         price_df = _limited_ffill(price_df)
         return price_df.dropna(how='all')
