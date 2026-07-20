@@ -77,20 +77,24 @@ class TestFactorComputation:
         assert score.min() >= 0.0, f"评分不应低于 0.0，实际 {score.min()}"
     
     def test_vix_scale(self):
-        """测试 VIX 仓位缩放"""
+        """测试 VIX 仓位缩放：普通波动期高仓位，高波动期非线性降仓"""
         from main import v14_scale
         
-        # VIX=15 → 满仓
+        # VIX<=25: 满仓
         sc_low = v14_scale(15.0)
         assert sc_low == 100.0, f"VIX=15 应满仓，实际 {sc_low}"
         
-        # VIX=55 → 约 35% (更严格的防御：高波动环境中降低暴露)
-        sc_high = v14_scale(55.0)
-        assert sc_high == 35.0, f"VIX=55 应 35%，实际 {sc_high}"
-        
-        # VIX=35 → 约 67.5%
+        # VIX=35: 约 92%（普通波动期仍保持高仓位）
         sc_mid = v14_scale(35.0)
-        assert 65 <= sc_mid <= 70, f"VIX=35 应在 65-70%，实际 {sc_mid}"    
+        assert 90 <= sc_mid <= 95, f"VIX=35 应在 90-95%，实际 {sc_mid}"
+        
+        # VIX=55: 约 30%（高波动期大幅降仓）
+        sc_high = v14_scale(55.0)
+        assert sc_high == 30.0, f"VIX=55 应 30%，实际 {sc_high}"
+        
+        # VIX=40: 约 82.5%（仍处于 80%-100% 普通波动区间）
+        sc_normal = v14_scale(40.0)
+        assert 80 <= sc_normal <= 85, f"VIX=40 应在 80-85%，实际 {sc_normal}"    
     def test_factor_direction(self):
         """测试因子方向性: 高动量股票应得分更高"""
         from main import compute_factors_v14, v14_composite_score

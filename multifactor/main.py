@@ -493,7 +493,7 @@ def v14_composite_score(factors, vix):
 
 def v14_scale(vix):
     """
-    V14仓位管理: 纯线性, 2参数
+    V14仓位管理: 分段非线性, 普通波动期保持高仓位, 高波动期快速降仓
 
     参数:
         vix: float, 当前VIX值
@@ -501,9 +501,11 @@ def v14_scale(vix):
     返回:
         float, 仓位比例(0-100)
     """
-    vix_norm = np.clip((vix - 15) / 40, 0, 1)
-    # VIX=15→100%, VIX=35→70%, VIX=55→35%
-    return 100 * (1 - 0.65 * vix_norm)
+    # VIX <= 25: 满仓; 25~55: 按高出25的部分二次衰减
+    # VIX=35 → ~92%, VIX=40 → ~82.5%, VIX=45 → ~68.9%, VIX=55 → 30%
+    excess = max(0.0, vix - 25.0)
+    reduction = 70.0 * min(1.0, (excess / 30.0) ** 2)
+    return 100.0 - reduction
 
 
 # ============================================================
