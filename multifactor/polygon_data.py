@@ -54,7 +54,7 @@ class PolygonDataSource:
         self.api_key = api_key or POLYGON_API_KEY
 
         if not self.api_key:
-            logger.warning("⚠️ Polygon API Key 未设置")
+            logger.debug("Polygon API Key 未设置，Polygon 实时数据源不可用")
             self.available = False
         else:
             self.available = True
