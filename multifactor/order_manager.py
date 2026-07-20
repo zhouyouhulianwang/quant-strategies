@@ -640,7 +640,7 @@ class RebalanceManager:
                   enable_rollback=True,
                   min_buy_fill_ratio=0.95,
                   topup_on_partial=True,
-                  max_wait_sec=300,
+                  max_wait_sec=60,
                   poll_interval=5,
                   min_notional=1.0) -> List[Dict]:
         """

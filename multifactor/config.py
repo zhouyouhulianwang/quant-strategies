@@ -111,7 +111,7 @@ class TradingConfig(BaseModel):
     enable_risk_monitor: bool = True
     enable_intraday_monitor: bool = True
     check_interval: int = Field(60, ge=10, le=3600)
-    max_wait_sec: int = Field(1800, ge=30, le=1800)
+    max_wait_sec: int = Field(120, ge=30, le=1800)
     poll_interval: int = Field(5, ge=1, le=60)
     # P1 修复：收盘前 N 分钟拒绝启动新调仓
     market_close_cutoff_minutes: int = Field(15, ge=0, le=240)

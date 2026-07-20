@@ -44,7 +44,7 @@ class PDTTracker:
             max_day_trades_in_5_days: int, 5 个交易日最大 day trade 次数（默认 3）
             enabled: bool, 是否启用 PDT 检查
         """
-        self.account_id = account_id or ('paper' if paper else 'live')
+        self.account_id = str(account_id) if account_id else ('paper' if paper else 'live')
         self.paper = paper
         self.min_equity_for_unlimited = min_equity_for_unlimited
         self.max_day_trades_in_5_days = max_day_trades_in_5_days
@@ -180,8 +180,8 @@ class PDTTracker:
         today = self._today().isoformat()
 
         # P1-5 修复：延迟初始化账户 ID，避免构造时 API 失败阻塞启动
-        if account_id is not None and account_id != self.account_id:
-            self.account_id = account_id
+        if account_id is not None and str(account_id) != self.account_id:
+            self.account_id = str(account_id)
             if not self._state_file_custom:
                 base_dir = os.path.join(os.path.dirname(__file__), 'data')
                 self.state_file = os.path.join(base_dir, f'pdt_{self.account_id}.json')
