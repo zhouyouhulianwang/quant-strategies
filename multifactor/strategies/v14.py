@@ -920,15 +920,15 @@ class V14Strategy(BaseStrategy):
         logger.info(f"  Win rate: {(returns > 0).mean():.1%}")
 
     def _infer_rebalance_frequency(self, dates):
-        """根据实际 rebalance 日期间隔推断年化期数。
+        """根据实际 rebalance 记录数与期间长度推断年化期数。
 
         返回:
             int: 年化期数（用于计算年化波动率/夏普）
         """
         if len(dates) < 2:
             return 12
-        median_gap = pd.Series(pd.to_datetime(dates)).diff().dt.days.median()
-        if median_gap is None or median_gap <= 0:
+        dates = pd.to_datetime(dates)
+        years = (dates.iloc[-1] - dates.iloc[0]).days / 365.25
+        if years <= 0:
             return 12
-        # 按交易日近似：252 天/年
-        return max(1, int(round(252 / median_gap)))
+        return max(1, int(round(len(dates) / years)))

@@ -494,15 +494,16 @@ def v14_composite_score(factors, vix):
 def v14_scale(vix):
     """
     V14仓位管理: 纯线性, 2参数
-    
+
     参数:
         vix: float, 当前VIX值
-    
+
     返回:
         float, 仓位比例(0-100)
     """
     vix_norm = np.clip((vix - 15) / 40, 0, 1)
-    return 100 * (1 - 0.35 * vix_norm)  # VIX=15→100%, VIX=55→65%
+    # VIX=15→100%, VIX=35→70%, VIX=55→35%
+    return 100 * (1 - 0.65 * vix_norm)
 
 
 # ============================================================

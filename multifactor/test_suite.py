@@ -84,13 +84,13 @@ class TestFactorComputation:
         sc_low = v14_scale(15.0)
         assert sc_low == 100.0, f"VIX=15 应满仓，实际 {sc_low}"
         
-        # VIX=60 → 约 65% (函数设计: VIX=15→100%, VIX=55→65%, 再高保持65%)
-        sc_high = v14_scale(60.0)
-        assert sc_high == 65.0, f"VIX=60 应 65%，实际 {sc_high}"
+        # VIX=55 → 约 35% (更严格的防御：高波动环境中降低暴露)
+        sc_high = v14_scale(55.0)
+        assert sc_high == 35.0, f"VIX=55 应 35%，实际 {sc_high}"
         
-        # VIX=35 → 约 82.5%
+        # VIX=35 → 约 67.5%
         sc_mid = v14_scale(35.0)
-        assert 80 <= sc_mid <= 85, f"VIX=35 应在 80-85%，实际 {sc_mid}"    
+        assert 65 <= sc_mid <= 70, f"VIX=35 应在 65-70%，实际 {sc_mid}"    
     def test_factor_direction(self):
         """测试因子方向性: 高动量股票应得分更高"""
         from main import compute_factors_v14, v14_composite_score
