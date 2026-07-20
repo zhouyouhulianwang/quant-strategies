@@ -141,7 +141,12 @@ try:
         QueryOrderStatus,
     )
     from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockLatestTradeRequest, StockLatestQuoteRequest
+    from alpaca.data.requests import (
+        StockLatestTradeRequest,
+        StockLatestQuoteRequest,
+        StockBarsRequest,
+    )
+    from alpaca.data.timeframe import TimeFrame
     from alpaca.data.enums import DataFeed
     from alpaca.common.exceptions import APIError
     ALPACA_AVAILABLE = True
@@ -1387,7 +1392,7 @@ class AlpacaPaperExecutor:
             logger.warning(f"Failed to sync corporate actions: {e}")
 
     def sync_positions(self):
-        """同步本地 PDT tracker 与券商当前持仓和 daytrade_count"""
+        """同步本地 PDT tracker 与券商当前持仓、账户 ID 和 daytrade_count"""
         if not self.pdt_tracker:
             logger.debug("PDT tracker disabled, skipping position sync")
             return
@@ -1409,18 +1414,10 @@ class AlpacaPaperExecutor:
                 broker_daytrade_count=broker_daytrade_count,
                 account_id=account_id,
             )
-            logger.info("[PDT] Pre-rebalance PDT state synced")
+            logger.info(f"[PDT] Positions synced [{self.pdt_tracker.account_id}]: {len(positions)} positions")
         except Exception as e:
             logger.warning(f"Failed to sync positions: {e}")
             raise
-
-    def sync_positions(self):
-        """与 Alpaca 持仓同步，用于 PDT 准确追踪"""
-        if not self.pdt_tracker:
-            return
-        positions = self.get_positions()
-        self.pdt_tracker.sync_positions(positions)
-        logger.info(f"[PDT] Positions synced [{self.pdt_tracker.account_id}]: {len(positions)} positions")
 
     def _calculate_qty(self, target_value, current_price, symbol=None):
         """使用 Decimal 精度计算股数（P1 修复：int 截断时累计误差补偿）"""

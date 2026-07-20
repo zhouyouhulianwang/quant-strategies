@@ -468,6 +468,21 @@ class V14Strategy(BaseStrategy):
             if price_df is None or len(price_df) == 0:
                 logger.error("Cannot get signal data, no data source available")
                 return {}
+
+            # P1: 实盘数据新鲜度检查，避免基于过期 EOD 数据生成信号
+            if live_mode:
+                latest_dt = pd.Timestamp(price_df.index[-1])
+                if latest_dt.tzinfo is None:
+                    latest_dt = latest_dt.tz_localize('America/New_York')
+                now_et = pd.Timestamp.now(tz='America/New_York')
+                stale_days = (now_et - latest_dt).days
+                if stale_days > 3:
+                    logger.error(
+                        f"[STALE] Price data too stale for live trading: "
+                        f"latest={latest_dt.date()}, now={now_et.date()}, stale_days={stale_days}"
+                    )
+                    return {}
+
             if vix is None:
                 vix = market_df['VIX'].iloc[-1]
 
@@ -647,13 +662,6 @@ class V14Strategy(BaseStrategy):
 
         self.executor.start_rebalance_session()
 
-        # 每次调仓前同步公司行为（拆股调整）
-        if self.use_paper_trading and self.executor:
-            try:
-                self.executor.sync_corporate_actions(list(self.generate_signals(live_mode=True).keys()))
-            except Exception as e:
-                logger.warning(f"[WARN] Pre-rebalance corporate action sync failed: {e}, continuing with local state")
-
         # 每次调仓前同步 PDT 状态（High #8 修复）
         if self.use_paper_trading and self.executor:
             try:
@@ -667,6 +675,13 @@ class V14Strategy(BaseStrategy):
         if not target_positions:
             logger.error("Signal generation failed, skipping trade")
             return
+
+        # 每次调仓前同步公司行为（拆股调整），使用已生成的目标标的
+        if self.use_paper_trading and self.executor:
+            try:
+                self.executor.sync_corporate_actions(list(target_positions.keys()))
+            except Exception as e:
+                logger.warning(f"[WARN] Pre-rebalance corporate action sync failed: {e}, continuing with local state")
 
         if self.risk_monitor:
             vix = self._get_latest_vix()
@@ -693,6 +708,11 @@ class V14Strategy(BaseStrategy):
         """
         if not self.executor:
             logger.error("Alpaca Paper Trading not enabled")
+            return
+
+        # P1: 直接进入 live_trade 时再次确认市场开盘
+        if not self.executor.market_is_open():
+            logger.warning("[WARN] Market not open, skipping live_trade")
             return
 
         if self.risk_monitor and self.risk_monitor.trading_halted:
