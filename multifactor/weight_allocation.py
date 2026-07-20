@@ -63,9 +63,70 @@ class WeightAllocator:
     
     def _risk_parity_weight(self, symbols, price_df):
         """
-        风险平价分配 - 每只标的风险贡献相等
+        协方差风险平价 - 使用完整协方差矩阵，使每只标的风险贡献相等
 
-        公式: w_i ∝ 1/σ_i
+        优化目标: w_i * (Σw)_i 对所有 i 近似相等
+        这里采用迭代法求解，避免引入 scipy 等重依赖。
+        """
+        if price_df is None or len(price_df) < 40:
+            logger.warning("价格数据不足，回退到等权")
+            return self._equal_weight(symbols)
+
+        available = list(set(symbols) & set(price_df.columns))
+        if len(available) == 0:
+            return self._equal_weight(symbols)
+
+        returns = price_df[available].pct_change().dropna()
+
+        if len(returns) < 40:
+            return self._equal_weight(symbols)
+
+        # 年化协方差矩阵，ridge 正则化保证正定性
+        cov = returns.cov().values * 252
+        ridge = 1e-6
+        cov = cov + np.eye(cov.shape[0]) * ridge
+        idx = pd.Index(available)
+
+        # 初始权重：逆波动率
+        vols = np.sqrt(np.diag(cov))
+        inv_vols = 1.0 / np.where(vols == 0, np.inf, vols)
+        w = inv_vols / inv_vols.sum()
+
+        # 迭代求解风险平价
+        for _ in range(100):
+            portfolio_var = float(w.T @ cov @ w)
+            if portfolio_var <= 0:
+                break
+            sigma = np.sqrt(portfolio_var)
+            mrc = (cov @ w) / sigma
+            rc = w * mrc
+            rc_mean = rc.mean()
+            if rc_mean <= 0:
+                break
+            w_new = w * (rc_mean / rc)
+            w_new = w_new / w_new.sum()
+            if np.max(np.abs(w_new - w)) < 1e-8:
+                break
+            w = w_new
+
+        weights = pd.Series(w, index=idx)
+        weights = weights / weights.sum()
+
+        result = {}
+        for s in symbols:
+            result[s] = weights.get(s, 0.0)
+
+        total = sum(result.values())
+        if total > 0:
+            result = {k: v / total for k, v in result.items()}
+        else:
+            result = self._equal_weight(symbols)
+
+        return result
+    
+    def _inverse_vol_risk_parity_weight(self, symbols, price_df):
+        """
+        简化风险平价 - 反比于波动率（保留作为 fallback/对比基准）
         """
         if price_df is None or len(price_df) < 20:
             logger.warning("价格数据不足，回退到等权")
@@ -75,36 +136,21 @@ class WeightAllocator:
         if len(available) == 0:
             return self._equal_weight(symbols)
 
-        # 计算波动率
         returns = price_df[available].pct_change().dropna()
-
         if len(returns) < 20:
             return self._equal_weight(symbols)
 
-        # 年化波动率
         vols = returns.std() * np.sqrt(252)
-
-        # 风险平价权重: 反比于波动率
         inv_vols = 1.0 / vols.replace(0, np.inf)
         weights = inv_vols / inv_vols.sum()
-
-        # 归一化
         weights = weights / weights.sum()
 
-        result = {}
-        for s in symbols:
-            if s in weights.index:
-                result[s] = weights[s]
-            else:
-                result[s] = 0.0
-
-        # 重新归一化（缺失 symbol 权重为 0，避免 KeyError）
+        result = {s: weights.get(s, 0.0) for s in symbols}
         total = sum(result.values())
         if total > 0:
             result = {k: v / total for k, v in result.items()}
         else:
             result = self._equal_weight(symbols)
-
         return result
     
     def _min_variance_weight(self, symbols, price_df):
