@@ -660,6 +660,13 @@ class V14Strategy(BaseStrategy):
         if self._check_market_close_protection():
             return
 
+        # P1: 每次调仓前检查远程 kill switch
+        if self.risk_monitor:
+            self.risk_monitor.check_remote_kill_switch()
+            if self.risk_monitor.trading_halted:
+                logger.warning("[WARN] Trading halted by remote kill switch")
+                return
+
         self.executor.start_rebalance_session()
 
         # 每次调仓前同步 PDT 状态（High #8 修复）
@@ -719,6 +726,13 @@ class V14Strategy(BaseStrategy):
             logger.warning("[WARN] Trading halted (risk monitor triggered)")
             return
 
+        # P1: 每次进入交易函数前检查远程 kill switch
+        if self.risk_monitor:
+            self.risk_monitor.check_remote_kill_switch()
+            if self.risk_monitor.trading_halted:
+                logger.warning("[WARN] Trading halted by remote kill switch")
+                return
+
         # P1-8: 下单前再次检查收盘保护，防止进入函数后时间流逝进入禁区
         if self._check_market_close_protection():
             return
@@ -735,10 +749,27 @@ class V14Strategy(BaseStrategy):
             logger.error("Cannot get account info, trading paused")
             return
 
-        portfolio_value = account['portfolio_value']
+        portfolio_value = account.get('portfolio_value')
+        if portfolio_value is None or portfolio_value <= 0:
+            logger.error("[ERROR] Invalid portfolio value, trading paused")
+            return
+
+        # 检查未成交订单，防止重复下单/双仓
+        try:
+            open_orders = self.executor.get_orders(status='open')
+            if open_orders:
+                logger.warning(f"[WARN] {len(open_orders)} open orders exist, aborting rebalance to avoid double-trading")
+                return
+        except Exception as e:
+            logger.warning(f"[WARN] Failed to check open orders: {e}, continuing with caution")
+
         if self.risk_monitor:
             positions = self.executor.get_positions()
             self.risk_monitor.check_concentration_risk(positions, portfolio_value)
+            # 用 broker 组合价值实时同步回撤监控
+            if self.risk_monitor.check_drawdown(portfolio_value):
+                logger.warning("[WARN] Trading halted due to drawdown")
+                return
             if self._last_live_portfolio_value is not None and self._last_live_portfolio_value > 0:
                 daily_return = (portfolio_value - self._last_live_portfolio_value) / self._last_live_portfolio_value
                 self.risk_monitor.check_daily_loss(daily_return)
@@ -783,6 +814,8 @@ class V14Strategy(BaseStrategy):
             portfolio_value = account['portfolio_value'] if account else portfolio_value
             self.risk_monitor.check_position_limits(positions, portfolio_value)
             self._last_live_portfolio_value = portfolio_value
+            self.risk_monitor.persist_state()
+            logger.info("[RISK] Risk state persisted")
 
     # ------------------------------------------------------------------
     # BaseStrategy implementation: risk / status
