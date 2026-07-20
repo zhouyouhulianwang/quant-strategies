@@ -119,6 +119,9 @@ def get_dynamic_limit_offset(symbol: str, price: float, atr: Optional[float] = N
         if offset < min_offset:
             offset = min_offset
 
+    # P2: 确保动态偏移至少不低于 default_pct，避免高波动保护下单价贴市无法成交
+    offset = max(offset, default_pct)
+
     return offset
 
 # 尝试导入新版 alpaca-py SDK
