@@ -1,7 +1,10 @@
 # V14 MultiFactor Strategy 依赖
 
 # 数据获取
-yfinance>=0.2.0
+# yfinance 1.x 需要 websockets>=12，与 alpaca-trade-api 的 websockets<11 冲突。
+# 当前项目仍依赖 alpaca-trade-api，因此锁定 yfinance 0.2.x 和 websockets 10.x。
+yfinance>=0.2.0,<0.3
+websockets>=9,<11
 pandas>=1.5.0
 numpy>=1.24.0
 requests>=2.31.0
