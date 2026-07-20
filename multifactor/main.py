@@ -273,8 +273,9 @@ def compute_factors_v14(price_slice):
     
     # rsi_mr: RSI均值回归 (负偏离50的程度)
     if len(ret) >= 20:
-        pos = ret.iloc[-20:].apply(lambda x: x[x > 0].sum())
-        neg = ret.iloc[-20:].apply(lambda x: abs(x[x < 0].sum()))
+        ret20 = ret.iloc[-20:]
+        pos = ret20.clip(lower=0).sum()
+        neg = (-ret20.clip(upper=0)).sum()
         rsi = 100 - 100 / (1 + pos / neg.replace(0, 1))
         f['rsi_mr'] = (-(rsi - 50).abs()).rank(pct=True)
     else:
