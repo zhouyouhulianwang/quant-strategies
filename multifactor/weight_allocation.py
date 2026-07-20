@@ -187,6 +187,59 @@ class WeightAllocator:
         return result
 
 
+def apply_volatility_target(target_positions, price_df, target_vol=0.15, lookback=60):
+    """对目标持仓应用目标波动率控制（专业量化系统的常见风控 overlay）。
+
+    计算选中标的在 lookback 窗口内的协方差矩阵，并估计组合年化波动率。
+    若估计波动率高于 target_vol，则按比例压缩所有持仓，使组合波动率
+    回落至目标水平；否则保持不变。
+
+    参数:
+        target_positions: dict, {symbol: target_value}
+        price_df: DataFrame, 历史价格数据
+        target_vol: float, 目标年化波动率（默认 15%）
+        lookback: int, 计算协方差的历史交易日长度（默认 60）
+
+    返回:
+        dict, 缩放后的目标持仓
+    """
+    if not target_positions or price_df is None or price_df.empty:
+        return target_positions
+
+    symbols = [s for s in target_positions if s in price_df.columns]
+    if len(symbols) < 2:
+        return target_positions
+
+    total = sum(target_positions.values())
+    if total <= 0:
+        return target_positions
+
+    weights = pd.Series({s: target_positions[s] / total for s in symbols})
+    returns = price_df[symbols].iloc[-lookback:].pct_change().dropna()
+    if len(returns) < 20:
+        return target_positions
+
+    cov = returns.cov() * 252
+    # 使用样本协方差；若矩阵奇异，使用 Ledoit-Wolf 收缩或伪逆
+    try:
+        port_var = weights.T @ cov @ weights
+    except Exception:
+        return target_positions
+
+    if port_var <= 0 or np.isnan(port_var):
+        return target_positions
+
+    port_vol = np.sqrt(port_var)
+    if port_vol <= target_vol:
+        return target_positions
+
+    scale = target_vol / port_vol
+    scaled = {s: v * scale for s, v in target_positions.items()}
+    logger.info(f"[VOL_TARGET] 估计组合波动率 {port_vol:.2%} > 目标 {target_vol:.2%}, "
+                f"整体缩放至 {scale:.2%}")
+    return scaled
+
+
 def normalize_target_positions(target_positions, max_total_value, min_position_value=0):
     """
     归一化目标持仓，确保总金额不超过 max_total_value
@@ -312,6 +365,12 @@ def integrate_with_backtest(selected_symbols, total_equity, price_df,
 
     result = {s: total_equity * w for s, w in weights.items()}
     result = normalize_target_positions(result, total_equity, min_position_value=0)
+
+    # P1专业优化: 目标波动率 overlay —— 若组合估计波动率高于目标，则整体降仓
+    if result:
+        hist_slice = price_df.loc[:exec_date]
+        result = apply_volatility_target(result, hist_slice, target_vol=0.15, lookback=60)
+
     return result
 
 
