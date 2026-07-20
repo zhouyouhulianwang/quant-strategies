@@ -815,7 +815,7 @@ class AlpacaPaperExecutor:
             offset = get_dynamic_limit_offset(
                 symbol, price, atr=atr, spread=spread, default_pct=self.limit_order_offset_pct
             )
-            limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            limit_price = price * (1 + offset) if side == 'buy' else price * (1 - offset)
             limit_price = _round_to_tick(limit_price, tick_size)
             logger.info(f"[PROTECT] use_limit_orders=True, converting {symbol} {side} to limit @ ${limit_price:.4f}")
             return 'limit', limit_price
@@ -835,7 +835,7 @@ class AlpacaPaperExecutor:
             )
             # 限价偏移不超过 2%，避免限价单挂在远处无法成交
             offset = min(offset, 0.02)
-            limit_price = price * (1 - offset) if side == 'buy' else price * (1 + offset)
+            limit_price = price * (1 + offset) if side == 'buy' else price * (1 - offset)
             limit_price = _round_to_tick(limit_price, tick_size)
             logger.info(
                 f"[PROTECT] High volatility (atr={atr_ratio:.4f}, spread={spread_ratio:.4f}), "
