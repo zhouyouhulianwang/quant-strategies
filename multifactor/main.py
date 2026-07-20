@@ -414,22 +414,157 @@ def compute_factors_v14(price_slice):
 
 
 # ============================================================
+# 2.5 自适应因子权重 (基于近期因子IC)
+# ============================================================
+
+V14_FACTOR_NAMES = [
+    # 基础7
+    'growth', 'quality', 'momentum', 'lowvol', 'rsi_mr', 'ma_trend', 'technical',
+    # V14估值4
+    'relative_value', 'garp', 'price_position', 'industry_momentum',
+    # TED6
+    'vol_contraction', 'base_breakout', 'rel_strength_accel', 'price_accel',
+    'momentum_consistency', 'low_base_score',
+]
+
+
+def compute_factor_ic_history(price_df, lookback=126, min_obs=42):
+    """
+    计算每个因子在各月末调仓日的 IC (Spearman rank correlation)。
+
+    IC 定义: 调仓日因子截面值 (z-score) 与随后一个月个股收益的
+    Spearman 秩相关系数。IC > 0 表示因子近期有正向选股能力。
+
+    参数:
+        price_df: DataFrame, 日频价格 (索引=日期, 列=股票代码)
+        lookback: int, 仅使用最近 lookback 个自然日范围内的调仓点 (默认126≈6个月)
+        min_obs: int, 每次截面所需的最少股票数, 不足则跳过 (默认42, 不足时按可用数量下调)
+
+    返回:
+        DataFrame, 行=调仓日期, 列=17个因子名, 值=IC
+    """
+    # 月末调仓日 (价格数据中实际存在的每月最后一个交易日)
+    unique_ym = sorted(set((d.year, d.month) for d in price_df.index))
+    rebal_dates = []
+    for y, m in unique_ym:
+        month_days = price_df.index[(price_df.index.year == y) & (price_df.index.month == m)]
+        if len(month_days) > 0:
+            rebal_dates.append(month_days[-1])
+    if len(rebal_dates) < 2:
+        return pd.DataFrame(columns=V14_FACTOR_NAMES)
+
+    # 仅保留最近 lookback 天内的调仓点
+    cutoff = price_df.index[-1] - pd.Timedelta(days=lookback)
+    rebal_dates = [d for d in rebal_dates if d >= cutoff]
+    if len(rebal_dates) < 2:
+        return pd.DataFrame(columns=V14_FACTOR_NAMES)
+
+    n_stocks = len(price_df.columns)
+    min_obs_eff = min(min_obs, max(3, n_stocks))
+
+    rows = {}
+    for i in range(len(rebal_dates) - 1):
+        d0, d1 = rebal_dates[i], rebal_dates[i + 1]
+        pos = price_df.index.get_loc(d0)
+        if pos < 252:
+            continue  # 因子计算需要252日预热
+        price_slice = price_df.iloc[max(0, pos - 252):pos + 1]
+        try:
+            factors = compute_factors_v14(price_slice)
+        except Exception as e:
+            logger.warning(f"IC calc: factor computation failed at {d0}: {e}")
+            continue
+
+        # 前向1个月收益
+        fwd_ret = (price_df.loc[d1] / price_df.loc[d0] - 1).reindex(factors.index)
+
+        ic_row = {}
+        for name in V14_FACTOR_NAMES:
+            if name not in factors.columns:
+                continue
+            # 截面 z-score (因子值为percentile, 标准化以便 Spearman 一致处理)
+            fz = factors[name]
+            valid = fz.notna() & fwd_ret.notna()
+            if valid.sum() < min_obs_eff:
+                ic_row[name] = np.nan
+                continue
+            fz_std = (fz[valid] - fz[valid].mean()) / (fz[valid].std() + 1e-12)
+            # Spearman = 对秩做 Pearson 相关, 不依赖 scipy
+            ic_row[name] = fz_std.rank().corr(fwd_ret[valid].rank(), method='pearson')
+        rows[d0] = ic_row
+
+    ic_df = pd.DataFrame(rows).T
+    return ic_df.reindex(columns=V14_FACTOR_NAMES)
+
+
+def adaptive_factor_weights(factor_ic, ema_span=6, default_weights=None,
+                            lo=0.5, hi=1.5, ic_scale=0.05):
+    """
+    基于近期因子 IC 计算每个因子的权重乘数 (multiplier)。
+
+    方法: 对每个因子的 signed IC 序列做 EMA, 然后将 EMA(IC) 映射到
+    [lo, hi] 区间内的乘数:
+        multiplier = clip(1 + EMA(IC) / ic_scale, lo, hi)
+    - EMA(IC) > 0 → 乘数 > 1 (上调该因子)
+    - EMA(IC) < 0 → 乘数 < 1 (下调该因子)
+    - EMA(IC) ≈ 0 或数据不足 → 乘数 = 1 (保持静态权重)
+
+    注: 乘数只作用于组内因子权重 (随后组内重新归一化),
+    因此 base/v14/ted 三组之间的组级权重比例保持不变, 避免过拟合。
+
+    参数:
+        factor_ic: DataFrame, compute_factor_ic_history 的输出 (行=日期, 列=因子)
+        ema_span: int, IC 序列的 EMA 窗口 (默认6个月度调仓点)
+        default_weights: dict or None, {因子名: 默认乘数}, 数据不足时的回退值 (默认全部为1.0)
+        lo/hi: float, 乘数下限/上限 (默认0.5/1.5)
+        ic_scale: float, IC 缩放常数 (经验上月度IC绝对值约0.03~0.10, 默认0.05)
+
+    返回:
+        dict, {因子名: 乘数}
+    """
+    if default_weights is None:
+        default_weights = {name: 1.0 for name in V14_FACTOR_NAMES}
+
+    multipliers = dict(default_weights)
+    if factor_ic is None or len(factor_ic) < 2:
+        return multipliers
+
+    ic_ema = factor_ic.ewm(span=ema_span, min_periods=2).mean().iloc[-1]
+    for name in V14_FACTOR_NAMES:
+        v = ic_ema.get(name, np.nan)
+        if pd.isna(v):
+            multipliers[name] = default_weights.get(name, 1.0)
+        else:
+            multipliers[name] = float(np.clip(1.0 + v / ic_scale, lo, hi))
+    return multipliers
+
+
+# ============================================================
 # 3. 综合评分
 # ============================================================
 
-def v14_composite_score(factors, vix):
+def v14_composite_score(factors, vix, adaptive=False, adaptive_weights=None):
     """
     V14综合评分
     
     参数:
         factors: DataFrame, 17因子percentile
         vix: float, 当前VIX值
+        adaptive: bool, 是否启用自适应因子权重 (默认False, 保持原有静态行为)
+        adaptive_weights: dict or None, {因子名: 乘数}, 由 adaptive_factor_weights 生成;
+                          adaptive=True 且为 None 时视为全部1.0 (等同静态)
     
     返回:
         Series, 每只股票的综合评分
     """
     vix_norm = np.clip((vix - 15) / 40, 0, 1)
-    
+
+    # 自适应乘数 (默认1.0 = 不改变任何权重)
+    if adaptive and adaptive_weights:
+        mult = {name: float(adaptive_weights.get(name, 1.0)) for name in V14_FACTOR_NAMES}
+    else:
+        mult = {name: 1.0 for name in V14_FACTOR_NAMES}
+
     # 基础权重 (7因子)
     base_w = {
         'growth': 0.12, 'quality': 0.10, 'momentum': 0.10, 'lowvol': 0.08,
@@ -441,7 +576,10 @@ def v14_composite_score(factors, vix):
     }
     
     # P1修复: 组内权重先归一化到1, 再乘以 base_weight
-    effective_base_w = {name: base_w[name] + crisis_shift[name] * vix_norm for name in base_w}
+    # 自适应: 在组内归一化之前应用乘数, 组级权重因此保持不变
+    effective_base_w = {
+        name: (base_w[name] + crisis_shift[name] * vix_norm) * mult[name] for name in base_w
+    }
     base_sum = sum(effective_base_w.values())
     if base_sum > 0:
         effective_base_w = {name: w / base_sum for name, w in effective_base_w.items()}
@@ -455,6 +593,8 @@ def v14_composite_score(factors, vix):
         'relative_value': 0.10, 'garp': 0.12,
         'price_position': 0.08, 'industry_momentum': 0.06
     }
+    # 自适应: 组内应用乘数
+    v14_w = {name: w * mult[name] for name, w in v14_w.items()}
     # P1修复: 组内权重归一化到1
     v14_sum = sum(v14_w.values())
     if v14_sum > 0:
@@ -470,6 +610,8 @@ def v14_composite_score(factors, vix):
         'rel_strength_accel': 0.15, 'price_accel': 0.08,
         'momentum_consistency': 0.06, 'low_base_score': 0.08
     }
+    # 自适应: 组内应用乘数
+    ted_w = {name: w * mult[name] for name, w in ted_w.items()}
     # P1修复: 组内权重归一化到1
     ted_sum = sum(ted_w.values())
     if ted_sum > 0:
@@ -513,7 +655,8 @@ def v14_scale(vix):
 # ============================================================
 
 def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital=1.0,
-            execution_params=None):
+            execution_params=None, adaptive=False, volume_df=None,
+            adv_map=None, vol_map=None):
     """
     V14回测引擎 (与实盘路径一致)
 
@@ -524,6 +667,11 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
         weight_method: str, 权重分配方法 (equal/risk_parity/min_variance/momentum_weighted)
         initial_capital: float, 初始资金 (默认1.0, 建议回测使用1e6等真实资金以产生合理交易成本)
         execution_params: ExecutionParameters, 统一执行参数（默认从 config 构造，失败则使用默认）
+        adaptive: bool, 是否启用基于近期因子IC的自适应权重 (默认False, 保持静态行为)
+        volume_df: DataFrame, 可选，日频成交量（与 price_df 对齐）；slippage_model='volume' 时用于推导 ADV
+        adv_map: dict, 可选，{symbol: 日均成交额(美元)}；优先于 volume_df
+        vol_map: dict, 可选，{symbol: 年化波动率}；缺省时从价格历史推导
+
 
     返回:
         DataFrame, 回测结果 (date, nav, nav_after_cost, mr, vix, sc, n, ndx_ratio, cost, holdings)
@@ -545,7 +693,44 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
     prev_nav = float(initial_capital)
     records = []
 
-    def _estimate_cost(target_positions, current_positions, prices):
+    # P2修复: 成交量感知滑点需要 ADV / 波动率输入，优先使用外部传入，缺省时从价格历史推导 (PIT: rolling 窗口)
+    if adv_map is None:
+        adv_map = {}
+    if vol_map is None:
+        vol_map = {}
+    adv_hist = None   # DataFrame: rolling 20 日美元成交额均值 (PIT)
+    vol_hist = None   # DataFrame: rolling 60 日年化波动率 (PIT)
+    if getattr(execution_params, 'slippage_model', 'fixed') == 'volume':
+        if not adv_map and volume_df is not None:
+            try:
+                adv_hist = (price_df * volume_df).rolling(20, min_periods=5).mean()
+            except Exception:
+                adv_hist = None
+        if not vol_map:
+            try:
+                vol_hist = price_df.pct_change().rolling(60, min_periods=20).std() * np.sqrt(252)
+            except Exception:
+                vol_hist = None
+
+    def _adv_vol_at(s, asof):
+        """取 asof 日 (含) 之前的 ADV / 波动率快照，外部传入的 adv_map/vol_map 优先。"""
+        adv = adv_map.get(s)
+        vol = vol_map.get(s, 0.0)
+        if adv is None and adv_hist is not None and s in adv_hist.columns:
+            try:
+                v = adv_hist.loc[:asof, s].iloc[-1]
+                adv = float(v) if v == v and v > 0 else None
+            except Exception:
+                adv = None
+        if not vol and vol_hist is not None and s in vol_hist.columns:
+            try:
+                v = vol_hist.loc[:asof, s].iloc[-1]
+                vol = float(v) if v == v and v > 0 else 0.0
+            except Exception:
+                vol = 0.0
+        return adv, vol
+
+    def _estimate_cost(target_positions, current_positions, prices, asof=None):
         """使用 ExecutionParameters 统一估算调仓成本。"""
         total_cost = 0.0
         all_symbols = set(target_positions.keys()) | set(current_positions.keys())
@@ -560,7 +745,12 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
             if diff == 0:
                 continue
             side = 'buy' if diff > 0 else 'sell'
-            _, cost = execution_params.estimate_fill(prices[s], side, abs(diff))
+            adv, vol = _adv_vol_at(s, asof) if asof is not None else (adv_map.get(s), vol_map.get(s, 0.0))
+            _, cost = execution_params.estimate_fill(
+                prices[s], side, abs(diff),
+                adv=adv,
+                volatility=vol,
+            )
             total_cost += cost
         return total_cost
 
@@ -594,7 +784,13 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
         sc = v14_scale(vix_v)
 
         factors = compute_factors_v14(price_slice)
-        score = v14_composite_score(factors, vix_v)
+        if adaptive:
+            # 仅使用 signal_d 之前的数据计算 IC, 避免前视
+            ic_hist = compute_factor_ic_history(price_df.loc[:signal_d])
+            ad_w = adaptive_factor_weights(ic_hist)
+            score = v14_composite_score(factors, vix_v, adaptive=True, adaptive_weights=ad_w)
+        else:
+            score = v14_composite_score(factors, vix_v)
 
         # NDX比例: 因子驱动 (非硬编码)
         ndx_mask = score.index.isin(ndx_set)
@@ -641,7 +837,7 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
                 }
 
         # 6. P0/P1修复: 在按 next_d 价格过滤后再估算调仓成本
-        total_cost = _estimate_cost(target_positions, current_positions, next_prices)
+        total_cost = _estimate_cost(target_positions, current_positions, next_prices, asof=signal_d)
 
         # P1修复: 预留交易成本，避免 cash 为负
         if total_cost > 0 and target_value > 0:
@@ -666,7 +862,7 @@ def run_v14(price_df, market_df, ndx_set, weight_method='equal', initial_capital
                         'qty': positions.get(s, 0),
                         'price': float(next_prices[s]),
                     }
-            total_cost = _estimate_cost(target_positions, current_positions, next_prices)
+            total_cost = _estimate_cost(target_positions, current_positions, next_prices, asof=signal_d)
 
         # 7. P0/P1/P2修复: 在 next_d 执行真实成交, 统一使用 ExecutionParameters 计算股数
         new_positions = {}

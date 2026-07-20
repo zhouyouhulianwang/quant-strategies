@@ -2669,3 +2669,211 @@ class TestSchedulerHolidayHandling:
         assert date(2024, 4, 1) in dates
         # 不应包含 2/1
         assert date(2024, 2, 1) not in dates
+
+
+# ============================================================
+# 12. 自适应因子权重测试
+# ============================================================
+
+class TestAdaptiveFactorWeights:
+    """测试基于近期因子IC的自适应权重"""
+
+    def _make_ic_df(self, momentum_ic, other_ic=0.0, periods=8):
+        """构造模拟的因子IC历史 (行=月末日期, 列=因子名)"""
+        from main import V14_FACTOR_NAMES
+        dates = pd.date_range('2024-01-31', periods=periods, freq='ME')
+        data = {name: other_ic for name in V14_FACTOR_NAMES}
+        data['momentum'] = momentum_ic
+        return pd.DataFrame(data, index=dates)
+
+    def test_positive_ic_upweights_factor(self):
+        """IC为正时, 该因子乘数应 > 1 (上调权重)"""
+        from main import adaptive_factor_weights
+        ic_df = self._make_ic_df(momentum_ic=0.10)  # 强正IC
+        w = adaptive_factor_weights(ic_df)
+        assert w['momentum'] > 1.0, f"正IC应上调权重, 实际 {w['momentum']}"
+        # 其他IC为0的因子应保持中性
+        assert abs(w['growth'] - 1.0) < 1e-9, f"零IC应保持中性, 实际 {w['growth']}"
+
+    def test_negative_ic_downweights_factor(self):
+        """IC为负时, 该因子乘数应 < 1 (下调权重)"""
+        from main import adaptive_factor_weights
+        ic_df = self._make_ic_df(momentum_ic=-0.10)  # 强负IC
+        w = adaptive_factor_weights(ic_df)
+        assert w['momentum'] < 1.0, f"负IC应下调权重, 实际 {w['momentum']}"
+
+    def test_multiplier_bounded(self):
+        """乘数应被限制在 [lo, hi] 区间内, 避免极端权重"""
+        from main import adaptive_factor_weights
+        ic_df = self._make_ic_df(momentum_ic=5.0)  # 极端IC
+        w = adaptive_factor_weights(ic_df, lo=0.5, hi=1.5)
+        assert w['momentum'] == 1.5, f"乘数应被上限截断, 实际 {w['momentum']}"
+
+    def test_insufficient_data_returns_default(self):
+        """IC数据不足时应返回默认乘数 (全部1.0)"""
+        from main import adaptive_factor_weights, V14_FACTOR_NAMES
+        empty = pd.DataFrame(columns=V14_FACTOR_NAMES)
+        w = adaptive_factor_weights(empty)
+        assert all(v == 1.0 for v in w.values()), "数据不足应返回全1.0"
+
+    def test_adaptive_changes_composite_score(self):
+        """adaptive=True 且乘数非1时, 综合评分应与静态不同"""
+        from main import compute_factors_v14, v14_composite_score, V14_FACTOR_NAMES
+        dates = pd.bdate_range('2023-01-01', periods=260)
+        np.random.seed(42)
+        prices = pd.DataFrame(
+            np.cumprod(1 + np.random.normal(0.0005, 0.015, (260, 5)), axis=0) * 100,
+            index=dates,
+            columns=['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'META']
+        )
+        factors = compute_factors_v14(prices)
+        static_score = v14_composite_score(factors, vix=20.0)
+        # 人为给 momentum 一个极端乘数
+        ad_w = {name: 1.0 for name in V14_FACTOR_NAMES}
+        ad_w['momentum'] = 1.5
+        ad_w['growth'] = 0.5
+        adaptive_score = v14_composite_score(factors, vix=20.0, adaptive=True, adaptive_weights=ad_w)
+        assert not np.allclose(static_score.values, adaptive_score.values), \
+            "自适应权重应改变综合评分"
+        # adaptive=False (默认) 应保持静态行为
+        default_score = v14_composite_score(factors, vix=20.0, adaptive=True, adaptive_weights=None)
+        assert np.allclose(static_score.values, default_score.values), \
+            "adaptive_weights为None时应等同静态"
+
+    def test_compute_factor_ic_history_structure(self):
+        """IC历史应返回 DataFrame (行=调仓日, 列=17因子)"""
+        from main import compute_factor_ic_history, V14_FACTOR_NAMES
+        # 构造足够长的价格数据 (>= 252预热 + 数月末调仓点)
+        dates = pd.bdate_range('2022-01-01', periods=560)
+        np.random.seed(7)
+        prices = pd.DataFrame(
+            np.cumprod(1 + np.random.normal(0.0005, 0.015, (560, 50)), axis=0) * 100,
+            index=dates,
+            columns=[f'S{i:02d}' for i in range(50)]
+        )
+        ic_df = compute_factor_ic_history(prices, lookback=252)
+        assert isinstance(ic_df, pd.DataFrame), "应返回 DataFrame"
+        assert list(ic_df.columns) == V14_FACTOR_NAMES, "列应为17个因子名"
+        if len(ic_df) > 0:
+            # IC 是 Spearman 相关系数, 应在 [-1, 1]
+            vals = ic_df.values.flatten()
+            vals = vals[~np.isnan(vals)]
+            assert np.all(np.abs(vals) <= 1.0 + 1e-9), "IC 应在 [-1, 1] 内"
+
+
+# ============================================================
+# 26. 成交量感知滑点模型测试
+# ============================================================
+
+class TestVolumeSlippageModel:
+    """测试 volume-aware 滑点 / 市场冲击模型"""
+
+    def test_zero_notional_returns_zero(self):
+        """零交易额滑点为 0"""
+        from slippage_model import estimate_slippage_bps
+        assert estimate_slippage_bps('buy', 0.0, adv=1e9, volatility=0.25) == 0.0
+
+    def test_typical_trade_reasonable_magnitude(self):
+        """典型大盘股小额交易：滑点应在合理量级（不超过旧 20bps 假设太多）"""
+        from slippage_model import estimate_slippage_bps
+        # $20k 交易, ADV $1e9 (参与率 0.002%), vol 25%
+        slip = estimate_slippage_bps(
+            'buy', notional=20000, adv=1e9,
+            volatility=0.25, spread_bps=5.0, impact_bps=50.0,
+        )
+        # half-spread 2.5 + vol ~15.7 + impact ~0.07 ≈ 18 bps
+        assert 1.0 < slip < 25.0, f"典型交易滑点应 1-25 bps，实际 {slip}"
+        # 低波动股票应明显更低
+        slip_low_vol = estimate_slippage_bps(
+            'buy', notional=20000, adv=1e9,
+            volatility=0.10, spread_bps=5.0, impact_bps=50.0,
+        )
+        assert slip_low_vol < slip
+
+    def test_extreme_participation_increases_slippage(self):
+        """极端参与率（大单 vs 低流动性）滑点显著上升但有上限"""
+        from slippage_model import estimate_slippage_bps
+        small = estimate_slippage_bps(
+            'buy', notional=20000, adv=1e9,
+            volatility=0.25, spread_bps=5.0, impact_bps=50.0,
+        )
+        large = estimate_slippage_bps(
+            'buy', notional=5e8, adv=1e9,  # 参与率 50%
+            volatility=0.25, spread_bps=5.0, impact_bps=50.0,
+        )
+        assert large > small * 2, f"大单滑点应显著更高: small={small}, large={large}"
+        # 参与率截断为 1.0 时，冲击 <= impact_bps
+        capped = estimate_slippage_bps(
+            'buy', notional=1e12, adv=1e6,  # 参与率远超 100%
+            volatility=0.0, spread_bps=0.0, impact_bps=50.0,
+        )
+        assert capped <= 50.0 + 1e-9, f"冲击部分不应超过 impact_bps，实际 {capped}"
+
+    def test_missing_adv_falls_back_to_spread_and_vol(self):
+        """缺 ADV 时退化为 spread + vol 部分，不报错"""
+        from slippage_model import estimate_slippage_bps
+        slip = estimate_slippage_bps(
+            'sell', notional=50000, adv=0.0, volatility=0.40, spread_bps=10.0,
+        )
+        # half-spread 5 + vol 0.1*0.4/sqrt(252)*1e4 ≈ 25.2 → ~30
+        assert 5.0 < slip < 40.0, f"缺 ADV 时应仅含 spread+vol，实际 {slip}"
+
+    def test_apply_slippage_direction(self):
+        """买入加价、卖出减价"""
+        from slippage_model import apply_slippage_to_price
+        assert apply_slippage_to_price(100.0, 'buy', 10.0) > 100.0
+        assert apply_slippage_to_price(100.0, 'sell', 10.0) < 100.0
+        assert apply_slippage_to_price(100.0, 'buy', 0.0) == 100.0
+
+    def test_execution_params_fixed_model_unchanged(self):
+        """默认 slippage_model='fixed' 时 estimate_fill 行为与旧版一致"""
+        from matching_engine import ExecutionParameters
+        params = ExecutionParameters()  # 默认 fixed
+        price, cost = params.estimate_fill(150.0, 'buy', 133)
+        half_spread = (5.0 / 10000.0) / 2.0
+        expected_price = 150.0 * (1 + half_spread)
+        assert abs(price - expected_price) < 1e-9
+        expected_cost = expected_price * 133 * (0.002 + 5.0 / 10000.0)
+        assert abs(cost - expected_cost) < 1e-6
+
+    def test_execution_params_volume_model(self):
+        """slippage_model='volume' 时大单总执行成本（含冲击）高于小单"""
+        from matching_engine import ExecutionParameters
+        params = ExecutionParameters(slippage_model='volume', impact_bps=50.0)
+        mid = 100.0
+        p_small, c_small = params.estimate_fill(mid, 'buy', 100, adv=1e9, volatility=0.25)
+        p_large, c_large = params.estimate_fill(mid, 'buy', 100000, adv=1e9, volatility=0.25)
+        # 大单执行价更高（滑点更大）
+        assert p_large > p_small, f"大单执行价应更高: {p_small} vs {p_large}"
+        # 成本均 > 0
+        assert c_small > 0 and c_large > 0
+        # 总执行成本（价格冲击 + 费用）占名义金额比例：大单应更高
+        total_small = (p_small - mid) * 100 + c_small
+        total_large = (p_large - mid) * 100000 + c_large
+        assert total_large / (mid * 100000) > total_small / (mid * 100)
+
+    def test_execution_params_volume_no_adv(self):
+        """volume 模型缺 ADV 时仍返回有效价格与成本"""
+        from matching_engine import ExecutionParameters
+        params = ExecutionParameters(slippage_model='volume')
+        price, cost = params.estimate_fill(100.0, 'sell', 50, adv=None, volatility=0.30)
+        assert 0 < price < 100.0, "卖出价应低于中间价"
+        assert cost > 0
+
+    def test_from_config_passthrough(self):
+        """from_config 应透传 slippage_model 等参数"""
+        from matching_engine import from_config
+        cfg = MagicMock()
+        cfg.trading = MagicMock(
+            spread_bps=8.0, cost_per_turnover=0.003,
+            use_fractional_shares=True, min_notional=10.0,
+            slippage_model='volume', impact_bps=80.0,
+            vol_impact_coeff=0.2, default_adv=5e8, max_participation=0.5,
+        )
+        params = from_config(cfg)
+        assert params.slippage_model == 'volume'
+        assert params.impact_bps == 80.0
+        assert params.vol_impact_coeff == 0.2
+        assert params.default_adv == 5e8
+        assert params.max_participation == 0.5
+        assert params.spread_bps == 8.0

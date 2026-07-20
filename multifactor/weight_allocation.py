@@ -272,6 +272,177 @@ def normalize_target_positions(target_positions, max_total_value, min_position_v
     return scaled
 
 
+def apply_sector_constraints(weights, sectors, max_sector_pct=0.30, max_iter=20):
+    """应用行业（板块）权重约束，将超配行业的权重按比例分配给低配行业。
+
+    参数:
+        weights: dict, {symbol: weight} 原始权重（未归一化亦可，内部会归一化）
+        sectors: dict, {symbol: sector} 标的到行业的映射（通常使用 main.INDUSTRY）
+        max_sector_pct: float, 单个行业最大权重占比（默认 30%）
+        max_iter: int, 迭代上限（防止不收敛时死循环）
+
+    返回:
+        dict: 约束后的权重（已归一化）
+    """
+    if not weights:
+        return {}
+
+    # 归一化输入权重
+    total = sum(weights.values())
+    if total <= 0:
+        return {}
+    constrained = {k: v / total for k, v in weights.items()}
+
+    for _ in range(max_iter):
+        # 计算当前行业权重
+        sector_weights = {}
+        for s, w in constrained.items():
+            sec = sectors.get(s, 'other')
+            sector_weights[sec] = sector_weights.get(sec, 0.0) + w
+
+        # 检查是否有行业超限
+        overweight = {sec: w for sec, w in sector_weights.items() if w > max_sector_pct}
+        if not overweight:
+            break
+
+        # 收集低配行业（可用于吸收超额权重）
+        underweight_secs = [sec for sec in sector_weights if sector_weights[sec] < max_sector_pct]
+        if not underweight_secs:
+            # 所有行业都已达到或超过上限，无法进一步分配，直接截断
+            break
+
+        # 计算超额总量与低配行业可用空间
+        excess_total = sum(sector_weights[sec] - max_sector_pct for sec in overweight)
+        underweight_space = {sec: max_sector_pct - sector_weights[sec] for sec in underweight_secs}
+        total_space = sum(underweight_space.values())
+
+        if total_space <= 0:
+            break
+
+        # 按比例将超额权重分配给低配行业
+        new_weights = constrained.copy()
+        for sec in overweight:
+            excess = sector_weights[sec] - max_sector_pct
+            scale = max_sector_pct / sector_weights[sec]
+            for s in constrained:
+                if sectors.get(s, 'other') == sec:
+                    new_weights[s] = constrained[s] * scale
+
+        # 将释放出的权重按比例分配给低配行业内的标的
+        for sec in underweight_secs:
+            add_pct = excess_total * (underweight_space[sec] / total_space)
+            # 在该行业内按标的原权重比例分配
+            sector_symbols = [s for s in constrained if sectors.get(s, 'other') == sec]
+            if not sector_symbols:
+                continue
+            sector_total = sum(constrained[s] for s in sector_symbols)
+            if sector_total <= 0:
+                # 若该行业原权重为 0，则等权分配
+                for s in sector_symbols:
+                    new_weights[s] = new_weights.get(s, 0.0) + add_pct / len(sector_symbols)
+            else:
+                for s in sector_symbols:
+                    new_weights[s] = constrained[s] + add_pct * (constrained[s] / sector_total)
+
+        # 归一化并检查收敛
+        new_total = sum(new_weights.values())
+        if new_total <= 0:
+            break
+        new_weights = {k: v / new_total for k, v in new_weights.items()}
+        if all(abs(new_weights.get(k, 0) - constrained.get(k, 0)) < 1e-6 for k in new_weights):
+            constrained = new_weights
+            break
+        constrained = new_weights
+
+    return constrained
+
+
+def apply_factor_exposure_caps(weights, factor_exposures, factor_caps=None):
+    """对组合因子暴露进行上限约束（可选）。
+
+    计算组合在 17 个因子上的加权平均暴露，若某因子超过上限，则按比例
+    降低该因子上暴露较高的标的权重，并将释放的权重分配给暴露较低的标的。
+
+    参数:
+        weights: dict, {symbol: weight} 当前权重（未归一化亦可）
+        factor_exposures: DataFrame, 索引=symbol, 列=17个因子（通常为 percentile 0-1）
+        factor_caps: dict or None, {factor_name: max_weighted_avg_exposure}
+            若为 None，则不进行任何约束（no-op）。
+
+    返回:
+        dict: 约束后的权重（已归一化）
+    """
+    if not weights or factor_exposures is None or factor_caps is None:
+        return weights
+
+    # 归一化输入
+    total = sum(weights.values())
+    if total <= 0:
+        return weights
+    w = pd.Series(weights).div(total)
+
+    # 对齐因子数据与权重标的
+    common = w.index.intersection(factor_exposures.index)
+    if len(common) == 0:
+        return weights
+
+    w = w.loc[common]
+    exposures = factor_exposures.loc[common]
+
+    # 计算当前组合因子暴露
+    port_exposure = (w.values[:, None] * exposures.values).sum(axis=0)
+    port_exposure = pd.Series(port_exposure, index=exposures.columns)
+
+    # 找出超限因子
+    violations = {}
+    for factor, cap in factor_caps.items():
+        if factor not in port_exposure.index:
+            continue
+        if port_exposure[factor] > cap:
+            violations[factor] = port_exposure[factor] - cap
+
+    if not violations:
+        return weights
+
+    # 对每个超限因子，降低高暴露标的权重，分配给低暴露标的
+    adjusted = w.copy()
+    for factor, excess in violations.items():
+        if factor not in exposures.columns:
+            continue
+        exp = exposures[factor]
+        # 高暴露组（高于当前组合暴露）与低暴露组
+        high_mask = exp > port_exposure[factor]
+        low_mask = exp <= port_exposure[factor]
+        if not high_mask.any() or not low_mask.any():
+            continue
+
+        high_total = adjusted[high_mask].sum()
+        low_total = adjusted[low_mask].sum()
+        if high_total <= 0 or low_total <= 0:
+            continue
+
+        # 高暴露组按暴露比例削减
+        high_reduction = min(excess, high_total * 0.5)  # 单次最多削减一半，防止震荡
+        high_weights = adjusted[high_mask]
+        reduction_share = high_weights * (exp[high_mask] / exp[high_mask].sum())
+        reduction_share = reduction_share / reduction_share.sum() * high_reduction
+
+        adjusted[high_mask] = high_weights - reduction_share
+        # 分配给低暴露组（按反向暴露比例，即暴露越低分得越多）
+        low_inv = 1.0 / (exp[low_mask] + 1e-6)
+        low_share = low_inv / low_inv.sum() * high_reduction
+        adjusted[low_mask] = adjusted[low_mask] + low_share
+
+    # 清理负权重并归一化
+    adjusted = adjusted.clip(lower=0.0)
+    adj_total = adjusted.sum()
+    if adj_total <= 0:
+        return weights
+    adjusted = adjusted / adj_total
+
+    return adjusted.to_dict()
+
+
 def apply_weight_constraints(weights, min_weight=0.0, max_weight=0.20, max_iter=10):
     """
     应用权重约束
@@ -312,6 +483,8 @@ def apply_weight_constraints(weights, min_weight=0.0, max_weight=0.20, max_iter=
 def integrate_with_backtest(selected_symbols, total_equity, price_df,
                             max_weight=0.20, min_weight=0.0,
                             weight_method='equal', execution_date=None,
+                            sectors=None, max_sector_pct=0.30,
+                            factor_exposures=None, factor_caps=None,
                             **allocator_kwargs):
     """
     与回测集成的目标持仓接口
@@ -362,6 +535,20 @@ def integrate_with_backtest(selected_symbols, total_equity, price_df,
 
     weights = {s: v / total for s, v in target_positions.items()}
     weights = apply_weight_constraints(weights, min_weight=min_weight, max_weight=max_weight)
+
+    # 行业集中度约束：使用 main.INDUSTRY 映射（若未提供则尝试导入）
+    if sectors is None:
+        try:
+            from main import INDUSTRY
+            sectors = INDUSTRY
+        except ImportError:
+            sectors = {}
+    if sectors:
+        weights = apply_sector_constraints(weights, sectors, max_sector_pct=max_sector_pct)
+
+    # 因子暴露约束（可选，默认 no-op）
+    if factor_exposures is not None and factor_caps is not None:
+        weights = apply_factor_exposure_caps(weights, factor_exposures, factor_caps)
 
     result = {s: total_equity * w for s, w in weights.items()}
     result = normalize_target_positions(result, total_equity, min_position_value=0)

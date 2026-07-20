@@ -73,7 +73,10 @@ except ImportError:
     logger.warning("intraday_monitor module unavailable")
 
 try:
-    from weight_allocation import WeightAllocator, normalize_target_positions, apply_volatility_target
+    from weight_allocation import (
+        WeightAllocator, normalize_target_positions, apply_volatility_target,
+        apply_sector_constraints
+    )
     WEIGHT_ALLOC_AVAILABLE = True
 except ImportError:
     WEIGHT_ALLOC_AVAILABLE = False
@@ -553,6 +556,13 @@ class V14Strategy(BaseStrategy):
         # 确保目标持仓总金额不超过组合价值 * 仓位比例
         max_total_value = portfolio_value * sc / 100
         target_positions = normalize_target_positions(target_positions, max_total_value)
+
+        # 行业集中度约束（与回测路径一致）
+        if WEIGHT_ALLOC_AVAILABLE and target_positions:
+            weights = {s: v / sum(target_positions.values()) for s, v in target_positions.items()}
+            weights = apply_sector_constraints(weights, INDUSTRY, max_sector_pct=0.30)
+            total_val = sum(target_positions.values())
+            target_positions = {s: v * total_val for s, v in weights.items()}
 
         # 专业风控 overlay: 目标波动率控制（回测/实盘路径一致）
         if WEIGHT_ALLOC_AVAILABLE and target_positions:
