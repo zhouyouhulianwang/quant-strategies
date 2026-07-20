@@ -1,29 +1,14 @@
 # V14 MultiFactor Strategy 依赖
 
 # 数据获取
-# yfinance 1.x 需要 websockets>=12，与 alpaca-trade-api 的 websockets<11 冲突。
-# 当前项目仍依赖 alpaca-trade-api，因此锁定 yfinance 0.2.x 和 websockets 10.x。
-yfinance>=0.2.0,<0.3
-websockets>=9,<11
+yfinance>=0.2.0
 pandas>=1.5.0
 numpy>=1.24.0
 requests>=2.31.0
 pyarrow>=12.0.0
 
-# 交易日历
-exchange_calendars>=4.0.0
-
-# 可视化
-matplotlib>=3.7.0
-
-# 时间处理
-python-dateutil>=2.8.0
-
-# Alpaca 交易 (alpaca-py 新版 SDK)
+# Alpaca 交易与数据（alpaca-py 新版 SDK，已替代旧版 alpaca-trade-api）
 alpaca-py>=0.30.0
-
-# 旧版 SDK 已废弃，不建议使用
-# alpaca-trade-api>=3.0.0
 
 # 其他
 python-dotenv>=1.0.0
