@@ -688,11 +688,15 @@ class RebalanceManager:
         logger.info(f"{'='*60}")
         logger.info(f"Portfolio value: ${portfolio_value:,.2f}")
         
-        # 1. 先卖出不在目标列表中的持仓
+        # 1. 先处理不在目标列表中的持仓（多头卖出，空头买回）
         sell_orders = []
         for symbol, pos in current_positions.items():
             if symbol not in target_positions:
-                sell_orders.append({'symbol': symbol, 'qty': pos['qty'], 'side': 'sell'})
+                qty = pos['qty']
+                if qty > 0:
+                    sell_orders.append({'symbol': symbol, 'qty': qty, 'side': 'sell'})
+                elif qty < 0:
+                    sell_orders.append({'symbol': symbol, 'qty': -qty, 'side': 'buy'})
         
         # 执行卖出
         for order in sell_orders:
