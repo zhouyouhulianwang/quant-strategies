@@ -61,6 +61,26 @@ def _chunked(items: List[str], size: int):
         yield items[i:i + size]
 
 
+# yfinance 对点号类 ticker（如 BRK.B）使用 '-' 分隔的代码
+YAHOO_SYMBOL_MAP = {
+    'BF.B': 'BF-B',
+    'BRK.B': 'BRK-B',
+}
+
+
+def _to_yfinance_symbol(ticker: str) -> str:
+    """返回 yfinance 接受的代码"""
+    return YAHOO_SYMBOL_MAP.get(ticker, ticker)
+
+
+def _from_yfinance_symbol(yf_symbol: str) -> str:
+    """把 yfinance 返回的代码映射回项目内部代码"""
+    for original, yf in YAHOO_SYMBOL_MAP.items():
+        if yf == yf_symbol:
+            return original
+    return yf_symbol
+
+
 def download_and_cache(
     tickers: List[str],
     start: str,
@@ -85,10 +105,14 @@ def download_and_cache(
 
     for idx, chunk in enumerate(_chunked(tickers, chunk_size), start=1):
         logger.info(f"🌍 下载第 {idx}/{len(tickers)//chunk_size + 1} 批: {len(chunk)} 只标的")
+
+        yf_tickers = [_to_yfinance_symbol(t) for t in chunk]
+        yf_to_original = {yf: orig for orig, yf in zip(chunk, yf_tickers)}
+
         try:
             # group_by='ticker' 得到 MultiIndex columns: (Ticker, Field)
             df = yf.download(
-                chunk,
+                yf_tickers,
                 start=start,
                 end=end,
                 group_by='ticker',
@@ -107,12 +131,13 @@ def download_and_cache(
         # yfinance 单只返回时不是 MultiIndex，需要特殊处理
         multi_index = isinstance(df.columns, pd.MultiIndex)
 
-        for symbol in chunk:
+        for yf_symbol in yf_tickers:
+            symbol = _from_yfinance_symbol(yf_symbol)
             try:
                 if multi_index:
-                    if symbol not in df.columns.get_level_values(0):
+                    if yf_symbol not in df.columns.get_level_values(0):
                         continue
-                    close = df[symbol]['Close']
+                    close = df[yf_symbol]['Close']
                 else:
                     # 单只返回
                     close = df['Close']
@@ -138,6 +163,10 @@ def download_and_cache(
             time.sleep(sleep_between_chunks)
 
     return results
+
+def _chunked(items: List[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
 
 def main():
