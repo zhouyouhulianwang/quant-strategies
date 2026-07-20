@@ -14,6 +14,12 @@ import subprocess
 import zipfile
 import io
 
+# Optional: Yahoo Finance fallback
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
 from data_utils import (
     _normalize_index,
     _limited_ffill,
@@ -28,8 +34,12 @@ logger = logging.getLogger(__name__)
 # P0修复：最大前向填充交易日数（默认 5 日），防止停牌/退市股票无限制前向填充导致前视偏差
 # 实际定义在 data_utils 中，从 data_utils 导入后已在本模块命名空间可用。
 
+# Lean 根目录（新版组织化 Lean CLI root，包含 lean.json 和 data 目录）
+# 可通过环境变量 LEAN_ROOT_DIR 覆盖，默认使用工作区共享的 /home/pc/.openclaw/workspace/lean-root
+LEAN_ROOT_DIR = os.environ.get('LEAN_ROOT_DIR', '/home/pc/.openclaw/workspace/lean-root')
+
 # Lean 数据目录
-LEAN_DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'lean')
+LEAN_DATA_DIR = os.environ.get('LEAN_DATA_DIR', os.path.join(LEAN_ROOT_DIR, 'data'))
 os.makedirs(LEAN_DATA_DIR, exist_ok=True)
 
 
@@ -98,15 +108,15 @@ class QuantConnectDataSource:
         获取 Lean 数据文件路径
 
         Lean 数据结构:
-        data/equity/usa/daily/{SYMBOL}.zip
+        data/equity/usa/daily/{symbol}.zip (小写)
         """
-        symbol_upper = symbol.upper()
+        symbol_lower = symbol.lower()
         return os.path.join(
             self.data_dir,
             QC_SECURITY_TYPE,
             QC_MARKET,
             resolution,
-            f"{symbol_upper}.zip"
+            f"{symbol_lower}.zip"
         )
 
     def _download_via_lean(self, symbol: str, resolution='daily',
@@ -129,34 +139,45 @@ class QuantConnectDataSource:
         try:
             logger.info(f"📥 通过 Lean CLI 下载 {symbol} {resolution} 数据...")
 
-            # 构建 lean 命令
-            cmd = [
-                'lean', 'data', 'download',
-                '--dataset', 'QuantConnect',
-                '--data-type', 'Trade',
-                '--resolution', resolution,
-                '--ticker', symbol.upper(),
-                '--market', QC_MARKET,
-            ]
-
-            if start_date:
-                cmd.extend(['--start-date', start_date])
-            if end_date:
-                cmd.extend(['--end-date', end_date])
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
+            # 注意：新版 Lean CLI 的 QuantConnect 数据下载进入交互式数据集选择，
+            # 在自动化回测中无法使用；这里记录失败，后续由 Alpaca/Yahoo 缓存回退。
+            logger.warning(
+                f"⚠️ {symbol} 缺失 Lean 数据；QuantConnect 数据集下载需要交互式选择/付费订阅，"
+                f"跳过下载并尝试 Alpaca/Yahoo 缓存。"
             )
+            return False
 
-            if result.returncode == 0:
-                logger.info(f"✅ {symbol} 数据下载成功")
-                return True
-            else:
-                logger.warning(f"⚠️ {symbol} 数据下载失败: {result.stderr}")
-                return False
+            # 构建 lean 命令（适配新版 Lean CLI 1.0.227+）
+            # 旧版 --dataset QuantConnect 已改为 --data-provider-historical QuantConnect
+            # 保留如下，仅作参考：
+            # cmd = [
+            #     'lean', 'data', 'download',
+            #     '--data-provider-historical', 'QuantConnect',
+            #     '--data-type', 'Trade',
+            #     '--resolution', resolution.capitalize(),
+            #     '--security-type', 'Equity',
+            #     '--market', 'USA',
+            #     '--ticker', symbol.upper(),
+            # ]
+            # if start_date:
+            #     cmd.extend(['--start', start_date.replace('-', '')])
+            # if end_date:
+            #     cmd.extend(['--end', end_date.replace('-', '')])
+
+            # result = subprocess.run(
+            #     cmd,
+            #     capture_output=True,
+            #     text=True,
+            #     timeout=120,
+            #     cwd=LEAN_ROOT_DIR
+            # )
+
+            # if result.returncode == 0:
+            #     logger.info(f"✅ {symbol} 数据下载成功")
+            #     return True
+            # else:
+            #     logger.warning(f"⚠️ {symbol} 数据下载失败: {result.stderr}")
+            #     return False
 
         except subprocess.TimeoutExpired:
             logger.error(f"⏱️ {symbol} 数据下载超时")
@@ -199,8 +220,8 @@ class QuantConnectDataSource:
                         names=['date', 'open', 'high', 'low', 'close', 'volume']
                     )
 
-            # 明确解析 Lean 日期格式（YYYYMMDD）
-            df['date'] = pd.to_datetime(df['date'].astype(str), format='%Y%m%d', errors='coerce')
+            # 明确解析 Lean 日期格式（YYYYMMDD HH:MM）
+            df['date'] = pd.to_datetime(df['date'].astype(str), format='%Y%m%d %H:%M', errors='coerce')
             df = df.dropna(subset=['date'])
             df.set_index('date', inplace=True)
             df.sort_index(inplace=True)
@@ -210,14 +231,20 @@ class QuantConnectDataSource:
                 'open': 'Open',
                 'high': 'High',
                 'low': 'Low',
-                'volume': 'Volume'
+                'volume': 'Volume',
+                'close': 'Close',
             }, inplace=True)
+
+            # Lean 股价数据以 10000 为缩放因子存储，需还原为实际价格
+            for price_col in ['Open', 'High', 'Low', 'Close']:
+                if price_col in df.columns:
+                    df[price_col] = df[price_col] / 10000.0
 
             # 优先使用调整后的收盘价（如果存在），否则使用 close
             if 'adjusted_close' in df.columns:
-                df['Close'] = df['adjusted_close']
+                df['Close'] = df['adjusted_close'] / 10000.0
             else:
-                df['Close'] = df['close']
+                df['Close'] = df['Close']
 
             return df
 
@@ -463,12 +490,8 @@ class HybridQCDataSource:
         self.alpaca = AlpacaMarketData(alpaca_key, alpaca_secret)
 
         # Yahoo Finance 作为最终 fallback
-        self._yahoo_available = False
-        try:
-            import yfinance as yf
-            self._yahoo_available = True
-        except ImportError:
-            pass
+        self._yf = yf
+        self._yahoo_available = yf is not None
 
         logger.info("✅ 混合数据源已初始化 (QC → Alpaca → Yahoo)")
 
@@ -564,8 +587,7 @@ class HybridQCDataSource:
         # 3. Yahoo Finance（最终回退）
         if self._yahoo_available:
             try:
-                import yfinance as yf
-                data = yf.Ticker(symbol).history(period='max')['Close']
+                data = self._yf.Ticker(symbol).history(period='max')['Close']
                 data = _normalize_index(data)
                 return data, 'Yahoo'
             except Exception as e:
@@ -593,8 +615,7 @@ class HybridQCDataSource:
         # 2. 回退到 Yahoo
         if self._yahoo_available:
             try:
-                import yfinance as yf
-                vix_data = yf.Ticker('^VIX').history(period='5d')
+                vix_data = self._yf.Ticker('^VIX').history(period='5d')
                 if len(vix_data) > 0:
                     return float(vix_data['Close'].iloc[-1])
             except Exception:
@@ -617,8 +638,7 @@ class HybridQCDataSource:
         # 回退 Yahoo
         if self._yahoo_available:
             try:
-                import yfinance as yf
-                hist = yf.Ticker(symbol).history(period='1d', interval='1m')
+                hist = self._yf.Ticker(symbol).history(period='1d', interval='1m')
                 if len(hist) > 0:
                     return float(hist['Close'].iloc[-1])
             except Exception:
@@ -686,8 +706,7 @@ class HybridQCDataSource:
         # 回退 Yahoo
         if self._yahoo_available:
             try:
-                import yfinance as yf
-                vix = yf.Ticker('^VIX').history(period='max')['Close']
+                vix = self._yf.Ticker('^VIX').history(period='max')['Close']
                 vix = _normalize_index(vix)
                 cache.save(yahoo_path, vix, metadata={'source': 'Yahoo', 'adjustment': 'unadjusted'})
                 return vix.loc[start_date:end_date]
@@ -727,8 +746,7 @@ class HybridQCDataSource:
         # 回退 Yahoo
         if self._yahoo_available:
             try:
-                import yfinance as yf
-                spy = yf.Ticker('SPY').history(period='max')['Close']
+                spy = self._yf.Ticker('SPY').history(period='max')['Close']
                 spy = _normalize_index(spy)
                 cache.save(yahoo_path, spy, metadata={'source': 'Yahoo', 'adjustment': 'adjusted'})
                 return spy.loc[start_date:end_date]
@@ -851,6 +869,7 @@ if __name__ == '__main__':
 
     end = datetime.now().strftime('%Y-%m-%d')
     start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+    resolution = 'daily'
 
     # 使用混合数据源
     source = HybridQCDataSource()
