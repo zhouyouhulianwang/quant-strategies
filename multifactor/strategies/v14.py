@@ -885,13 +885,21 @@ class V14Strategy(BaseStrategy):
         rebalance_frequency = 'monthly'
         if self.config and hasattr(self.config, 'trading'):
             rebalance_frequency = getattr(self.config.trading, 'rebalance_frequency', 'monthly')
-        periods_per_year = {
+
+        # 根据实际 rebalance 日期推断频率，避免 config.json 与真实引擎不一致导致年化错误
+        periods_per_year_map = {
             'daily': 252,
             'weekly': 52,
             'monthly': 12,
             'bimonthly': 6,
             'quarterly': 4,
-        }.get(rebalance_frequency, 12)
+        }
+        config_periods = periods_per_year_map.get(rebalance_frequency, 12)
+        inferred_periods = self._infer_rebalance_frequency(result['date'])
+        if inferred_periods != config_periods:
+            logger.info(f"  Inferred frequency: {inferred_periods} periods/year "
+                       f"(config says {rebalance_frequency})")
+        periods_per_year = inferred_periods
 
         vol = returns.std() * np.sqrt(periods_per_year)
         sharpe = cagr / vol if vol > 0 else 0
@@ -901,7 +909,7 @@ class V14Strategy(BaseStrategy):
         logger.info(f"Backtest performance")
         logger.info(f"{'='*60}")
         logger.info(f"  Period: {result['date'].iloc[0]} ~ {result['date'].iloc[-1]}")
-        logger.info(f"  Rebalance frequency: {rebalance_frequency}")
+        logger.info(f"  Rebalance frequency: {rebalance_frequency} (engine: {periods_per_year}/year)")
         logger.info(f"  Rebalance count: {len(result)}")
         logger.info(f"  NAV column: {nav_col}")
         logger.info(f"  Final NAV: {nav.iloc[-1]:.4f}")
@@ -910,3 +918,17 @@ class V14Strategy(BaseStrategy):
         logger.info(f"  MaxDD: {maxdd:.2%}")
         logger.info(f"  Volatility: {vol:.2%}")
         logger.info(f"  Win rate: {(returns > 0).mean():.1%}")
+
+    def _infer_rebalance_frequency(self, dates):
+        """根据实际 rebalance 日期间隔推断年化期数。
+
+        返回:
+            int: 年化期数（用于计算年化波动率/夏普）
+        """
+        if len(dates) < 2:
+            return 12
+        median_gap = pd.Series(pd.to_datetime(dates)).diff().dt.days.median()
+        if median_gap is None or median_gap <= 0:
+            return 12
+        # 按交易日近似：252 天/年
+        return max(1, int(round(252 / median_gap)))
