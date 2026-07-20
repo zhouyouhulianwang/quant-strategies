@@ -888,14 +888,16 @@ class AlpacaPaperExecutor:
                     symbol, current_price, atr=None, spread=None,
                     default_pct=self.limit_order_offset_pct
                 )
+                # P2: 限价方向修正：buy 限价应高于市场，sell 限价应低于市场，确保可立即成交
                 if side.lower() == 'buy':
-                    limit_price = current_price * (1 - offset)
-                else:
                     limit_price = current_price * (1 + offset)
+                else:
+                    limit_price = current_price * (1 - offset)
                 logger.info(f"[LIMIT] Auto-calculated limit price: {symbol} {side} @ ${limit_price:.4f}")
 
-            # P1 修复：按最小价格增量（tick size）规整限价
-            limit_price = round(math.floor(limit_price / self.tick_size) * self.tick_size, 4)
+            # P2 修复：按价格确定最小价格增量（tick size）并规整限价
+            tick_size = 0.0001 if limit_price < 1.0 else 0.01
+            limit_price = _round_to_tick(limit_price, tick_size)
 
             return LimitOrderRequest(
                 symbol=symbol,
