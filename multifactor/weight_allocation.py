@@ -293,7 +293,8 @@ def normalize_target_positions(target_positions, max_total_value, min_position_v
     参数:
         target_positions: dict, {symbol: target_value}
         max_total_value: float, 最大总目标金额
-        min_position_value: float, 最小持仓金额（归一化后保留）
+        min_position_value: float, 最小持仓金额（低于此值的标的会被剔除，
+            剩余标会按比例放大到 max_total_value）
 
     返回:
         dict: 归一化后的目标持仓
@@ -302,20 +303,26 @@ def normalize_target_positions(target_positions, max_total_value, min_position_v
         return {}
 
     total = sum(target_positions.values())
+    if total <= 0:
+        return {}
+
+    # 设置了最小持仓金额时：先剔除过小标的，再放大到 max_total_value
+    if min_position_value > 0:
+        filtered = {s: v for s, v in target_positions.items() if v >= min_position_value}
+        if not filtered:
+            return {}
+        filtered_total = sum(filtered.values())
+        if filtered_total <= 0:
+            return {}
+        scale = max_total_value / filtered_total
+        return {s: v * scale for s, v in filtered.items()}
+
+    # 未设置最小持仓金额时：仅缩放至不超过 max_total_value
     if total <= max_total_value:
         return target_positions
 
-    # 按比例缩放
     scale = max_total_value / total
-    scaled = {s: v * scale for s, v in target_positions.items()}
-
-    # 如果缩放后低于最小持仓，则剔除并重新归一化
-    if min_position_value > 0:
-        filtered = {s: v for s, v in scaled.items() if v >= min_position_value}
-        if filtered and sum(filtered.values()) > 0:
-            return normalize_target_positions(filtered, max_total_value, 0)
-
-    return scaled
+    return {s: v * scale for s, v in target_positions.items()}
 
 
 def apply_sector_constraints(weights, sectors, max_sector_pct=0.30, max_iter=20):

@@ -107,6 +107,7 @@ class MultiFactorStrategy(BaseStrategy):
                 enable_risk_monitor=True,
                 enable_intraday_monitor=False,
                 weight_method='momentum_weighted',
+                min_position_value=None,
                 config=None):
         """初始化 V14 策略。
 
@@ -265,6 +266,9 @@ class MultiFactorStrategy(BaseStrategy):
         if WEIGHT_ALLOC_AVAILABLE:
             self.weight_allocator = WeightAllocator(method=weight_method)
             self.weight_method = weight_method
+            self.min_position_value = min_position_value if min_position_value is not None else (
+                self.config.trading.min_position_value if (self.config and hasattr(self.config, 'trading') and hasattr(self.config.trading, 'min_position_value')) else 0.0
+            )
             logger.info(f"[OK] Weight allocation: {weight_method}")
 
         logger.info("[OK] V14 strategy initialization complete")
@@ -576,7 +580,7 @@ class MultiFactorStrategy(BaseStrategy):
 
         # 确保目标持仓总金额不超过组合价值 * 仓位比例
         max_total_value = portfolio_value * sc / 100
-        target_positions = normalize_target_positions(target_positions, max_total_value)
+        target_positions = normalize_target_positions(target_positions, max_total_value, min_position_value=self.min_position_value)
 
         # 行业集中度约束（与回测路径一致）
         if WEIGHT_ALLOC_AVAILABLE and target_positions:

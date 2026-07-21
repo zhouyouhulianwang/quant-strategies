@@ -169,6 +169,11 @@ class StrategyPortfolio:
             self.risk_monitor = RiskMonitor(**risk_kwargs)
             logger.info("[OK] Portfolio risk monitor enabled")
 
+        # 最小持仓金额（从配置读取）
+        self.min_position_value = 0.0
+        if self.config and hasattr(self.config, 'trading') and hasattr(self.config.trading, 'min_position_value'):
+            self.min_position_value = self.config.trading.min_position_value
+
         # 初始化执行器
         if self.use_paper_trading:
             executor_kwargs = self._build_executor_kwargs()
@@ -387,7 +392,7 @@ class StrategyPortfolio:
             target_positions[s] = total
 
         # 归一化到 total_value
-        target_positions = normalize_target_positions(target_positions, total_value)
+        target_positions = normalize_target_positions(target_positions, total_value, min_position_value=self.min_position_value)
 
         # 组合层面行业集中度约束
         if WEIGHT_ALLOC_AVAILABLE and target_positions:
@@ -409,7 +414,7 @@ class StrategyPortfolio:
             target_positions = apply_volatility_target(
                 target_positions, price_df, target_vol=0.20, lookback=60
             )
-            target_positions = normalize_target_positions(target_positions, total_value)
+            target_positions = normalize_target_positions(target_positions, total_value, min_position_value=self.min_position_value)
 
         logger.info(f"[PORTFOLIO] Aggregated target positions: ${sum(target_positions.values()):,.2f}, n={len(target_positions)}")
         for s, v in sorted(target_positions.items(), key=lambda x: x[1], reverse=True)[:10]:

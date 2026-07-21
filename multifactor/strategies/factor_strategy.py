@@ -85,6 +85,7 @@ class FactorSubStrategy(BaseStrategy):
         max_sector_pct: Optional[float] = None,
         target_vol: Optional[float] = None,
         lookback: Optional[int] = None,
+        min_position_value: Optional[float] = None,
         config: Optional[Any] = None,
     ):
         super().__init__(config=config)
@@ -95,6 +96,7 @@ class FactorSubStrategy(BaseStrategy):
         self.max_sector_pct = self._resolve_param(max_sector_pct, 'max_sector_pct', 0.30)
         self.target_vol = self._resolve_param(target_vol, 'target_vol', 0.20)
         self.lookback = self._resolve_param(lookback, 'lookback', 60)
+        self.min_position_value = self._resolve_param(min_position_value, 'min_position_value', 0.0)
         self.weight_allocator = WeightAllocator(method=self.weight_method) if WEIGHT_ALLOC_AVAILABLE else None
 
     def _resolve_param(self, value: Optional[float], config_name: str, default: float) -> float:
@@ -202,7 +204,7 @@ class FactorSubStrategy(BaseStrategy):
             target_positions = apply_volatility_target(
                 target_positions, price_df, target_vol=self.target_vol, lookback=self.lookback
             )
-            target_positions = normalize_target_positions(target_positions, portfolio_value)
+            target_positions = normalize_target_positions(target_positions, portfolio_value, min_position_value=self.min_position_value)
 
         return target_positions
 

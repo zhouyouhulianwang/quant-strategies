@@ -132,6 +132,9 @@ class TradingConfig(BaseModel):
     # daily 为每个交易日收盘后执行
     rebalance_frequency: str = Field('monthly', pattern='^(monthly|bimonthly|quarterly|weekly|daily)$')
     
+    # 最小持仓金额：低于此值的目标持仓会被剔除
+    min_position_value: float = Field(0.0, ge=0.0)
+    
     @field_validator('rebalance_frequency')
     @classmethod
     def rebalance_frequency_must_be_valid(cls, v):
