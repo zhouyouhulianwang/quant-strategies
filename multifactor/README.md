@@ -3,7 +3,7 @@
 **多策略组合量化交易系统** — 在 V14 17因子策略基础上，扩展为可配置的多策略组合架构。
 
 - **核心策略**: V14 MultiFactor（17因子综合）
-- **子策略**: Growth、Momentum、Value、Quality（独立选股、独立回测）
+- **子策略**: Growth、Momentum、Value、Quality、SectorRotation（行业轮动）
 - **组合层**: 资本配置、聚合持仓、行业约束、波动率 overlay、统一风控
 - **执行层**: Alpaca Paper/Live，原子预检、对账、风控熔断
 - **零人工干预** | **月度调仓** | **真实数据回测优先**
@@ -65,18 +65,20 @@ python run_multi_strategy.py --paper --enable-risk-monitor
 └──────────────┬──────────────────────────────────────────────┘
                │
     ┌──────────┼──────────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼          ▼
-MultiFactor   Growth    Momentum    Value     Quality
-(V14)          (趋势成长) (纯动量)  (估值)    (质量低波)
+    ▼          ▼          ▼          ▼          ▼          ▼
+MultiFactor   Growth    Momentum  Sector    Value     Quality
+(V14)          (趋势成长) (纯动量)  Rotation  (估值)    (质量低波)
+                                    (行业轮动)
 ```
 
 ### 默认组合权重
 
 | 策略 | 权重 | 说明 |
 |------|------|------|
-| MultiFactor (V14) | 30% | 17因子综合评分 |
-| Growth | 25% | 收益/价格加速、行业相对强度 |
-| Momentum | 20% | 趋势跟踪 |
+| MultiFactor (V14) | 25% | 17因子综合评分 |
+| Growth | 20% | 收益/价格加速、行业相对强度 |
+| Momentum | 15% | 趋势跟踪 |
+| SectorRotation | 15% | 行业轮动：先选强势行业，再选行业内强势个股 |
 | Value | 15% | 行业相对估值、GARP |
 | Quality | 10% | 质量、低波动、趋势稳健 |
 
@@ -98,6 +100,7 @@ multifactor/
 │   ├── momentum.py              # MomentumStrategy
 │   ├── value.py                 # ValueStrategy
 │   ├── quality.py               # QualityStrategy
+│   ├── sector_rotation.py       # SectorRotationStrategy（行业轮动）
 │   └── portfolio.py             # StrategyPortfolio 组合管理器
 ├── data_source.py               # 真实数据获取
 ├── quantconnect_data.py         # QuantConnect 数据接口

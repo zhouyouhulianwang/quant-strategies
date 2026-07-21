@@ -24,6 +24,7 @@ from strategies.momentum import MomentumStrategy
 from strategies.value import ValueStrategy
 from strategies.quality import QualityStrategy
 from strategies.growth import GrowthStrategy
+from strategies.sector_rotation import SectorRotationStrategy
 from strategies.portfolio import StrategyPortfolio
 from alpaca_executor import ALPACA_AVAILABLE
 from config import get_config, reload_config
@@ -53,9 +54,10 @@ def build_portfolio(args) -> StrategyPortfolio:
         strategies_config = config.strategies
     else:
         strategies_config = [
-            {'name': 'multifactor', 'class': 'MultiFactorStrategy', 'weight': 0.30, 'params': {'weight_method': 'momentum_weighted'}},
-            {'name': 'growth', 'class': 'GrowthStrategy', 'weight': 0.25, 'params': {'weight_method': 'momentum_weighted'}},
-            {'name': 'momentum', 'class': 'MomentumStrategy', 'weight': 0.20, 'params': {'weight_method': 'momentum_weighted'}},
+            {'name': 'multifactor', 'class': 'MultiFactorStrategy', 'weight': 0.25, 'params': {'weight_method': 'momentum_weighted'}},
+            {'name': 'growth', 'class': 'GrowthStrategy', 'weight': 0.20, 'params': {'weight_method': 'momentum_weighted'}},
+            {'name': 'momentum', 'class': 'MomentumStrategy', 'weight': 0.15, 'params': {'weight_method': 'momentum_weighted'}},
+            {'name': 'sector_rotation', 'class': 'SectorRotationStrategy', 'weight': 0.15, 'params': {'top_sectors': 3, 'sector_lookback': 60}},
             {'name': 'value', 'class': 'ValueStrategy', 'weight': 0.15, 'params': {'weight_method': 'equal'}},
             {'name': 'quality', 'class': 'QualityStrategy', 'weight': 0.10, 'params': {'weight_method': 'risk_parity'}},
         ]
@@ -78,6 +80,8 @@ def build_portfolio(args) -> StrategyPortfolio:
             strategy = QualityStrategy(**params)
         elif class_name == 'GrowthStrategy':
             strategy = GrowthStrategy(**params)
+        elif class_name == 'SectorRotationStrategy':
+            strategy = SectorRotationStrategy(**params)
         else:
             raise ValueError(f"Unknown strategy class: {class_name}")
         strategies.append((name, strategy, weight))

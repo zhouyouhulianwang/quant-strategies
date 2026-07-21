@@ -12,6 +12,8 @@ from strategies.quality import QualityStrategy
 from strategies.growth import GrowthStrategy
 from strategies.portfolio import StrategyPortfolio
 
+from strategies.sector_rotation import SectorRotationStrategy
+
 __all__ = [
     'BaseStrategy',
     'FactorSubStrategy',
@@ -22,5 +24,6 @@ __all__ = [
     'ValueStrategy',
     'QualityStrategy',
     'GrowthStrategy',
+    'SectorRotationStrategy',
     'StrategyPortfolio',
 ]
