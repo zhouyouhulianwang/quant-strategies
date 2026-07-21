@@ -233,7 +233,7 @@ class WeightAllocator:
         return result
 
 
-def apply_volatility_target(target_positions, price_df, target_vol=0.15, lookback=60):
+def apply_volatility_target(target_positions, price_df, target_vol=0.20, lookback=60):
     """对目标持仓应用目标波动率控制（专业量化系统的常见风控 overlay）。
 
     计算选中标的在 lookback 窗口内的协方差矩阵，并估计组合年化波动率。
@@ -243,7 +243,7 @@ def apply_volatility_target(target_positions, price_df, target_vol=0.15, lookbac
     参数:
         target_positions: dict, {symbol: target_value}
         price_df: DataFrame, 历史价格数据
-        target_vol: float, 目标年化波动率（默认 15%）
+        target_vol: float, 目标年化波动率（默认 20%）
         lookback: int, 计算协方差的历史交易日长度（默认 60）
 
     返回:
@@ -602,7 +602,7 @@ def integrate_with_backtest(selected_symbols, total_equity, price_df,
     # P1专业优化: 目标波动率 overlay —— 若组合估计波动率高于目标，则整体降仓
     if result:
         hist_slice = price_df.loc[:exec_date]
-        result = apply_volatility_target(result, hist_slice, target_vol=0.15, lookback=60)
+        result = apply_volatility_target(result, hist_slice, target_vol=0.20, lookback=60)
 
     return result
 

@@ -588,7 +588,7 @@ class MultiFactorStrategy(BaseStrategy):
         # 专业风控 overlay: 目标波动率控制（回测/实盘路径一致）
         if WEIGHT_ALLOC_AVAILABLE and target_positions:
             target_positions = apply_volatility_target(
-                target_positions, price_df, target_vol=0.15, lookback=60
+                target_positions, price_df, target_vol=0.20, lookback=60
             )
 
         logger.info(f"[PORTFOLIO] Total target positions: ${sum(target_positions.values()):,.0f} (cap: ${max_total_value:,.0f})")

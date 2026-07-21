@@ -79,7 +79,7 @@ except ImportError:
     def apply_sector_constraints(weights, sectors, max_sector_pct=0.30, max_iter=20):
         return weights
 
-    def apply_volatility_target(target_positions, price_df, target_vol=0.15, lookback=60):
+    def apply_volatility_target(target_positions, price_df, target_vol=0.20, lookback=60):
         return target_positions
 
 try:
@@ -380,10 +380,10 @@ class StrategyPortfolio:
             for s, v in signals.items():
                 aggregated.setdefault(s, []).append((v, name))
 
-        # 合并同名标的：简单加总
+        # 合并同名标的：简单加总（过滤 NaN，避免某个子策略的 NaN 污染组合）
         target_positions = {}
         for s, values in aggregated.items():
-            total = sum(v for v, _ in values)
+            total = sum(v for v, _ in values if pd.notna(v))
             target_positions[s] = total
 
         # 归一化到 total_value
@@ -407,7 +407,7 @@ class StrategyPortfolio:
         price_df = self._get_common_price_df()
         if WEIGHT_ALLOC_AVAILABLE and target_positions and price_df is not None:
             target_positions = apply_volatility_target(
-                target_positions, price_df, target_vol=0.15, lookback=60
+                target_positions, price_df, target_vol=0.20, lookback=60
             )
             target_positions = normalize_target_positions(target_positions, total_value)
 

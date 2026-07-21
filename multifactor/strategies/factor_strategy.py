@@ -93,7 +93,7 @@ class FactorSubStrategy(BaseStrategy):
         self.n_stocks = n_stocks
         self.max_position_pct = max_position_pct
         self.max_sector_pct = self._resolve_param(max_sector_pct, 'max_sector_pct', 0.30)
-        self.target_vol = self._resolve_param(target_vol, 'target_vol', 0.15)
+        self.target_vol = self._resolve_param(target_vol, 'target_vol', 0.20)
         self.lookback = self._resolve_param(lookback, 'lookback', 60)
         self.weight_allocator = WeightAllocator(method=self.weight_method) if WEIGHT_ALLOC_AVAILABLE else None
 
