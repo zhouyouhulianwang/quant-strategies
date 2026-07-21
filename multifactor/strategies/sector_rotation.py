@@ -80,8 +80,8 @@ class SectorRotationStrategy(FactorSubStrategy):
         weight_method: Optional[str] = None,
         n_stocks: int = 15,
         max_position_pct: float = 0.20,
-        top_sectors: int = 3,
-        sector_lookback: int = 60,
+        top_sectors: int = 4,
+        sector_lookback: int = 80,
         sector_weight: float = 0.40,
         **kwargs,
     ):
@@ -121,7 +121,7 @@ class SectorRotationStrategy(FactorSubStrategy):
         for stock, sector in mapped.items():
             sector_returns.setdefault(sector, []).append(returns.get(stock, np.nan))
         sector_momentum = pd.Series({
-            sector: np.nanmean(vals) for sector, vals in sector_returns.items()
+            sector: np.nanmean(vals) for sector, vals in sector_returns.items() if vals
         }).dropna()
 
         # 平滑：加入短期 20 日收益作为辅助确认
@@ -130,7 +130,7 @@ class SectorRotationStrategy(FactorSubStrategy):
         for stock, sector in mapped.items():
             sector_short.setdefault(sector, []).append(short_returns.get(stock, np.nan))
         sector_short_score = pd.Series({
-            sector: np.nanmean(vals) for sector, vals in sector_short.items()
+            sector: np.nanmean(vals) for sector, vals in sector_short.items() if vals
         }).dropna()
 
         # 综合：60% 中期 + 40% 短期

@@ -574,7 +574,9 @@ class StrategyPortfolio:
                 continue
             s_nav = df[nav_col]
             s_cagr = (s_nav.iloc[-1] / s_nav.iloc[0]) ** (1 / max(years, 1e-6)) - 1
-            s_vol = s_nav.pct_change().dropna().std() * np.sqrt(252)
+            s_returns = s_nav.pct_change().dropna()
+            s_periods_per_year = max(1, int(round(len(df) / max(years, 1e-6))))
+            s_vol = s_returns.std() * np.sqrt(s_periods_per_year)
             s_sharpe = s_cagr / s_vol if s_vol > 0 else 0
             s_maxdd = ((s_nav / s_nav.cummax()) - 1).min()
             logger.info(f"  {name}: CAGR={s_cagr:.2%}, Sharpe={s_sharpe:.3f}, MaxDD={s_maxdd:.2%}")
