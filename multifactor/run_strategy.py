@@ -14,12 +14,12 @@ import sys
 
 from logging_config import setup_logging
 from runtime_cleanup import cleanup_old_files
-from strategies.v14 import V14Strategy
+from strategies.v14 import MultiFactorStrategy, V14Strategy
 from alpaca_executor import ALPACA_AVAILABLE
 from config import get_config, reload_config
 
 # 向后兼容：保留顶层导入
-__all__ = ['V14Strategy']
+__all__ = ['MultiFactorStrategy', 'V14Strategy']
 
 setup_logging()
 logger = logging.getLogger('run_strategy')
@@ -119,7 +119,7 @@ def main(argv=None):
         strategy_kwargs['use_paper_trading'] = True
         strategy_kwargs['paper'] = paper
 
-    strategy = V14Strategy(**strategy_kwargs)
+    strategy = MultiFactorStrategy(**strategy_kwargs)
 
     # 检查数据可用性：显式要求真实数据时若不可用则失败
     if args.real_data and not strategy.use_real_data and not args.mock:

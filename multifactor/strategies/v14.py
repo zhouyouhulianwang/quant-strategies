@@ -97,7 +97,7 @@ from main import (
 )
 
 
-class V14Strategy(BaseStrategy):
+class MultiFactorStrategy(BaseStrategy):
     """V14 多因子策略的完整封装类，继承 BaseStrategy 以复用通用接口。"""
 
     def __init__(self,
@@ -444,7 +444,7 @@ class V14Strategy(BaseStrategy):
             )
         return price_df, market_df
 
-    def generate_signals(self, price_df=None, vix=None, live_mode=False):
+    def generate_signals(self, price_df=None, vix=None, live_mode=False, capital=None):
         """生成交易信号 - 桥接回测逻辑到实盘。
 
         Parameters
@@ -455,6 +455,8 @@ class V14Strategy(BaseStrategy):
             当前 VIX（默认从数据获取）。
         live_mode : bool, optional
             实盘模式标记（用于日志提示）。
+        capital : float, optional
+            分配给本策略的资金。默认从账户获取。
 
         Returns
         -------
@@ -543,8 +545,10 @@ class V14Strategy(BaseStrategy):
         logger.info(f"NDX ratio: {ndx_ratio:.2%}")
         logger.info(f"Selected stocks: {', '.join(selected[:10])}{'...' if len(selected) > 10 else ''}")
 
-        # 获取账户价值
-        if self.executor:
+        # 获取账户价值（多策略下可显式指定 capital）
+        if capital is not None:
+            portfolio_value = capital
+        elif self.executor:
             try:
                 account = self.executor.get_account()
                 portfolio_value = account['portfolio_value'] if account else 1000000
@@ -951,6 +955,9 @@ class V14Strategy(BaseStrategy):
         returns = nav.pct_change().dropna()
 
         years = (result['date'].iloc[-1] - result['date'].iloc[0]).days / 365.25
+        if years <= 0:
+            logger.warning("  Backtest period too short, setting CAGR analysis to 0 years")
+            years = max(1e-6, (result['date'].iloc[-1] - result['date'].iloc[0]).days / 365.25)
         cagr = (nav.iloc[-1] / nav.iloc[0]) ** (1/years) - 1
 
         # 根据调仓频率选择正确的年化系数
@@ -1004,3 +1011,7 @@ class V14Strategy(BaseStrategy):
         if years <= 0:
             return 12
         return max(1, int(round(len(dates) / years)))
+
+
+# 向后兼容：保留 V14Strategy 作为 MultiFactorStrategy 的别名
+V14Strategy = MultiFactorStrategy

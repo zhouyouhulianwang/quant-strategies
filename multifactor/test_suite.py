@@ -587,9 +587,9 @@ class TestUnifiedBacktest:
     
     def test_generate_signals_mock(self):
         """测试信号生成（模拟数据）"""
-        from strategies.v14 import V14Strategy
+        from strategies.v14 import MultiFactorStrategy, V14Strategy
         
-        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        strategy = MultiFactorStrategy(use_real_data=False, use_paper_trading=False)
         
         # 构造价格数据
         dates = pd.bdate_range('2023-01-01', periods=260)
@@ -608,9 +608,9 @@ class TestUnifiedBacktest:
     
     def test_backtest_empty_data(self):
         """测试空数据保护"""
-        from strategies.v14 import V14Strategy
+        from strategies.v14 import MultiFactorStrategy, V14Strategy
         
-        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        strategy = MultiFactorStrategy(use_real_data=False, use_paper_trading=False)
         
         # 空 DataFrame
         empty_df = pd.DataFrame()
@@ -698,9 +698,9 @@ class TestDataFFillAndDelisting:
 
     def test_v14_backtest_uses_main_cost_model(self):
         """V14Strategy 回测应复用 main.run_v14，包含真实成本列"""
-        from strategies.v14 import V14Strategy
+        from strategies.v14 import MultiFactorStrategy, V14Strategy
 
-        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        strategy = MultiFactorStrategy(use_real_data=False, use_paper_trading=False)
         dates = pd.bdate_range('2023-01-01', periods=300)
         np.random.seed(42)
         prices = pd.DataFrame(
@@ -1714,10 +1714,10 @@ class TestV3AuditFixes:
     def test_v14_strategy_init_config_none(self):
         """P0: V14Strategy config=None 时初始化不崩溃，且风控器与执行器正确关联"""
         from strategies import v14 as v14_module
-        from strategies.v14 import V14Strategy
+        from strategies.v14 import MultiFactorStrategy, V14Strategy
 
         with patch.object(v14_module, 'CONFIG_AVAILABLE', False):
-            strategy = V14Strategy(
+            strategy = MultiFactorStrategy(
                 use_real_data=False,
                 use_paper_trading=False,
                 enable_risk_monitor=True,
@@ -1796,9 +1796,9 @@ class TestV3AuditFixes:
 
     def test_backtest_uses_next_trading_day(self):
         """H2: 回测引擎应在下一交易日执行，避免同日复权 lookahead"""
-        from strategies.v14 import V14Strategy
+        from strategies.v14 import MultiFactorStrategy, V14Strategy
 
-        strategy = V14Strategy(use_real_data=False, use_paper_trading=False)
+        strategy = MultiFactorStrategy(use_real_data=False, use_paper_trading=False)
         dates = pd.bdate_range('2023-01-01', periods=300)
         np.random.seed(42)
         prices = pd.DataFrame(
@@ -2383,7 +2383,7 @@ class TestCLIPaperLiveMock:
     def test_run_strategy_modes_mutually_exclusive(self):
         """P1: --paper/--live/--backtest/--mock 必须互斥"""
         from run_strategy import main
-        with patch('run_strategy.V14Strategy') as mock_strategy:
+        with patch('run_strategy.MultiFactorStrategy') as mock_strategy:
             for args in (['--paper', '--backtest'], ['--paper', '--live'], ['--backtest', '--mock']):
                 with pytest.raises(SystemExit):
                     main(args)
@@ -2392,7 +2392,7 @@ class TestCLIPaperLiveMock:
     def test_run_strategy_live_requires_confirm(self):
         """P1: --live 没有 --confirm-live 时应报错退出"""
         from run_strategy import main
-        with patch('run_strategy.V14Strategy'):
+        with patch('run_strategy.MultiFactorStrategy'):
             with pytest.raises(SystemExit):
                 main(['--live'])
 
@@ -2402,7 +2402,7 @@ class TestCLIPaperLiveMock:
         mock_strategy = MagicMock()
         mock_strategy.use_real_data = True
         with patch('run_strategy.ALPACA_AVAILABLE', True):
-            with patch('run_strategy.V14Strategy', return_value=mock_strategy):
+            with patch('run_strategy.MultiFactorStrategy', return_value=mock_strategy):
                 main(['--paper'])
         mock_strategy.run_backtest.assert_not_called()
         mock_strategy.run_live_rebalance.assert_called_once()
@@ -2412,7 +2412,7 @@ class TestCLIPaperLiveMock:
         from run_strategy import main
         mock_strategy = MagicMock()
         mock_strategy.use_real_data = True
-        with patch('run_strategy.V14Strategy', return_value=mock_strategy):
+        with patch('run_strategy.MultiFactorStrategy', return_value=mock_strategy):
             main(['--backtest'])
         mock_strategy.run_backtest.assert_called_once()
         mock_strategy.run_live_rebalance.assert_not_called()
@@ -2422,7 +2422,7 @@ class TestCLIPaperLiveMock:
         from run_strategy import main
         mock_strategy = MagicMock()
         mock_strategy.use_real_data = False
-        with patch('run_strategy.V14Strategy', return_value=mock_strategy) as mock_cls:
+        with patch('run_strategy.MultiFactorStrategy', return_value=mock_strategy) as mock_cls:
             main(['--mock'])
         _, kwargs = mock_cls.call_args
         assert kwargs['use_real_data'] is False
@@ -2440,7 +2440,7 @@ class TestCLIPaperLiveMock:
         mock_strategy = MagicMock()
         mock_strategy.use_real_data = True
         with patch('run_strategy.ALPACA_AVAILABLE', True):
-            with patch('run_strategy.V14Strategy', return_value=mock_strategy) as mock_cls:
+            with patch('run_strategy.MultiFactorStrategy', return_value=mock_strategy) as mock_cls:
                 main(['--live', '--confirm-live'])
         _, kwargs = mock_cls.call_args
         assert kwargs['use_paper_trading'] is True

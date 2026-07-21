@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from logging_config import setup_logging
-from strategies.v14 import V14Strategy
+from strategies.v14 import MultiFactorStrategy, V14Strategy
 
 setup_logging()
 logger = logging.getLogger('walk_forward_test')
@@ -118,7 +118,7 @@ def run_walk_forward(
             f"test {test_start.date()}~{test_end.date()}"
         )
 
-        strategy = V14Strategy(
+        strategy = MultiFactorStrategy(
             use_real_data=True,
             weight_method=weight_method,
             enable_risk_monitor=True,

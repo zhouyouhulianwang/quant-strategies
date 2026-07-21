@@ -459,9 +459,9 @@ def run_once(paper=True, require_live_confirmation=True):
     使用方式:
         python -c "from scheduler import run_once; run_once(paper=True)"
     """
-    from run_strategy import V14Strategy
+    from run_strategy import MultiFactorStrategy, V14Strategy
 
-    strategy = V14Strategy(
+    strategy = MultiFactorStrategy(
         use_real_data=True,
         use_paper_trading=True,
         paper=paper,
@@ -485,9 +485,9 @@ def run_once(paper=True, require_live_confirmation=True):
 # ============================================================
 
 if __name__ == '__main__':
-    from run_strategy import V14Strategy
+    from run_strategy import MultiFactorStrategy, V14Strategy
 
-    strategy = V14Strategy(
+    strategy = MultiFactorStrategy(
         use_real_data=True,
         use_paper_trading=False,  # 测试模式
         paper=True,
