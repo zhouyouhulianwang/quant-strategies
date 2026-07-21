@@ -221,14 +221,18 @@ def compute_factors_v14(price_slice):
     返回:
         DataFrame, 索引=股票代码, 列=17个因子的percentile排名(0-1)
     """
-    f = pd.DataFrame(index=price_slice.columns)
+    ret = price_slice.pct_change()
+    # 删除全为 NaN 的列（无交易数据的股票），避免 dropna(how='any') 把所有行都删掉
+    valid_cols = ret.columns[ret.notna().any()]
+    ret = ret[valid_cols].dropna(how='all')
+    price_slice = price_slice[valid_cols]
+    f = pd.DataFrame(index=valid_cols)
     cur = price_slice.iloc[-1]
-    ret = price_slice.pct_change().dropna()
-    
+
     # 行业标签
     industries = pd.Series(
-        [INDUSTRY.get(t, 'other') for t in price_slice.columns],
-        index=price_slice.columns
+        [INDUSTRY.get(t, 'other') for t in valid_cols],
+        index=valid_cols
     )
     
     # ===== 基础因子 (7个) =====

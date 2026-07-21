@@ -246,8 +246,8 @@ class FactorSubStrategy(BaseStrategy):
             if next_d is None or next_d not in price_df.index:
                 continue
 
-            # 用 next_d 价格重估当前持仓 NAV
-            prices = price_df.loc[next_d]
+            # 用 next_d 价格重估当前持仓 NAV；持仓中存在 NaN 价格时以 0 估值，避免 NaN 传播
+            prices = price_df.loc[next_d].fillna(0)
             if positions:
                 equity = sum(
                     prices.get(s, 0) * qty for s, qty in positions.items()
