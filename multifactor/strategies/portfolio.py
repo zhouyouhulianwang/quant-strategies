@@ -28,7 +28,7 @@ StrategyPortfolio - 多策略组合管理器
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
