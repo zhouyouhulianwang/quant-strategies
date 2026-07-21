@@ -126,9 +126,10 @@ multifactor/
 ## 设计原则
 
 1. **信号层与执行层分离**: 子策略只负责生成目标持仓，组合层负责资金分配、聚合、风控、执行。
-2. **真实数据优先**: 回测默认使用 QuantConnect/Yahoo 真实数据，mock 仅用于架构验证。
-3. **可配置**: 权重、因子、风控参数均走 `config.json`（被 git 忽略，用 `config.example.json` 为模板）。
-4. **安全切换**: Paper 稳定运行至少一个完整调仓周期后，再按 `PRE_LIVE_CHECKLIST.md` 评估 live。
+2. **股票池**: 默认使用 **S&P 500 + NASDAQ 100** 合并池（约 600 只，去重后约 520 只），行业映射基于 GICS-like 12 行业分类。
+3. **真实数据优先**: 回测默认使用 QuantConnect/Yahoo 真实数据，mock 仅用于架构验证。
+4. **可配置**: 权重、因子、风控参数均走 `config.json`（被 git 忽略，用 `config.example.json` 为模板）。
+5. **安全切换**: Paper 稳定运行至少一个完整调仓周期后，再按 `PRE_LIVE_CHECKLIST.md` 评估 live。
 
 ---
 

@@ -152,33 +152,15 @@ def _load_universe_from_config():
     return None, None, None
 
 
-_DEFAULT_TICKERS = [
-    'NVDA','MU','AMD','INTC','AVGO','QCOM',  # 半导体
-    'AAPL','MSFT','GOOGL','AMZN','META','TSLA',  # 科技
-    'NFLX','ADBE','CRM','INTU',  # 软件
-    'JPM','BAC','GS','V','MA',  # 金融
-    'UNH','JNJ','PFE','ABBV',  # 医疗
-    'XOM','CVX',  # 能源
-    'BA','CAT',  # 工业
-    'NEE','PEP','COST','WMT','HD',  # 消费/公用
-    'DIS','CMCSA','VZ','TMUS'  # 媒体/电信
-]
-
-_DEFAULT_INDUSTRY = {
-    'NVDA':'semi','MU':'semi','AMD':'semi','INTC':'semi','AVGO':'semi','QCOM':'semi',
-    'AAPL':'tech','MSFT':'tech','GOOGL':'tech','AMZN':'tech','META':'tech','TSLA':'tech',
-    'NFLX':'tech','ADBE':'tech','CRM':'tech','INTU':'tech',
-    'JPM':'finance','BAC':'finance','GS':'finance','V':'finance','MA':'finance',
-    'UNH':'health','JNJ':'health','PFE':'health','ABBV':'health',
-    'XOM':'energy','CVX':'energy','BA':'industrial','CAT':'industrial',
-    'NEE':'utility','PEP':'consumer','COST':'consumer','WMT':'consumer','HD':'consumer',
-    'DIS':'media','CMCSA':'media','VZ':'telecom','TMUS':'telecom'
-}
+_DEFAULT_TICKERS = _load_builtin_tickers('sp500_tickers.json') + _load_builtin_tickers('ndx100_tickers.json')
+_DEFAULT_TICKERS = list(dict.fromkeys(_DEFAULT_TICKERS))  # 去重并保持顺序
+_DEFAULT_INDUSTRY = _load_builtin_industry_map('universe_industry_map.json')
+_DEFAULT_INDUSTRY = {k: v for k, v in _DEFAULT_INDUSTRY.items() if k in _DEFAULT_TICKERS}
 
 # 全局股票池变量（可被策略覆盖，保持向后兼容）
-TICKERS = _DEFAULT_TICKERS
-INDUSTRY = _DEFAULT_INDUSTRY
-NDX_SET = set(TICKERS[:35])
+TICKERS = _DEFAULT_TICKERS if _DEFAULT_TICKERS else _load_builtin_tickers('sp500_tickers.json')
+INDUSTRY = _DEFAULT_INDUSTRY if _DEFAULT_INDUSTRY else _load_builtin_industry_map('sp500_sectors.json')
+NDX_SET = set(_load_builtin_tickers('ndx100_tickers.json'))
 
 # 尝试从 config.json 覆盖（只覆盖一次，避免重复加载）
 _cfg_tickers, _cfg_industry, _cfg_ndx_set = _load_universe_from_config()
