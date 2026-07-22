@@ -55,11 +55,11 @@ def build_portfolio(args) -> StrategyPortfolio:
     else:
         strategies_config = [
             {'name': 'multifactor', 'class': 'MultiFactorStrategy', 'weight': 0.00, 'params': {'weight_method': 'risk_parity'}},
-            {'name': 'growth', 'class': 'GrowthStrategy', 'weight': 0.35, 'params': {'weight_method': 'momentum_weighted'}},
-            {'name': 'momentum', 'class': 'MomentumStrategy', 'weight': 0.10, 'params': {'weight_method': 'momentum_weighted'}},
-            {'name': 'sector_rotation', 'class': 'SectorRotationStrategy', 'weight': 0.30, 'params': {'top_sectors': 4, 'sector_lookback': 80, 'sector_weight': 0.4}},
-            {'name': 'value', 'class': 'ValueStrategy', 'weight': 0.15, 'params': {'weight_method': 'equal'}},
-            {'name': 'quality', 'class': 'QualityStrategy', 'weight': 0.10, 'params': {'weight_method': 'risk_parity'}},
+            {'name': 'growth', 'class': 'GrowthStrategy', 'weight': 0.35, 'params': {'weight_method': 'momentum_weighted', 'n_stocks': 25}},
+            {'name': 'momentum', 'class': 'MomentumStrategy', 'weight': 0.10, 'params': {'weight_method': 'momentum_weighted', 'n_stocks': 10}},
+            {'name': 'sector_rotation', 'class': 'SectorRotationStrategy', 'weight': 0.30, 'params': {'top_sectors': 4, 'sector_lookback': 80, 'sector_weight': 0.4, 'n_stocks': 15}},
+            {'name': 'value', 'class': 'ValueStrategy', 'weight': 0.15, 'params': {'weight_method': 'equal', 'n_stocks': 20}},
+            {'name': 'quality', 'class': 'QualityStrategy', 'weight': 0.10, 'params': {'weight_method': 'risk_parity', 'n_stocks': 20}},
         ]
 
     strategies = []
