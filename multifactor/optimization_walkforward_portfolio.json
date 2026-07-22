@@ -1,0 +1,85 @@
+{
+  "mode": "fixed",
+  "optimize_metric": null,
+  "start": "2020-01-01",
+  "end": "2024-01-01",
+  "train_years": 2,
+  "test_months": 6,
+  "n_windows": 4,
+  "aggregate": {
+    "total_return": 0.26638245187013787,
+    "cagr": 0.13194274311860377,
+    "volatility": 0.1616439698986767,
+    "sharpe": 0.8162552751043509,
+    "max_drawdown": -0.09638810281129177,
+    "n_periods": 24.0,
+    "periods_per_year": 12.175,
+    "years": 1.9055441478439425
+  },
+  "windows": [
+    {
+      "window": 1,
+      "train_start": "2020-01-01",
+      "train_end": "2021-12-31",
+      "test_start": "2022-01-01",
+      "test_end": "2022-06-30",
+      "weights": {
+        "growth": 0.4,
+        "sector_rotation": 0.2,
+        "momentum": 0.15,
+        "value": 0.1,
+        "quality": 0.15
+      },
+      "final_nav": 1.3748310783671052,
+      "total_return": -0.055634048634079725
+    },
+    {
+      "window": 2,
+      "train_start": "2020-07-01",
+      "train_end": "2022-06-30",
+      "test_start": "2022-07-01",
+      "test_end": "2022-12-31",
+      "weights": {
+        "growth": 0.4,
+        "sector_rotation": 0.2,
+        "momentum": 0.15,
+        "value": 0.1,
+        "quality": 0.15
+      },
+      "final_nav": 1.2248161776373097,
+      "total_return": 0.04282238010846995
+    },
+    {
+      "window": 3,
+      "train_start": "2021-01-01",
+      "train_end": "2022-12-31",
+      "test_start": "2023-01-01",
+      "test_end": "2023-06-30",
+      "weights": {
+        "growth": 0.4,
+        "sector_rotation": 0.2,
+        "momentum": 0.15,
+        "value": 0.1,
+        "quality": 0.15
+      },
+      "final_nav": 1.2831002214953307,
+      "total_return": 0.21648789965598625
+    },
+    {
+      "window": 4,
+      "train_start": "2021-07-01",
+      "train_end": "2023-06-30",
+      "test_start": "2023-07-01",
+      "test_end": "2023-12-31",
+      "weights": {
+        "growth": 0.4,
+        "sector_rotation": 0.2,
+        "momentum": 0.15,
+        "value": 0.1,
+        "quality": 0.15
+      },
+      "final_nav": 1.3399049650753947,
+      "total_return": 0.05707652192432722
+    }
+  ]
+}
