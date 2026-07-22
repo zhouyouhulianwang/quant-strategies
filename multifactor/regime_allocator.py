@@ -31,9 +31,14 @@ Regime-Aware Strategy Allocation - 市场状态感知的子策略权重分配
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+from risk_overlay import regime_detect, regime_detect_v2
 
 logger = logging.getLogger(__name__)
+
+# 默认 market-regime 检测函数。更新此处即可切换全系统使用的 detector。
+DEFAULT_REGIME_DETECTOR = regime_detect_v2
 
 # 样本内最优基准权重（Sharpe 视角）: G40/S20/M15/V10/Q15
 DEFAULT_BASE_WEIGHTS: Dict[str, float] = {
@@ -166,18 +171,31 @@ class RegimeAllocator:
                  base_weights: Optional[Dict[str, float]] = None,
                  min_weight: float = 0.05,
                  max_step: Optional[float] = 0.10,
-                 enabled: bool = True):
+                 enabled: bool = True,
+                 regime_detect_fn: Optional[Callable] = None):
         self.base_weights = normalize_weights(base_weights or DEFAULT_BASE_WEIGHTS,
                                               min_weight=min_weight)
         self.min_weight = min_weight
         self.max_step = max_step if (max_step and max_step > 0) else None
         self.enabled = enabled
+        self.regime_detect_fn = regime_detect_fn or DEFAULT_REGIME_DETECTOR
         self.last_regime: Optional[str] = None
         self.last_weights: Optional[Dict[str, float]] = None
 
     # ------------------------------------------------------------------
     # 核心 API
     # ------------------------------------------------------------------
+
+    def detect(self, price_df, vix=None):
+        """使用配置的 detector 检测当前市场状态。"""
+        if self.regime_detect_fn is None:
+            return 'normal'
+        return self.regime_detect_fn(price_df, vix)
+
+    def detect_and_allocate(self, price_df, vix, current_weights: Dict[str, float]) -> Dict[str, float]:
+        """检测当前 regime 并直接输出平滑后的权重。"""
+        regime = self.detect(price_df, vix)
+        return self.allocate(regime, current_weights)
 
     def target_weights(self, regime: str) -> Dict[str, float]:
         """

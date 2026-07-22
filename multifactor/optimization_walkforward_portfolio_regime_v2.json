@@ -1,0 +1,85 @@
+{
+  "mode": "regime_aware_fixed",
+  "optimize_metric": null,
+  "start": "2020-01-01",
+  "end": "2024-01-01",
+  "train_years": 2,
+  "test_months": 6,
+  "n_windows": 4,
+  "aggregate": {
+    "total_return": 0.27188779818469344,
+    "cagr": 0.1345224913543419,
+    "volatility": 0.1695772780914269,
+    "sharpe": 0.7932813456400372,
+    "max_drawdown": -0.10493506634486338,
+    "n_periods": 24.0,
+    "periods_per_year": 12.175,
+    "years": 1.9055441478439425
+  },
+  "windows": [
+    {
+      "window": 1,
+      "train_start": "2020-01-01",
+      "train_end": "2021-12-31",
+      "test_start": "2022-01-01",
+      "test_end": "2022-06-30",
+      "weights": {
+        "sector_rotation": 0.3,
+        "value": 0.1,
+        "quality": 0.05,
+        "growth": 0.4,
+        "momentum": 0.15
+      },
+      "final_nav": 1.3982934002309135,
+      "total_return": -0.06063433772559601
+    },
+    {
+      "window": 2,
+      "train_start": "2020-07-01",
+      "train_end": "2022-06-30",
+      "test_start": "2022-07-01",
+      "test_end": "2022-12-31",
+      "weights": {
+        "sector_rotation": 0.1,
+        "value": 0.2,
+        "quality": 0.25,
+        "growth": 0.30000000000000004,
+        "momentum": 0.15
+      },
+      "final_nav": 1.1966165110654665,
+      "total_return": 0.052989582737490215
+    },
+    {
+      "window": 3,
+      "train_start": "2021-01-01",
+      "train_end": "2022-12-31",
+      "test_start": "2023-01-01",
+      "test_end": "2023-06-30",
+      "weights": {
+        "sector_rotation": 0.2,
+        "value": 0.1,
+        "quality": 0.15,
+        "growth": 0.4,
+        "momentum": 0.15
+      },
+      "final_nav": 1.2821894939237821,
+      "total_return": 0.2164532536546553
+    },
+    {
+      "window": 4,
+      "train_start": "2021-07-01",
+      "train_end": "2023-06-30",
+      "test_start": "2023-07-01",
+      "test_end": "2023-12-31",
+      "weights": {
+        "sector_rotation": 0.3,
+        "value": 0.1,
+        "quality": 0.05,
+        "growth": 0.4,
+        "momentum": 0.15
+      },
+      "final_nav": 1.3687388508929297,
+      "total_return": 0.05704778625075102
+    }
+  ]
+}

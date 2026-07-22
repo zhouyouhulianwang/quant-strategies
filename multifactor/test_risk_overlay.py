@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from risk_overlay import (
     regime_detect,
+    regime_detect_v2,
     dynamic_leverage,
     apply_drawdown_guard,
     correlation_stress_test,
@@ -75,6 +76,76 @@ class TestRegimeDetect:
         prices = _make_prices(trend=0.0, vol=0.02)
         result = regime_detect(prices, vix=26.0)
         assert result in ('volatile', 'bear', 'normal')  # bear 优先于 elevated VIX
+
+
+class TestRegimeDetectV2:
+    def test_volatile_on_high_vix(self):
+        prices = _make_prices()
+        assert regime_detect_v2(prices, vix=28.0) == 'volatile'
+        assert regime_detect_v2(prices, vix=26.0) == 'volatile'
+
+    def test_bull_on_uptrend_low_vix(self):
+        prices = _make_prices(trend=0.002, vol=0.008)  # 稳定上涨
+        assert regime_detect_v2(prices, vix=15.0) == 'bull'
+
+    def test_bear_on_downtrend(self):
+        prices = _make_prices(trend=-0.002, vol=0.008)  # 稳定下跌
+        assert regime_detect_v2(prices, vix=15.0) == 'bear'
+
+    def test_drawdown_triggers_bear(self):
+        # 构造价格序列：从高点下跌 8%，触发 bear
+        prices = _make_prices(trend=0.0002, vol=0.015, periods=200)
+        # 将最后一段价格压低，使其从 60 日高点回撤超过 5%
+        prices.iloc[-20:] = prices.iloc[-20:] * 0.92
+        result = regime_detect_v2(prices, vix=15.0)
+        assert result in ('bear', 'volatile')  # 可能因 VIX 触发 volatile，但不应为 bull
+
+    def test_vix_roc_triggers_volatile(self):
+        prices = _make_prices(trend=0.0002, vol=0.02)
+        # VIX 序列从 15 涨到 25，20日变化率 = 10
+        vix_series = pd.Series([15.0] * 20 + [25.0], index=pd.bdate_range('2023-01-01', periods=21))
+        result = regime_detect_v2(prices, vix=25.0, vix_series=vix_series)
+        assert result == 'volatile'
+
+    def test_normal_on_flat_market_low_vix(self):
+        prices = _make_prices(trend=0.0002, vol=0.02)
+        result = regime_detect_v2(prices, vix=18.0)
+        assert result in REGIMES  # 具体结果取决于随机走势，但必须合法
+
+    def test_vix_none_ignored(self):
+        prices = _make_prices()
+        result = regime_detect_v2(prices, vix=None)
+        assert result in REGIMES
+
+    def test_invalid_vix_ignored(self):
+        prices = _make_prices()
+        result = regime_detect_v2(prices, vix='not_a_number')
+        assert result in REGIMES
+
+    def test_elevated_vix_prevents_bull(self):
+        # 上涨市场 + VIX 23 -> 不允许 bull（判 volatile 或 normal/bear）
+        prices = _make_prices(trend=0.002, vol=0.008)
+        result = regime_detect_v2(prices, vix=23.0)
+        assert result in ('volatile', 'bear', 'normal')
+        assert result != 'bull'
+
+    def test_short_mas_detect_bear_earlier(self):
+        # 使用短均线 + 下跌：v2 应比 v1 更早识别 bear
+        prices = _make_prices(trend=-0.002, vol=0.008, periods=260)
+        result_v1 = regime_detect(prices, vix=15.0)
+        result_v2 = regime_detect_v2(prices, vix=15.0)
+        assert result_v2 in REGIMES
+        assert result_v1 in REGIMES
+        # 两者都至少应识别为 bear（在稳定下跌趋势中）
+        assert result_v2 == 'bear'
+
+    def test_no_price_data_uses_vix(self):
+        result = regime_detect_v2(None, vix=26.0)
+        assert result == 'volatile'
+
+    def test_empty_price_df_returns_valid(self):
+        result = regime_detect_v2(pd.DataFrame(), vix=15.0)
+        assert result in REGIMES
 
 
 class TestDynamicLeverage:

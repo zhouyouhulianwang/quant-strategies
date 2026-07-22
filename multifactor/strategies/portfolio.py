@@ -109,8 +109,7 @@ except ImportError:
     RISK_OVERLAY_AVAILABLE = False
 
 try:
-    from risk_overlay import regime_detect
-    from regime_allocator import RegimeAllocator
+    from regime_allocator import RegimeAllocator, DEFAULT_REGIME_DETECTOR as regime_detect
     REGIME_ALLOC_AVAILABLE = True
 except ImportError:
     regime_detect = None

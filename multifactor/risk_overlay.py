@@ -120,6 +120,134 @@ def regime_detect(price_df: pd.DataFrame,
     return 'normal'
 
 
+def regime_detect_v2(price_df: pd.DataFrame,
+                     vix: Optional[float] = None,
+                     vix_series: Optional[pd.Series] = None,
+                     short_window: int = 20,
+                     medium_window: int = 50,
+                     long_window: int = 150,
+                     vix_volatile_level: float = 26.0,
+                     vix_elevated_level: float = 22.0,
+                     drawdown_window: int = 60,
+                     drawdown_bear_threshold: float = 0.05,
+                     vix_roc_window: int = 20,
+                     vix_roc_volatile_threshold: float = 5.0) -> str:
+    """
+    更快、更灵敏的市场状态分类器 v2。
+
+    相比 regime_detect()：
+    - 使用更短均线 MA20/MA50 与 MA50/MA150，提前捕捉趋势转折。
+    - 引入“从近期高点回撤”信号：回撤超 drawdown_bear_threshold 即判 bear。
+    - 引入 VIX 变化率（20日）作为恐慌早期预警。
+    - 降低 VIX 高波动/偏高阈值（26/22），更快识别风险。
+
+    判定规则（按优先级）:
+    1. VIX >= vix_volatile_level (26)                         -> 'volatile'
+    2. VIX 20日涨幅 >= vix_roc_volatile_threshold (5)          -> 'volatile'
+    3. 等权指数从 drawdown_window 高点回撤 > 5%                -> 'bear'
+    4. 等权指数: MA20 < MA50 < MA150                           -> 'bear'
+    5. VIX >= vix_elevated_level (22)                          -> 'volatile'
+    6. 价格 > MA20 > MA50 > MA150 且动量>0                     -> 'bull'
+    7. 其他                                                     -> 'normal'
+
+    参数:
+        price_df: DataFrame, 历史价格 (index=日期, columns=标的)
+        vix: float or None, 当前 VIX 水平；None 时忽略 VIX 规则
+        vix_series: pd.Series or None, VIX 历史序列（用于计算 20日 ROC）
+        short_window: int, 短期均线窗口 (默认 20)
+        medium_window: int, 中期均线窗口 (默认 50)
+        long_window: int, 长期均线窗口 (默认 150)
+        vix_volatile_level: float, VIX 高波动阈值（默认 26）
+        vix_elevated_level: float, VIX 偏高阈值（默认 22）
+        drawdown_window: int, 回撤计算窗口（默认 60）
+        drawdown_bear_threshold: float, 触发 bear 的回撤幅度（默认 5%）
+        vix_roc_window: int, VIX 变化率窗口（默认 20）
+        vix_roc_volatile_threshold: float, VIX 20日涨幅阈值（默认 5）
+
+    返回:
+        str: 'bull' | 'bear' | 'volatile' | 'normal'
+    """
+    # 防御性输入处理
+    if vix is not None:
+        try:
+            vix = float(vix)
+        except (TypeError, ValueError):
+            logger.warning("[REGIME_V2] Invalid VIX value: %s, ignoring VIX rules", vix)
+            vix = None
+        else:
+            if np.isnan(vix):
+                vix = None
+
+    # 规则 1: VIX 恐慌
+    if vix is not None and vix >= vix_volatile_level:
+        logger.info(f"[REGIME_V2] volatile (VIX={vix:.1f} >= {vix_volatile_level})")
+        return 'volatile'
+
+    # 规则 2: VIX 20日变化率（恐慌早期预警）
+    vix_roc = None
+    if vix_series is not None and len(vix_series) >= vix_roc_window:
+        try:
+            recent = pd.Series(vix_series, dtype=float).dropna()
+            if len(recent) >= vix_roc_window:
+                vix_roc = float(recent.iloc[-1]) - float(recent.iloc[-vix_roc_window])
+        except Exception as e:
+            logger.warning(f"[REGIME_V2] Failed to compute VIX ROC: {e}")
+    if vix_roc is not None and vix_roc >= vix_roc_volatile_threshold:
+        logger.info(f"[REGIME_V2] volatile (VIX {vix_roc_window}d ROC={vix_roc:.1f} >= {vix_roc_volatile_threshold})")
+        return 'volatile'
+
+    # 市场趋势：等权平均所有可用标的，构建等权指数
+    market_index = None
+    if price_df is not None and not price_df.empty:
+        min_len = min(short_window, medium_window, drawdown_window)
+        if len(price_df) >= min_len:
+            clean = price_df.dropna(axis=1, how='all')
+            if not clean.empty:
+                market_index = clean.mean(axis=1).dropna()
+
+    if market_index is not None and len(market_index) >= max(medium_window, drawdown_window, 20):
+        current = market_index.iloc[-1]
+        ma_short = market_index.rolling(short_window).mean().iloc[-1]
+        ma_medium = market_index.rolling(medium_window).mean().iloc[-1]
+        if len(market_index) >= long_window:
+            ma_long = market_index.rolling(long_window).mean().iloc[-1]
+        else:
+            ma_long = market_index.mean()
+
+        # 规则 3: 从近期高点回撤触发 bear
+        if len(market_index) >= drawdown_window:
+            recent_high = market_index.iloc[-drawdown_window:].max()
+            if recent_high > 0:
+                drawdown = (current - recent_high) / recent_high
+                if drawdown <= -drawdown_bear_threshold:
+                    logger.info(f"[REGIME_V2] bear (drawdown={drawdown:.1%} from {drawdown_window}-day high)")
+                    return 'bear'
+
+        # 规则 4: 空头排列（更短均线）
+        if pd.notna(ma_short) and pd.notna(ma_medium) and pd.notna(ma_long) and ma_long > 0:
+            if ma_short < ma_medium < ma_long:
+                logger.info(f"[REGIME_V2] bear (MA{short_window}={ma_short:.2f} < MA{medium_window}={ma_medium:.2f} < MA{long_window}={ma_long:.2f})")
+                return 'bear'
+
+            # 规则 5: VIX 偏高时不允许 bull（bear/空头排列已优先返回）
+            if vix is not None and vix >= vix_elevated_level:
+                logger.info(f"[REGIME_V2] volatile (VIX={vix:.1f} >= {vix_elevated_level})")
+                return 'volatile'
+
+            # 规则 6: 多头排列 + 正动量 -> bull
+            momentum = current / ma_long - 1 if ma_long > 0 else 0.0
+            if current > ma_short > ma_medium > ma_long and momentum > 0:
+                logger.info(f"[REGIME_V2] bull (price>MA{short_window}>MA{medium_window}>MA{long_window}, mom={momentum:.1%})")
+                return 'bull'
+    elif vix is not None and vix >= vix_elevated_level:
+        # 无价格数据时，VIX 偏高直接判 volatile
+        logger.info(f"[REGIME_V2] volatile (VIX={vix:.1f} >= {vix_elevated_level}, no price data)")
+        return 'volatile'
+
+    logger.info("[REGIME_V2] normal")
+    return 'normal'
+
+
 def dynamic_leverage(current_drawdown: float,
                      target_vol: float,
                      realized_vol: float,

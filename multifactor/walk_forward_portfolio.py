@@ -46,8 +46,7 @@ except ImportError:
     TICKERS = []
 
 try:
-    from regime_allocator import RegimeAllocator
-    from risk_overlay import regime_detect
+    from regime_allocator import RegimeAllocator, DEFAULT_REGIME_DETECTOR as regime_detect
     from quantconnect_data import prepare_backtest_data_qc
     REGIME_TOOLS_AVAILABLE = True
 except ImportError:
@@ -112,9 +111,11 @@ def apply_regime_at_date(weights: Dict[str, float], date: pd.Timestamp,
             logger.warning(f"[REGIME_OOS] No data for {end}, keeping static weights")
             return dict(weights)
         vix = None
+        vix_series = None
         if market_df is not None and 'VIX' in market_df.columns:
-            vix = float(market_df['VIX'].iloc[-1])
-        regime = regime_detect(price_df, vix)
+            vix_series = market_df['VIX']
+            vix = float(vix_series.iloc[-1])
+        regime = regime_detect(price_df, vix=vix, vix_series=vix_series)
         allocator = RegimeAllocator(enabled=True)
         adjusted = allocator.allocate(regime, weights)
         logger.info(f"[REGIME_OOS] date={end}, regime={regime}, adjusted weights: {adjusted}")
