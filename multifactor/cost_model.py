@@ -10,6 +10,14 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# 可选：动态市场冲击模型（execution_quality.MarketImpactModel）
+try:
+    from execution_quality import MarketImpactModel
+    IMPACT_MODEL_AVAILABLE = True
+except ImportError:
+    MarketImpactModel = None
+    IMPACT_MODEL_AVAILABLE = False
+
 
 class TradingCostModel:
     """
@@ -26,7 +34,8 @@ class TradingCostModel:
                  min_commission=1.0,
                  max_commission_pct=0.01,
                  slippage_bps=10,  # 10 bps = 0.1%
-                 market_impact_bps=5):  # 大额交易冲击成本
+                 market_impact_bps=5,  # 大额交易冲击成本
+                 impact_model=None):  # 可选 MarketImpactModel 实例
         """
         初始化成本模型
         
@@ -36,19 +45,22 @@ class TradingCostModel:
             max_commission_pct: 佣金上限（占交易额比例）
             slippage_bps: 滑点（基点）
             market_impact_bps: 市场冲击成本（基点）
+            impact_model: MarketImpactModel, 可选；提供后在 calculate_cost 中
+                传入 adv/spread_bps 时使用动态冲击模型替代固定 market_impact_bps
         """
         self.commission_per_share = commission_per_share
         self.min_commission = min_commission
         self.max_commission_pct = max_commission_pct
         self.slippage_pct = slippage_bps / 10000  # 转换为百分比
         self.market_impact_pct = market_impact_bps / 10000
+        self.impact_model = impact_model
         
         logger.info(f"✅ 成本模型已初始化")
         logger.info(f"   佣金: ${commission_per_share}/股 (最低 ${min_commission})")
         logger.info(f"   滑点: {slippage_bps} bps")
     
-    def calculate_cost(self, symbol, qty, price, side='buy', 
-                       order_type='market') -> dict:
+    def calculate_cost(self, symbol, qty, price, side='buy',
+                       order_type='market', adv=None, spread_bps=None) -> dict:
         """
         计算单笔交易成本
         
@@ -58,6 +70,8 @@ class TradingCostModel:
             price: float, 价格
             side: str, 'buy' 或 'sell'
             order_type: str, 'market' 或 'limit'
+            adv: float, 可选，日均成交额（美元）；需配合 impact_model 使用
+            spread_bps: float, 可选，双边 spread（基点）；需配合 impact_model 使用
         
         返回:
             dict: 成本明细
@@ -94,9 +108,15 @@ class TradingCostModel:
         
         # 3. 市场冲击 (大额交易)
         impact = 0
-        if trade_value > 100000:  # 超过10万
+        if self.impact_model is not None and adv:
+            # 动态模型：按参与率估算冲击（含单边 spread 成本）
+            impact = self.impact_model.estimate_impact_cost(
+                notional=trade_value, adv=adv,
+                spread_bps=spread_bps if spread_bps is not None else 5.0,
+            )
+        elif trade_value > 100000:  # 超过10万
             impact = trade_value * self.market_impact_pct
-        
+
         # 总成本
         total_cost = commission + slippage + impact
         cost_pct = total_cost / trade_value if trade_value > 0 else 0

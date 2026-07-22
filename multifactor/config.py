@@ -49,6 +49,12 @@ class RiskConfig(BaseModel):
     max_intraday_dd: float = Field(0.10, gt=0.0, le=0.5)
     single_stock_limit: float = Field(0.05, gt=0.0, le=0.5)
     max_drawdown_limit: float = Field(0.15, gt=0.0, le=1.0)
+
+    # ---- 风险 overlay（动态杠杆 / 回撤守卫 / 市场状态调整）----
+    risk_overlay_enabled: bool = False
+    target_vol: float = Field(0.20, gt=0.0, le=1.0)
+    max_leverage: float = Field(1.5, gt=0.0, le=5.0)
+    min_leverage: float = Field(0.5, gt=0.0, le=2.0)
     
     @field_validator('max_drawdown_limit', mode='before')
     @classmethod

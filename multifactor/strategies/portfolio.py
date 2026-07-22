@@ -101,10 +101,12 @@ except ImportError:
     CONFIG_AVAILABLE = False
 
 try:
-    from quantconnect_data import prepare_backtest_data_qc, HybridQCDataSource
-    QC_DATA_AVAILABLE = True
+    from risk_overlay import RiskOverlayAdvisor, apply_risk_overlay_to_positions
+    RISK_OVERLAY_AVAILABLE = True
 except ImportError:
-    QC_DATA_AVAILABLE = False
+    RiskOverlayAdvisor = None
+    apply_risk_overlay_to_positions = None
+    RISK_OVERLAY_AVAILABLE = False
 
 
 class StrategyPortfolio:
@@ -162,6 +164,24 @@ class StrategyPortfolio:
         self.risk_monitor = None
         self.executor = None
         self._last_live_portfolio_value = None
+
+        # 风控 overlay（动态杠杆 / 回撤守卫 / 市场状态调整），默认关闭，
+        # 通过 config.risk.risk_overlay_enabled = true 启用
+        self.risk_overlay = None
+        if RISK_OVERLAY_AVAILABLE and self.config and hasattr(self.config, 'risk'):
+            risk_cfg = self.config.risk
+            if getattr(risk_cfg, 'risk_overlay_enabled', False):
+                self.risk_overlay = RiskOverlayAdvisor(
+                    target_vol=getattr(risk_cfg, 'target_vol', 0.20),
+                    max_dd=getattr(risk_cfg, 'max_drawdown_limit', 0.15),
+                    max_leverage=getattr(risk_cfg, 'max_leverage', 1.5),
+                    min_leverage=getattr(risk_cfg, 'min_leverage', 0.5),
+                    enabled=True,
+                )
+                logger.info("[OK] Risk overlay advisor enabled "
+                            f"(target_vol={self.risk_overlay.target_vol:.0%}, "
+                            f"max_dd={self.risk_overlay.max_dd:.0%}, "
+                            f"leverage=[{self.risk_overlay.min_leverage}, {self.risk_overlay.max_leverage}])")
 
         # 初始化风控
         if self.enable_risk_monitor and RiskMonitor is not None:
@@ -416,6 +436,22 @@ class StrategyPortfolio:
             )
             target_positions = normalize_target_positions(target_positions, total_value, min_position_value=self.min_position_value)
 
+        # 组合层面风险 overlay：市场状态调整 + 动态杠杆 + 回撤守卫
+        if self.risk_overlay is not None and target_positions:
+            nav_series = self._get_nav_series()
+            leverage, exposure = self.risk_overlay.recommend(
+                price_df=price_df,
+                vix=shared_vix,
+                nav_series=nav_series,
+            )
+            if leverage != 1.0 or exposure != 1.0:
+                target_positions = apply_risk_overlay_to_positions(
+                    target_positions, leverage=leverage, exposure_scale=exposure
+                )
+                logger.info(f"[RISK_OVERLAY] regime={self.risk_overlay.last_regime}, "
+                            f"leverage={leverage:.2f}x, exposure={exposure:.2f}, "
+                            f"total=${sum(target_positions.values()):,.2f}")
+
         logger.info(f"[PORTFOLIO] Aggregated target positions: ${sum(target_positions.values()):,.2f}, n={len(target_positions)}")
         for s, v in sorted(target_positions.items(), key=lambda x: x[1], reverse=True)[:10]:
             logger.info(f"  {s}: ${v:,.0f}")
@@ -426,6 +462,21 @@ class StrategyPortfolio:
         """返回组合层共享的 price_df，用于 vol target overlay。"""
         if hasattr(self, '_shared_price_df') and self._shared_price_df is not None:
             return self._shared_price_df
+        return None
+
+    def _get_nav_series(self) -> Optional[pd.Series]:
+        """返回组合 NAV 序列，供风险 overlay 计算回撤。
+
+        优先使用 RiskMonitor 的实盘 nav_history（与风控口径一致）；
+        否则返回 None（overlay 将按零回撤处理）。
+        """
+        if self.risk_monitor is not None and getattr(self.risk_monitor, 'nav_history', None):
+            history = self.risk_monitor.nav_history
+            if len(history) >= 2:
+                return pd.Series(
+                    [h['nav'] for h in history],
+                    index=pd.to_datetime([h['timestamp'] for h in history]),
+                )
         return None
 
     def run_live_rebalance(self):
