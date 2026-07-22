@@ -12,6 +12,10 @@
 - [ ] **Alpaca paper health** (if enabled): last rebalance succeeded? Any rejected/filled-with-warning orders? PDT count safe?
 - [ ] **Risk monitor**: `trading_halted` false? If true, check `alerts/` and follow `RISK_RUNBOOK.md`.
 - [ ] **Market data freshness**: latest bar/date in cache/feed not stale? Any corporate actions announced?
+- [ ] **Walk-forward OOS**: run `python3 multifactor/walk_forward_portfolio.py --weights g:0.40,s:0.20,m:0.15,v:0.10,q:0.15` monthly; OOS Sharpe/CAGR vs in-sample decay <30%?
+- [ ] **Regime-aware allocation**: run with `--regime-aware` and compare to static weights; verify improvement in bear/volatile windows.
+- [ ] **P&L attribution**: run `python3 multifactor/pnl_attribution.py` sanity check after any strategy weight change.
+- [ ] **Factor decay**: monitor IC/IR of key factors (momentum, growth, value, quality, sector rotation) for decay or win-rate drop.
 
 ## When to reach out immediately
 - Trading halted, emergency liquidation, or repeated order rejection.

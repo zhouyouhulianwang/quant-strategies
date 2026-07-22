@@ -108,6 +108,15 @@ except ImportError:
     apply_risk_overlay_to_positions = None
     RISK_OVERLAY_AVAILABLE = False
 
+try:
+    from risk_overlay import regime_detect
+    from regime_allocator import RegimeAllocator
+    REGIME_ALLOC_AVAILABLE = True
+except ImportError:
+    regime_detect = None
+    RegimeAllocator = None
+    REGIME_ALLOC_AVAILABLE = False
+
 
 class StrategyPortfolio:
     """多策略组合管理器。
@@ -127,6 +136,11 @@ class StrategyPortfolio:
         True=Paper, False=Live（仅当 use_paper_trading=True 时有效）。
     config : Any, optional
         配置对象。默认从 config.get_config() 获取。
+    regime_allocator : RegimeAllocator, optional
+        市场状态感知的子策略权重分配器。传入即启用；未传入时若
+        config.risk.regime_allocator_enabled=True 则自动创建默认实例。
+        启用后 generate_signals() 会根据 regime_detect() 的输出动态调整
+        各子策略权重（默认关闭，保持既有静态权重行为）。
     """
 
     def __init__(
@@ -136,6 +150,7 @@ class StrategyPortfolio:
         use_paper_trading: bool = False,
         paper: bool = True,
         config: Optional[Any] = None,
+        regime_allocator: Optional[Any] = None,
     ):
         if not strategies:
             raise ValueError("strategies 不能为空")
@@ -182,6 +197,20 @@ class StrategyPortfolio:
                             f"(target_vol={self.risk_overlay.target_vol:.0%}, "
                             f"max_dd={self.risk_overlay.max_dd:.0%}, "
                             f"leverage=[{self.risk_overlay.min_leverage}, {self.risk_overlay.max_leverage}])")
+
+        # Regime-aware 子策略权重分配，默认关闭；
+        # 显式传入 regime_allocator 或 config.risk.regime_allocator_enabled=true 启用
+        self.regime_allocator = regime_allocator
+        if self.regime_allocator is None and REGIME_ALLOC_AVAILABLE and RegimeAllocator is not None:
+            if self.config and hasattr(self.config, 'risk') and \
+                    getattr(self.config.risk, 'regime_allocator_enabled', False):
+                self.regime_allocator = RegimeAllocator(
+                    min_weight=getattr(self.config.risk, 'regime_allocator_min_weight', 0.05),
+                    max_step=getattr(self.config.risk, 'regime_allocator_max_step', 0.10),
+                    enabled=True,
+                )
+        if self.regime_allocator is not None:
+            logger.info(f"[OK] Regime-aware allocation enabled: {self.regime_allocator}")
 
         # 初始化风控
         if self.enable_risk_monitor and RiskMonitor is not None:
@@ -383,6 +412,19 @@ class StrategyPortfolio:
         shared_vix = None
         if shared_market_df is not None and 'VIX' in shared_market_df.columns:
             shared_vix = float(shared_market_df['VIX'].iloc[-1])
+
+        # Regime-aware 权重调整（opt-in）：按市场状态动态调整子策略资金权重
+        if self.regime_allocator is not None and regime_detect is not None:
+            try:
+                regime = regime_detect(shared_price_df, shared_vix)
+                current_weights = {item['name']: item['weight'] for item in self.strategies}
+                new_weights = self.regime_allocator.allocate(regime, current_weights)
+                for item in self.strategies:
+                    if item['name'] in new_weights:
+                        item['weight'] = new_weights[item['name']]
+                logger.info(f"[REGIME_ALLOC] Applied regime-adjusted weights (regime={regime})")
+            except Exception as e:
+                logger.warning(f"[REGIME_ALLOC] Failed, keeping static weights: {e}")
 
         aggregated = {}  # symbol -> list of (target_value, strategy_name)
         for item in self.strategies:

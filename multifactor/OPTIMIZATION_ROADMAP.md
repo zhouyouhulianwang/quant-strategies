@@ -36,6 +36,7 @@ _Updated: 2026-07-22_
 - [ ] Correlation stress test and concentration limits
 - [ ] Turnover control to reduce transaction costs
 - [ ] Maximum Drawdown (MaxDD) target overlay
+- [x] **Regime-aware allocation** → `regime_allocator.py` (done 2026-07-22: RegimeAllocator maps regime→weights, bear/volatile tilts defensive (sector_rotation 20%→10%/5%, quality up), bull tilts offensive (sector_rotation 30%), max-step smoothing 10% to avoid whipsaw; integrated into StrategyPortfolio via `regime.risk.regime_allocator_enabled` (default off); 27 tests in `test_regime_allocator.py`, full suite 247 passed)
 
 ### 3. Execution Quality (P1)
 - [ ] Market impact model (linear & square-root)
@@ -71,7 +72,7 @@ _Updated: 2026-07-22_
 
 1. **Integrate sub-agent deliverables** (walk-forward portfolio, risk overlay, execution/data quality modules)
 2. **Run OOS validation** on the best portfolio weights
-3. **Implement regime-aware allocation** if OOS confirms the Sharpe/CAGR trade-off
+3. ~~**Implement regime-aware allocation** if OOS confirms the Sharpe/CAGR trade-off~~ ✅ Done — `regime_allocator.py` + portfolio integration + tests (2026-07-22); next: OOS walk-forward of regime-aware vs static weights with `use_real_data=True`
 4. **Clean up and commit** optimization artifacts (scripts + results) with proper documentation
 5. **Update HEARTBEAT.md** to include new monitoring checks
 

@@ -55,6 +55,11 @@ class RiskConfig(BaseModel):
     target_vol: float = Field(0.20, gt=0.0, le=1.0)
     max_leverage: float = Field(1.5, gt=0.0, le=5.0)
     min_leverage: float = Field(0.5, gt=0.0, le=2.0)
+
+    # ---- Regime-aware 子策略权重分配（默认关闭）----
+    regime_allocator_enabled: bool = False
+    regime_allocator_min_weight: float = Field(0.05, ge=0.0, le=0.2)
+    regime_allocator_max_step: float = Field(0.10, gt=0.0, le=1.0)
     
     @field_validator('max_drawdown_limit', mode='before')
     @classmethod

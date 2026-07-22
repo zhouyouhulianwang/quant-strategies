@@ -39,6 +39,23 @@ from strategies.growth import GrowthStrategy
 from strategies.sector_rotation import SectorRotationStrategy
 from walk_forward_test import generate_windows, compute_metrics
 
+try:
+    from main import INDUSTRY, TICKERS
+except ImportError:
+    INDUSTRY = {}
+    TICKERS = []
+
+try:
+    from regime_allocator import RegimeAllocator
+    from risk_overlay import regime_detect
+    from quantconnect_data import prepare_backtest_data_qc
+    REGIME_TOOLS_AVAILABLE = True
+except ImportError:
+    RegimeAllocator = None
+    regime_detect = None
+    prepare_backtest_data_qc = None
+    REGIME_TOOLS_AVAILABLE = False
+
 setup_logging()
 logger = logging.getLogger('walk_forward_portfolio')
 
@@ -57,19 +74,54 @@ def build_strategies() -> Dict[str, object]:
     }
 
 
-def build_portfolio(weights: Dict[str, float]) -> StrategyPortfolio:
+def build_portfolio(weights: Dict[str, float], regime_aware: bool = False) -> StrategyPortfolio:
     """用给定权重构造 StrategyPortfolio。weight=0 的策略也保留（由 portfolio 归一化）。"""
     strategy_map = build_strategies()
     strategies = [
         (name, strategy_map[name], float(weights.get(name, 0.0)))
         for name in STRATEGY_NAMES
     ]
+    regime_allocator = None
+    if regime_aware and REGIME_TOOLS_AVAILABLE and RegimeAllocator is not None:
+        regime_allocator = RegimeAllocator(enabled=True)
+        logger.info("[OK] Regime-aware allocation enabled for walk-forward (live mode)")
     return StrategyPortfolio(
         strategies=strategies,
         enable_risk_monitor=False,
         use_paper_trading=False,
         paper=False,
+        regime_allocator=regime_allocator,
     )
+
+
+def apply_regime_at_date(weights: Dict[str, float], date: pd.Timestamp,
+                         lookback_days: int = 400) -> Dict[str, float]:
+    """
+    在指定日期用当时可见的数据检测市场状态，并返回 regime-aware 调整后的权重。
+
+    用于 walk-forward OOS：在每个 test 窗口开始时（train_end）检测 regime，
+    避免使用 test 窗口内的未来数据。
+    """
+    if not REGIME_TOOLS_AVAILABLE:
+        return dict(weights)
+    try:
+        end = date.strftime('%Y-%m-%d')
+        start = (date - pd.Timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+        price_df, market_df = prepare_backtest_data_qc(TICKERS, start, end, resolution='daily')
+        if price_df is None or len(price_df) == 0:
+            logger.warning(f"[REGIME_OOS] No data for {end}, keeping static weights")
+            return dict(weights)
+        vix = None
+        if market_df is not None and 'VIX' in market_df.columns:
+            vix = float(market_df['VIX'].iloc[-1])
+        regime = regime_detect(price_df, vix)
+        allocator = RegimeAllocator(enabled=True)
+        adjusted = allocator.allocate(regime, weights)
+        logger.info(f"[REGIME_OOS] date={end}, regime={regime}, adjusted weights: {adjusted}")
+        return adjusted
+    except Exception as e:
+        logger.warning(f"[REGIME_OOS] Failed to apply regime at {date}: {e}")
+        return dict(weights)
 
 
 def resolve_fixed_weights(spec: str) -> Dict[str, float]:
@@ -116,10 +168,11 @@ def generate_weight_grid(step: int = 10, min_weight: int = 5) -> List[Dict[str, 
     return combos
 
 
-def backtest_portfolio(weights: Dict[str, float], start: str, end: str) -> Optional[pd.DataFrame]:
+def backtest_portfolio(weights: Dict[str, float], start: str, end: str,
+                       regime_aware: bool = False) -> Optional[pd.DataFrame]:
     """运行组合回测，返回 NAV 曲线 DataFrame（date, nav）。失败返回 None。"""
     try:
-        portfolio = build_portfolio(weights)
+        portfolio = build_portfolio(weights, regime_aware=regime_aware)
         result = portfolio.run_backtest(start, end)
         if result is None or len(result) == 0:
             return None
@@ -156,7 +209,8 @@ def portfolio_metrics(result: pd.DataFrame) -> Optional[dict]:
 
 
 def optimize_weights(train_start: str, train_end: str, metric: str = 'sharpe',
-                     max_combos: Optional[int] = None) -> Tuple[Dict[str, float], List[dict]]:
+                     max_combos: Optional[int] = None,
+                     regime_aware: bool = False) -> Tuple[Dict[str, float], List[dict]]:
     """在 train 窗口内做权重 sweep，返回最优权重与全部结果。"""
     combos = generate_weight_grid()
     if max_combos is not None and len(combos) > max_combos:
@@ -169,7 +223,7 @@ def optimize_weights(train_start: str, train_end: str, metric: str = 'sharpe',
     best_weights, best_score = None, -np.inf
     for i, weights in enumerate(combos, 1):
         logger.info(f"  [{i}/{len(combos)}] {weights}")
-        result = backtest_portfolio(weights, train_start, train_end)
+        result = backtest_portfolio(weights, train_start, train_end, regime_aware=regime_aware)
         if result is None:
             continue
         m = portfolio_metrics(result)
@@ -201,6 +255,7 @@ def run_walk_forward(
     optimize_max_combos: Optional[int] = None,
     output_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'optimization_walkforward_portfolio.json'),
+    regime_aware: bool = False,
 ):
     start_date = pd.Timestamp(start)
     end_date = pd.Timestamp(end)
@@ -226,15 +281,21 @@ def run_walk_forward(
         if optimize:
             weights, train_results = optimize_weights(
                 str(train_start.date()), str(train_end.date()),
-                metric=optimize_metric, max_combos=optimize_max_combos)
+                metric=optimize_metric, max_combos=optimize_max_combos,
+                regime_aware=regime_aware)
         else:
             weights = dict(fixed_weights)
             train_results = []
 
         logger.info(f"  窗口 {i} 使用权重: {weights}")
 
+        # 1.5) Regime-aware OOS: 在 train_end 用当时可见数据检测 regime，调整 test 窗口权重
+        if regime_aware:
+            weights = apply_regime_at_date(weights, train_end)
+
         # 2) test 阶段：回测区间从 train_start 开始（保证预热），再切片到 test 区间
-        result = backtest_portfolio(weights, str(train_start.date()), str(test_end.date()))
+        result = backtest_portfolio(weights, str(train_start.date()), str(test_end.date()),
+                                    regime_aware=False)
         if result is None:
             logger.warning(f"窗口 {i} 没有返回结果，跳过")
             continue
@@ -308,7 +369,7 @@ def run_walk_forward(
     logger.info("=" * 60)
 
     summary = {
-        'mode': 'optimize' if optimize else 'fixed',
+        'mode': ('regime_aware_' + ('optimize' if optimize else 'fixed')) if regime_aware else ('optimize' if optimize else 'fixed'),
         'optimize_metric': optimize_metric if optimize else None,
         'start': start,
         'end': end,
@@ -360,6 +421,8 @@ def main():
                         help='结果输出 JSON 路径')
     parser.add_argument('--smoke-test', action='store_true',
                         help='冒烟测试：验证窗口生成/权重解析/网格生成，不运行回测')
+    parser.add_argument('--regime-aware', action='store_true',
+                        help='启用 regime-aware 子策略权重分配')
     args = parser.parse_args()
 
     if args.smoke_test:
@@ -383,6 +446,7 @@ def main():
         optimize_metric=args.weights_optimize_metric,
         optimize_max_combos=args.optimize_max_combos,
         output_path=args.output,
+        regime_aware=args.regime_aware,
     )
 
 
